@@ -139,8 +139,7 @@ queriers, but no test in the dedicated suite ever constructed an instance. A
 single contract test that asserts the constructor populates `sig`, `name`, and
 `schema` consistently with the staticmethod API killed all seven survivors at
 once. The parallel synchronous core was retired in 0.6; the production oracle
-now exercises `AsyncQueryManager`, while `archetype-smol` remains an
-independent educational package.
+now exercises `AsyncQueryManager`.
 
 This is consistent with the project's stated testing posture:
 

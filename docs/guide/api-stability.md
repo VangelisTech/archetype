@@ -26,11 +26,6 @@ Separately installed world libraries expose supported family-qualified imports
 and typed adapters. The base framework root does not own their API. See
 [World Libraries](world-libraries.md).
 
-The independently installed [`archetype-smol`](../smol/index.md) package is a
-small synchronous engine for education and experimentation. It is not a
-compatibility API, world library, backend, or alias layer for `archetype-ecs`,
-and no migration or behavioral-parity promise connects the two engines.
-
 ## What counts as public
 
 A supported name is one classified by the generated Python API manifest or a
