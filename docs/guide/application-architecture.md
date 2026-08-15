@@ -469,14 +469,14 @@ Managed ECS appends follow the same storage authority without changing core:
 the private Iceberg adapter materializes one Arrow payload, retains its commit
 token and physical table identity, and refreshes/retries only an exact catalog
 compare-and-swap conflict. Retry is bounded and uses full jitter. A
-commit-state-unknown response cannot prove absence, so v0.5 does not retry it
+commit-state-unknown response cannot prove absence, so v0.6 does not retry it
 or claim exact reconciliation. Storage raises `AmbiguousCommitError` with the
 exact table/world/run/tick identity and commit token, then rejects later
 non-empty appends to that table for the managed store's remaining lifetime.
 This also prevents a restored cached batch from replaying. The manifest-last
 protocol keeps any unconfirmed rows invisible (issue #709).
 
-The v0.5 API exposes no general schema-evolution contract. Physical layout
+The v0.6 API exposes no general schema-evolution contract. Physical layout
 tuning, compaction, and snapshot expiry are also deferred. Visibility pinning
 uses an explicit manifest-token allowlist whose size is linear in committed
 tick count.
@@ -690,9 +690,9 @@ commands-owned `GetAuditHistory`/`AuditLog` projection. `ActorCtx` and exact
 operation models live with the commands or owning family. There is no generic
 command envelope, facade bridge, or compatibility auth re-export.
 
-## 13. Accepted v0.5 target architecture
+## 13. Current v0.6 architecture
 
-This section records the landed v0.5 architecture. The dispatcher,
+This section records the current v0.6 architecture. The dispatcher,
 exact-operation, Activity, composition, and runtime-resource ownership
 described here are current. Later changes must update policy, focused
 specifications, and executable oracles atomically.

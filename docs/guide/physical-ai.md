@@ -18,9 +18,11 @@ and returns only complete, content-addressed episode evidence.
 
 ```mermaid
 graph TB
-    Req["HostedEpisodeRequest batch"] --> RT["ArchetypeRuntime"]
-    RT --> World["RuntimeWorld"]
-    World --> Act["Modal-hosted Activity"]
+    RT["ArchetypeRuntime"] --> World["RuntimeWorld"]
+    Req["HostedEpisodeRequest batch"] --> Adapter["PhysicalAI(world)"]
+    Adapter --> World
+    World --> Dispatch["CommandDispatcher"]
+    Dispatch --> Act["Modal-hosted Activity"]
     Act --> Obs["HostedEpisodeObservation<br/>result_ref + digests"]
     World --> Evidence["Committed world evidence"]
     Obs -.-> Evidence

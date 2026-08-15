@@ -60,7 +60,7 @@ async def run_world(
 ## Authentication context
 
 The served API is a single-tenant development surface, and this is the
-deliberate v0.5 posture. There is no authentication system: every caller is
+deliberate v0.6 posture. There is no authentication system: every caller is
 the tenant. A request with no `Authorization` header receives the admin role;
 `Bearer <role>` self-asserts one of admin/operator/player/viewer. Roles
 therefore scope cooperating agents — a client instructed to send
@@ -69,7 +69,7 @@ not a security boundary against an adversarial caller, and binding the server
 beyond loopback exposes an unauthenticated admin API. The credentials that
 matter are the storage credentials in Daft's `IOConfig`. Real
 authentication/authorization against an external identity provider is a
-post-0.5 slice. The trusted runtime has no actor context. See
+future hardening slice. The trusted runtime has no actor context. See
 [Command Gate](command-gate.md).
 
 ## Route Structure

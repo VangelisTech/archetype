@@ -12,12 +12,16 @@ ROOT = Path(__file__).resolve().parents[2]
 CANONICAL_SURFACES = (
     ROOT / "README.md",
     ROOT / "docs/index.md",
+    ROOT / "docs/guide/agent-missions.md",
+    ROOT / "docs/guide/api-layer.md",
     ROOT / "docs/guide/api-stability.md",
+    ROOT / "docs/guide/application-architecture.md",
     ROOT / "docs/guide/artifacts.md",
     ROOT / "docs/guide/autoresearch.md",
     ROOT / "docs/guide/examples.md",
     ROOT / "docs/guide/physical-ai.md",
     ROOT / "docs/guide/runtime.md",
+    ROOT / "docs/guide/storage-migration.md",
     ROOT / "docs/guide/trajectories.md",
     ROOT / "docs/guide/world-libraries.md",
     ROOT / "examples/06_trajectory_analysis.py",
@@ -52,6 +56,15 @@ def test_autoresearch_guide_uses_generic_terminal_states() -> None:
     assert "`FAILED`" in guide
     assert "`STOPPED`" not in guide
     assert "`CRASHED`" not in guide
+
+
+def test_agent_missions_guide_uses_the_0_6_adapter_and_contract() -> None:
+    guide = (ROOT / "docs/guide/agent-missions.md").read_text(encoding="utf-8")
+
+    assert "archetype/runtime/missions.py" not in guide
+    assert "packages/archetype-missions/src/archetype/missions/runtime.py" in guide
+    assert "v0.5 Mission workflow" not in guide
+    assert "normative for v0.5" not in guide
 
 
 def test_clean_break_release_note_is_reader_visible() -> None:

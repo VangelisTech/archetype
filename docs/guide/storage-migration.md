@@ -283,12 +283,19 @@ plan = await plan_storage_migration(
     destination=destination_endpoint,
     migration_id=migration_id,
 )
-receipt = await migrate_storage(plan)
+receipt = await migrate_storage(plan)  # Includes the required cold verification.
+
+# Optional: repeat verification independently at a later time.
 verification = await verify_storage_migration(
     receipt,
     destination=destination_endpoint,
 )
 ```
+
+`migrate_storage()` does not return a complete receipt until the required cold
+verification has succeeded and its evidence is bound into that receipt. The
+separate `verify_storage_migration()` call above is an optional later
+re-verification; omitting it does not weaken the completed migration receipt.
 
 Endpoint composition remains in `archetype.wiring`. Direct construction of a
 `MigrationEndpoint` is a trusted composition seam, not an adversarial security

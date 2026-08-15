@@ -1001,23 +1001,32 @@ allowed_families = []
     )
 
 
-def test_ratified_v0_5_family_dag_is_complete_acyclic_and_exact(tmp_path: Path) -> None:
-    """PR-0 fixture: family moves may consume only the ratified final edges."""
+def test_current_v0_6_family_dag_is_complete_acyclic_and_exact(tmp_path: Path) -> None:
+    """The current family graph admits exactly the reviewed v0.6 edges."""
 
     allowed = {
+        "activities": ("storage",),
         "storage": (),
         "world": ("storage",),
         "commands": ("storage", "world"),
         "artifacts": ("storage",),
+        "migration": ("artifacts", "storage"),
         "redaction": (),
         "evaluation": ("storage", "world"),
         "research": ("storage", "world"),
-        "migration": ("artifacts", "storage"),
-        "physical_ai": ("storage", "world"),
-        "episodes": ("storage", "world", "artifacts", "redaction", "evaluation"),
+        "physical_ai": ("activities", "storage", "world"),
         "graph": (),
-        "missions": ("storage", "world", "graph", "artifacts", "episodes", "redaction"),
-        "views": ("storage", "world", "graph"),
+        "missions": (
+            "activities",
+            "artifacts",
+            "evaluation",
+            "graph",
+            "projections",
+            "redaction",
+            "storage",
+            "world",
+        ),
+        "projections": ("graph",),
     }
     package = tmp_path / "src" / "archetype"
     target_reserved = (*DEFAULT_RESERVED_INFRASTRUCTURE, "archetype.wiring")
