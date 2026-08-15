@@ -38,7 +38,8 @@ rejects fragments that declare anything else or duplicate a rule name.
 | Components, processors, resources, configuration, and runtime result models | Supported extension/signature surface | May cross the runtime boundary where explicitly documented |
 | REST and CLI behavior | Supported adapter surfaces | Preserve approved application semantics through the authorized server path |
 | Concrete family services | Internal | No direct compatibility promise |
-| `archetype.wiring` | Internal composition root | Sole concrete cross-family construction transaction |
+| `archetype.wiring` | Internal framework composition root | Sole enclosing process-construction and world-library installation transaction |
+| A world library's private `_extension.py` | Internal trusted composition adapter | Constructs only that library's internals over one bounded `WorldLibraryContext` |
 | `RuntimeResources` | Internal process owner | Admission drain, supervised work, handle lifetime, audit, and storage teardown |
 | `WorldLibraryManifest` and typed library adapters | Supported integration and extension surfaces | Deterministic trusted installation plus family-owned application APIs |
 | Core engine types retained at top level | Compatibility or extension surface | Classification is owned by API Stability |
@@ -79,10 +80,12 @@ Other untrusted ingress, including MCP tools, sandboxed agents, or multi-tenant
 embeddings, must authenticate an `ActorCtx` and use the same actor-aware
 dispatcher methods even when HTTP is not involved.
 
-The concrete `ArchetypeRuntime` is not a dependency of domain families.
-Runtime and API are parallel trusted and actor-aware adapters over the same
-commands dispatcher and family models. Scripting-only handles, sync wrappers,
-callbacks, and local lifetime therefore do not leak into the server.
+The concrete `ArchetypeRuntime` is not a dependency of ordinary domain-family
+modules. Framework runtime and API surfaces are parallel trusted and actor-aware
+adapters over the same commands dispatcher and framework operation models.
+Policy-classified world-library runtime/API adapters add only their own family
+models over those generic host boundaries. Scripting-only handles, sync
+wrappers, callbacks, and local lifetime therefore do not leak into the server.
 
 ## 4. Package direction and family layout
 
@@ -98,15 +101,22 @@ Repository package ownership is normative across every workspace source root:
 | Offline whole-storage planning, ordering, convergence, verification, and receipts | `archetype.migration` |
 | Family-owned workflows and internal lower-family ports | `archetype.<family>` |
 | Transport and authentication | `archetype.api` |
-| Process composition and lifetime | `archetype.wiring` and `archetype.runtime_resources` |
+| Framework process composition and lifetime | `archetype.wiring` and `archetype.runtime_resources` |
+| One world library's trusted framework composition adapter | Its private `archetype.<family>._extension` module only |
 
 A top-level domain-family package owns reusable ECS state and pure domain
 behavior. It may depend on `archetype.core`, itself, third-party libraries, and
 only reviewed lower top-level family contracts declared in the merged
-architecture policy. It must not import `archetype.app`,
+architecture policy. Its ordinary domain modules must not import `archetype.app`,
 `archetype.runtime`, `archetype.runtime_resources`, `archetype.wiring`,
 `archetype.api`, or `archetype.cli`, and it does not configure process-global
 providers or exporters, storage backends, process hosts, or wiring.
+Exact policy-classified `runtime.py` and optional `api.py` host adapters may
+consume the corresponding framework adapter surfaces for their named role.
+Only the private `_extension.py` adapter may consume framework composition
+contracts and the bounded capabilities supplied through `WorldLibraryContext`
+to install that library's declared operations and process-owned resources.
+These exceptions grant no outward imports to ordinary family modules.
 Undeclared top-level family-to-family dependencies are denied. Every
 first-party package or module
 directly beneath `archetype` is classified as reserved infrastructure or
@@ -168,22 +178,26 @@ symbol public. Supported names remain an explicit classification owned by
 [API Stability](api-stability.md); concrete services and process wiring remain
 internal.
 
-The `archetype.missions` family consumes the lower `archetype.graph` family,
-as declared in `quality/architecture.d/missions.toml`. It owns mission/task Components,
-typed authoring and execution values, task relationships, DataFrame-first
+The separately distributed `archetype.missions` family consumes the lower
+framework families declared in `quality/architecture.d/missions.toml`, including
+`archetype.graph`. It owns mission/task Components, typed authoring and execution
+values, task relationships, DataFrame-first
 transition processors, reusable projections/resources, and coding-agent
 sandbox implementations. It also owns graph materialization,
 tick/external-I/O coordination through one author-and-critic Activity binding,
 observation staging, and result projection. Sandboxes are mission-family
-resources; they are not peer authorities. The family never imports runtime,
-API, CLI, or composition code. Family-package
+resources; they are not peer authorities. Ordinary family modules never import
+runtime, API, CLI, or composition code. Exact runtime/API adapters cross only
+their named host boundary, and only the private `_extension.py` adapter crosses
+the trusted composition boundary. Family-package
 exports are deliberate and do not promote a concrete application service to
 the `archetype` root.
 
-The current authority layout is:
+The current distribution and authority layout is:
 
 ```text
 packages/archetype-ecs/src/archetype/
+  core/              domain-free ECS kernel
   errors.py          stable shared boundary-error bases
   storage/           physical rows, catalogs, commits, scans and app tables
   world/             lifecycle, mutation, simulation, query and exact operation models
@@ -193,11 +207,26 @@ packages/archetype-ecs/src/archetype/
   evaluation/        grading, snapshot pinning, leases and durable receipts
   artifacts/         file values, scans, immutable objects, indexes, views and handlers
   migration/         whole-storage plans, ordering, convergence and receipts
-  research/          AutoResearch values, ledger state, views and free workflow handler
-  physical_ai/       physical state, models, views and free workflow handlers
-  missions/          mission state, resources, Activities and family workflows
+  graph/             generic graph relations and temporal views
+  projections/       reusable framework projection behavior
+  world_libraries/   manifest, discovery and bounded installation contracts
+  runtime/           supported domain-free scripting handles
+  api/               domain-free FastAPI host
+  cli/               domain-free HTTP client and server startup
   runtime_resources.py explicit process-lifetime owner
-  wiring.py          sole concrete cross-family composition root
+  wiring.py          framework composition and enclosing installation transaction
+
+packages/archetype-missions/src/archetype/missions/
+  _extension.py      private Missions composition adapter
+  ...                coding missions, sandboxes, sessions, transcripts and trajectories
+
+packages/archetype-physical-ai/src/archetype/physical_ai/
+  _extension.py      private Physical-AI composition adapter
+  ...                physical state, policies, providers and hosted episodes
+
+packages/archetype-research/src/archetype/research/
+  _extension.py      private Research composition adapter
+  ...                AutoResearch values, ledger, views and workflow
 ```
 
 `activities/` is a top-level family over the storage-owned Activity catalog.
@@ -251,13 +280,15 @@ The allowed outer-package direction is:
 ```text
 application code -> archetype.runtime
 CLI              -> REST API over HTTP
-runtime          -> commands dispatcher plus family models/contracts
-API              -> commands dispatcher, auth models, family models, shared errors
+runtime          -> commands dispatcher plus framework models/contracts
+API              -> commands dispatcher, auth models, framework models, shared errors
+library adapter  -> its own family models plus its named framework host surface
 commands         -> storage and world
 world            -> storage
 top-level family -> core and explicitly declared lower top-level families
 core             -> foundation and third-party libraries only
 wiring           -> every concrete implementation it composes
+library adapter  -> its own family internals plus bounded framework composition contracts
 ```
 
 Forbidden reverse edges include:
@@ -266,6 +297,9 @@ Forbidden reverse edges include:
 - a top-level family importing app, runtime, API, or CLI;
 - a top-level family importing another registered family without a declared
   lower-family edge;
+- one world library importing another world library;
+- an ordinary world-library module importing framework composition authority
+  reserved for its private `_extension.py` adapter;
 - runtime importing API auth, concrete family services, or API modules;
 - API routes importing concrete family services or process wiring;
 - CLI command implementations bypassing HTTP.
@@ -333,9 +367,11 @@ or CLI boundary.
 | Research | AutoResearch values, ledger state, bounded persisted-control reads, experiment-keyed admission, and the directly awaited multi-run workflow | World registry/lifecycle and storage ports plus world simulation functions and explicit evaluator callbacks |
 | Physical AI | Reusable physical state, schemas, providers, views, pure instruction optimization, and the hosted whole-episode Activity workflow | World registry/lifecycle and storage ports plus world mutation/simulation/query functions; the hosted workflow also consumes Activities |
 | Missions | Graph materialization, committed-intent Activity composition, terminal projection, transcript ingestion, and trajectory query/evaluation composition. Family processors retain transition authority; Activity or trajectory evidence cannot advance tasks. | Consumes Activities, a structural mission world, family-owned sandbox resource, artifact-family handlers plus redaction/storage ports for transcripts, and world-query plus pure evaluation-grading functions for trajectory reads. |
-| Runtime/API adapters | Construct exact family operations and select trusted or actor-aware dispatcher entry | Commands dispatcher plus family models |
+| Framework runtime/API adapters | Construct exact framework operations and select trusted or actor-aware dispatcher entry | Commands dispatcher plus framework models |
+| World-library runtime/API adapters | Construct that library's operations over the generic trusted or actor-aware host boundary | Their own family models plus their named framework adapter surface |
 | `RuntimeResources` | Process admission, supervised work, handle ownership, and phased retryable teardown | Dispatcher, audit projection, storage, and registered owners |
-| `archetype.wiring` | Concrete construction, registration, and callback wiring | Every concrete implementation it constructs |
+| `archetype.wiring` | Framework construction, framework registration, and the enclosing world-library installation transaction | Framework implementations plus resolved manifests |
+| Private world-library `_extension.py` | Library-internal construction and exact declared-operation registration | Its own family internals plus `WorldLibraryContext` capabilities |
 
 World mutation and simulation functions share the registry's exact-world
 authority. Durable world query intentionally reads storage without requiring a
@@ -343,9 +379,10 @@ live world. Evaluation owns the product evaluation transaction; API transport
 never pins snapshots, invokes graders, or persists evaluation receipts.
 Research enters through one exact direct-only `autoresearch` registration. Its
 outer handler is one synchronously awaited dispatcher admission; inner world
-and storage calls do not redispatch. Wiring owns one process-shared
-experiment-keyed admission map, while each state boundary uses the registry's
-named world lock. Research creates no second workflow owner, detached task, or
+and storage calls do not redispatch. The Research library's private installer
+creates one experiment-keyed admission map per runtime graph and closes its
+handler over that map, while each state boundary uses the registry's named
+world lock. Research creates no second workflow owner, detached task, or
 shared-service finalizer.
 
 ## 6. Dispatcher and trust-boundary policy
@@ -531,8 +568,9 @@ Runtime construction and API lifespan code may call the wiring transaction.
 Ordinary runtime and route modules retain only `RuntimeResources` or its
 dispatcher, never the concrete service graph.
 
-For Agent Missions V1, wiring registers exact submit/run/restore handlers. The
-submit handler constructs `MissionService` exactly once inside the
+For Agent Missions V1, the private Missions adapter registers the exact
+submit/run/restore handlers during the enclosing framework installation
+transaction. The submit handler constructs `MissionService` exactly once inside the
 pre-reserved workflow owner, retains the combined author-and-critic Activity
 binding for that owner, and creates exact-world cleanup authority only after
 close begins. The family service installs the built-in processor/resource
@@ -594,7 +632,8 @@ Together, the repository's architecture and observability checkers must:
 - enforce the existing outer-package and family dependency rules;
 - confine commands-owned `ActorCtx` to policy/dispatch and approved adapter
   construction;
-- restrict concrete cross-family construction to `archetype.wiring`;
+- restrict framework concrete cross-family construction to `archetype.wiring`
+  and each world library's concrete composition to its private `_extension.py`;
 - reject concrete-service inheritance;
 - reserve family-owned terminal Daft, Iceberg, and catalog-table
   operations to `StorageService`, while allowing only storage-materialized
@@ -734,10 +773,14 @@ own fragments.
 Every family may also import `archetype.core`, stable shared boundary-error
 bases from `archetype.errors`, itself, and third-party libraries. Another
 domain-family edge requires the normal same-change documentation, policy, and
-cycle review. Family operation models do not import `commands`. `wiring.py` registers
-model/handler pairs and is the sole concrete cross-family composition root.
-`runtime` and `api` consume commands plus the family models and projections they
-expose; CLI remains an HTTP client except for server startup.
+cycle review. Family operation models do not import `commands`. `wiring.py`
+registers framework model/handler pairs and invokes the resolved private
+world-library installers; each installer registers only its manifest-declared
+library pairs inside that one enclosing composition transaction.
+Framework `runtime` and `api` consume commands plus framework-owned models and
+projections; policy-classified library runtime/API adapters consume their own
+family models plus the corresponding generic host surface. CLI remains an HTTP
+client except for server startup.
 
 The physical-AI hosted workflow exercises exactly the `activities`, `storage`,
 and `world` edges. Hosted episode reports remain family-owned terminal
@@ -764,16 +807,19 @@ packages/archetype-ecs/src/archetype/
   api/
   cli/
   runtime_resources.py
-  wiring.py      constructs and returns RuntimeResources
+  wiring.py      composes the framework, installs manifests, returns RuntimeResources
 
 packages/archetype-missions/src/archetype/missions/
+  _extension.py  private manifest and Missions composition adapter
   coding_agents/ sandboxes/ sessions/ trajectories/
   components, processors, relations, workflows, typed runtime adapter
 
 packages/archetype-physical-ai/src/archetype/physical_ai/
+  _extension.py  private manifest and Physical-AI composition adapter
   physical state, policies, provider adapters, hosted episodes
 
 packages/archetype-research/src/archetype/research/
+  _extension.py  private manifest and Research composition adapter
   AutoResearch values, ledger, views, workflow, typed runtime adapter
 ```
 
@@ -827,7 +873,9 @@ ownership before a factory or task can become active. `aclose()` stops
 admission, drains admitted work, and closes dependency phases in order. It
 attempts every independent cleanup in the current phase, aggregates labelled
 errors, retains failed ownership and its dependencies, and retries that phase
-on a later serialized call. Only successful finalization is idempotent.
+on a later serialized call. Only successful finalization is idempotent. Private
+library adapters bind their process-owned handles into this owner; they do not
+create parallel lifetime containers.
 
 The complete `Missions.run()` operation is inside that admission and
 ownership boundary. Its dispatcher registration is direct-only unless the
