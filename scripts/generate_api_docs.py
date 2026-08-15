@@ -2,30 +2,173 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Generate REST API reference markdown from FastAPI's OpenAPI schema.
+"""Generate owner-scoped REST API references from explicit OpenAPI schemas.
 
 Usage:
     python scripts/generate_api_docs.py
 
-Writes docs/reference/rest-api.md.
+Writes the framework reference and one reference per documented extension.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs" / "reference"
 OUTPUT = DOCS_DIR / "rest-api.md"
+MISSIONS_OUTPUT = DOCS_DIR / "rest-api-missions.md"
+HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
 
 
-def get_openapi_schema() -> dict[str, Any]:
-    """Import the FastAPI app and extract its OpenAPI schema."""
+@dataclass(frozen=True, slots=True)
+class RestExtension:
+    """One explicitly documented world-library REST surface."""
+
+    title: str
+    distribution: str
+    module_name: str
+    factory_name: str
+    output: Path
+
+
+REST_EXTENSIONS: tuple[RestExtension, ...] = (
+    RestExtension(
+        "Agent Missions",
+        "archetype-missions",
+        "archetype.missions._extension",
+        "get_manifest",
+        MISSIONS_OUTPUT,
+    ),
+)
+
+
+def get_openapi_schema(*, world_libraries: tuple[Any, ...] = ()) -> dict[str, Any]:
+    """Extract one explicit API surface without installed-package discovery."""
     from archetype.api.app import create_app
 
-    app = create_app()
+    app = create_app(world_libraries=world_libraries)
     return app.openapi()
+
+
+def _extension_coordinates(manifest: Any, *, owner: str) -> set[tuple[str, str]]:
+    """Return coordinates contributed by one manifest, rejecting duplicates."""
+    from fastapi import APIRouter
+
+    coordinates: set[tuple[str, str]] = set()
+    for router_factory in manifest.api_router_factories:
+        router = router_factory()
+        if not isinstance(router, APIRouter):
+            raise TypeError(f"{owner} API factory did not return APIRouter")
+        for route in router.routes:
+            path = getattr(route, "path", None)
+            methods = getattr(route, "methods", None) or ()
+            if not isinstance(path, str):
+                continue
+            for method in methods:
+                normalized = str(method).lower()
+                if normalized not in HTTP_METHODS:
+                    continue
+                coordinate = (path, normalized)
+                if coordinate in coordinates:
+                    raise RuntimeError(
+                        f"{owner} declares duplicate REST operation {normalized.upper()} {path}"
+                    )
+                coordinates.add(coordinate)
+    if not coordinates:
+        raise RuntimeError(f"{owner} contributes no documentable REST operations")
+    return coordinates
+
+
+def _component_mutations(
+    base_schema: dict[str, Any],
+    composed_schema: dict[str, Any],
+) -> list[str]:
+    """Return framework component definitions changed by composition."""
+    mutations: list[str] = []
+    for section, definitions in base_schema.get("components", {}).items():
+        if not isinstance(definitions, dict):
+            continue
+        composed_definitions = composed_schema.get("components", {}).get(section, {})
+        for name, definition in definitions.items():
+            if composed_definitions.get(name) != definition:
+                mutations.append(f"components/{section}/{name}")
+    return sorted(mutations)
+
+
+def _validate_extension_composition(
+    base_schema: dict[str, Any],
+    composed_schema: dict[str, Any],
+    extension_coordinates: set[tuple[str, str]],
+    *,
+    owner: str,
+) -> None:
+    """Fail when an extension collides with or mutates the framework API."""
+    base_operations = _operations(base_schema)
+    composed_operations = _operations(composed_schema)
+    base_coordinates = set(base_operations)
+    collisions = sorted(base_coordinates & extension_coordinates)
+    if collisions:
+        rendered = ", ".join(f"{method.upper()} {path}" for path, method in collisions)
+        raise RuntimeError(f"{owner} collides with framework REST operations: {rendered}")
+
+    expected_coordinates = base_coordinates | extension_coordinates
+    actual_coordinates = set(composed_operations)
+    if actual_coordinates != expected_coordinates:
+        missing = sorted(expected_coordinates - actual_coordinates)
+        unexpected = sorted(actual_coordinates - expected_coordinates)
+        details: list[str] = []
+        if missing:
+            details.append(
+                "missing " + ", ".join(f"{method.upper()} {path}" for path, method in missing)
+            )
+        if unexpected:
+            details.append(
+                "unexpected " + ", ".join(f"{method.upper()} {path}" for path, method in unexpected)
+            )
+        raise RuntimeError(f"{owner} REST composition changed coordinates: {'; '.join(details)}")
+
+    operation_mutations = sorted(
+        coordinate
+        for coordinate, operation in base_operations.items()
+        if composed_operations[coordinate] != operation
+    )
+    component_mutations = _component_mutations(base_schema, composed_schema)
+    if operation_mutations or component_mutations:
+        details = [
+            *(f"{method.upper()} {path}" for path, method in operation_mutations),
+            *component_mutations,
+        ]
+        raise RuntimeError(f"{owner} mutates framework REST contracts: {', '.join(details)}")
+
+
+def get_extension_openapi_schemas(
+    base_schema: dict[str, Any],
+) -> tuple[tuple[RestExtension, dict[str, Any], set[tuple[str, str]]], ...]:
+    """Build and validate each explicit extension composition."""
+    schemas: list[tuple[RestExtension, dict[str, Any], set[tuple[str, str]]]] = []
+    for extension in REST_EXTENSIONS:
+        factory = getattr(import_module(extension.module_name), extension.factory_name)
+        manifest = factory()
+        coordinates = _extension_coordinates(manifest, owner=extension.title)
+        schema = get_openapi_schema(world_libraries=(manifest,))
+        _validate_extension_composition(
+            base_schema,
+            schema,
+            coordinates,
+            owner=extension.title,
+        )
+        schemas.append(
+            (
+                extension,
+                schema,
+                coordinates,
+            )
+        )
+    return tuple(schemas)
 
 
 def resolve_ref(schema: dict[str, Any], root: dict[str, Any]) -> dict[str, Any]:
@@ -216,46 +359,107 @@ def render_operation(
     return lines
 
 
-def generate() -> str:
-    """Generate the full REST API reference markdown."""
-    schema = get_openapi_schema()
-    lines: list[str] = []
+def _operations(schema: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    """Index documented HTTP operations by stable path/method coordinates."""
+    return {
+        (path, method): operation
+        for path, methods in schema.get("paths", {}).items()
+        for method, operation in methods.items()
+        if method in HTTP_METHODS
+    }
 
-    lines.append("<!-- Auto-generated by scripts/generate_api_docs.py — do not edit -->")
-    lines.append("")
-    lines.append("# REST API Reference")
-    lines.append("")
-    lines.append(
-        "This reference is auto-generated from the FastAPI application's OpenAPI schema. "
-        "Start the server with `archetype serve` (default: `http://localhost:8000`)."
-    )
-    lines.append("")
 
-    # Group by tag
-    paths = schema.get("paths", {})
-    tag_groups: dict[str, list[tuple[str, str, dict]]] = {}
-    for path, methods in paths.items():
-        for method, operation in methods.items():
-            if method in ("get", "post", "put", "patch", "delete"):
-                tags = operation.get("tags", ["Other"])
-                tag = tags[0] if tags else "Other"
-                tag_groups.setdefault(tag, []).append((method, path, operation))
+def _render_surface(
+    lines: list[str],
+    schema: dict[str, Any],
+    coordinates: set[tuple[str, str]],
+) -> None:
+    """Render one owner-scoped set of operations grouped by OpenAPI tag."""
+    operations = _operations(schema)
+    tag_groups: dict[str, list[tuple[str, str, dict[str, Any]]]] = {}
+    for coordinate in sorted(coordinates):
+        path, method = coordinate
+        operation = operations[coordinate]
+        tags = operation.get("tags", ["Other"])
+        tag = tags[0] if tags else "Other"
+        tag_groups.setdefault(tag, []).append((method, path, operation))
 
     for tag in sorted(tag_groups, key=str.casefold):
-        operations = sorted(tag_groups[tag], key=lambda item: (item[1], item[0]))
+        tagged = sorted(tag_groups[tag], key=lambda item: (item[1], item[0]))
         lines.append(f"## {tag.title()}")
         lines.append("")
-        for method, path, operation in operations:
+        for method, path, operation in tagged:
             lines.extend(render_operation(method, path, operation, schema))
 
+
+def _render_reference(
+    *,
+    title: str,
+    distribution: str,
+    introduction: str,
+    schema: dict[str, Any],
+    coordinates: set[tuple[str, str]],
+) -> str:
+    """Render one distribution-owned REST reference page."""
+    lines = [
+        "<!-- Auto-generated by scripts/generate_api_docs.py — do not edit -->",
+        "",
+        f"# {title} REST API Reference",
+        "",
+        "| Package | Value |",
+        "| --- | --- |",
+        f"| Distribution | `{distribution}` |",
+        "",
+        introduction,
+        "",
+    ]
+    _render_surface(lines, schema, coordinates)
     return "\n".join(lines)
+
+
+def _render_framework_reference(base_schema: dict[str, Any]) -> str:
+    """Render the framework page from an explicitly extension-free schema."""
+    return _render_reference(
+        title="Framework",
+        distribution="archetype-ecs",
+        introduction=(
+            "This domain-free reference is generated with no world libraries installed. "
+            "Start the server with `archetype serve` (default: "
+            "`http://localhost:8000`)."
+        ),
+        schema=base_schema,
+        coordinates=set(_operations(base_schema)),
+    )
+
+
+def generate_references() -> dict[Path, str]:
+    """Generate deterministic owner-scoped REST reference pages."""
+    base_schema = get_openapi_schema(world_libraries=())
+    outputs = {OUTPUT: _render_framework_reference(base_schema)}
+    for extension, schema, coordinates in get_extension_openapi_schemas(base_schema):
+        outputs[extension.output] = _render_reference(
+            title=extension.title,
+            distribution=extension.distribution,
+            introduction=(
+                "These routes are contributed only when this trusted world-library "
+                "manifest is explicitly installed in the API host."
+            ),
+            schema=schema,
+            coordinates=coordinates,
+        )
+    return outputs
+
+
+def generate() -> str:
+    """Generate the framework-only REST reference."""
+    return _render_framework_reference(get_openapi_schema(world_libraries=()))
 
 
 def main() -> None:
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
-    content = generate()
-    OUTPUT.write_text(content, encoding="utf-8", newline="\n")
-    print(f"Generated {OUTPUT} ({len(content)} bytes)")
+    for output, content in generate_references().items():
+        output.write_text(content, encoding="utf-8", newline="\n")
+        print(f"Generated {output} ({len(content)} bytes)")
 
 
 if __name__ == "__main__":
