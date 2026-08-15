@@ -10,6 +10,7 @@ from typing import Any, Self
 import pytest
 from daft import col, lit
 from pydantic import (
+    BaseModel,
     Field,
     ValidationError,
     ValidationInfo,
@@ -426,12 +427,69 @@ def test_tuple_fields_survive_noop_daft_round_trips() -> None:
     ]
 
 
+def test_nested_models_survive_noop_steps_without_replaying_validators() -> None:
+    validated: list[int] = []
+
+    class Nested(BaseModel):
+        value: int
+
+        @field_validator("value")
+        @classmethod
+        def increment(cls, value: int) -> int:
+            validated.append(value)
+            return value + 1
+
+    class NestedComponent(Component):
+        nested: Nested
+
+    world = World()
+    world.spawn(NestedComponent(nested=Nested(value=0)))
+
+    world.step()
+
+    assert validated == [0]
+    assert world.tick == 1
+
+
+def test_heterogeneous_dictionary_struct_padding_is_not_published() -> None:
+    class Labels(Component):
+        values: dict[str, int]
+
+    world = World()
+    world.spawn(Labels(values={"left": 1}))
+    world.spawn(Labels(values={"right": 2}))
+
+    world.step()
+
+    assert world.tick == 1
+
+
+def test_variable_tuple_struct_padding_is_not_published() -> None:
+    class Path(Component):
+        values: tuple[int, ...]
+
+    world = World()
+    world.spawn(Path(values=(1,)))
+    world.spawn(Path(values=(2, 3)))
+
+    world.step()
+
+    assert world.tick == 1
+
+
 def test_before_model_validator_observes_changed_candidate_once() -> None:
     validated: list[tuple[int, int]] = []
+    validated_y: list[int] = []
 
     class Pair(Component):
         x: int
         y: int
+
+        @field_validator("y")
+        @classmethod
+        def record_y(cls, value: int) -> int:
+            validated_y.append(value)
+            return value
 
         @model_validator(mode="before")
         @classmethod
@@ -453,7 +511,79 @@ def test_before_model_validator_observes_changed_candidate_once() -> None:
     world.step()
 
     assert validated == [(1, 2), (2, 2)]
+    assert validated_y == [2]
     assert world.tick == 1
+
+
+def test_before_model_validator_cannot_bypass_untouched_field_validation() -> None:
+    validated_y: list[int] = []
+
+    class Pair(Component):
+        x: int
+        y: int = Field(strict=True)
+
+        @field_validator("y")
+        @classmethod
+        def record_y(cls, value: int) -> int:
+            validated_y.append(value)
+            return value
+
+        @model_validator(mode="before")
+        @classmethod
+        def corrupt_y_after_x_changes(cls, value: Any) -> Any:
+            assert isinstance(value, dict)
+            if value["x"] == 2:
+                return {**value, "y": "invalid"}
+            return value
+
+    class IncrementX(Processor):
+        components = (Pair,)
+
+        def process(self, df, *, tick):
+            del tick
+            return df.with_column("pair__x", col("pair__x") + 1)
+
+    world = World(processors=[IncrementX()])
+    world.spawn(Pair(x=1, y=3))
+    before = world.history(Pair).to_pylist()
+
+    with pytest.raises(ValidationError):
+        world.step()
+
+    assert validated_y == [3]
+    assert world.tick == 0
+    assert world.history(Pair).to_pylist() == before
+
+
+def test_wrap_model_validator_cannot_bypass_untouched_field_validation() -> None:
+    class Pair(Component):
+        x: int
+        y: int = Field(strict=True)
+
+        @model_validator(mode="wrap")
+        @classmethod
+        def corrupt_y_after_x_changes(cls, value: Any, handler: Any) -> Any:
+            assert isinstance(value, dict)
+            if value["x"] == 2:
+                value = {**value, "y": "invalid"}
+            return handler(value)
+
+    class IncrementX(Processor):
+        components = (Pair,)
+
+        def process(self, df, *, tick):
+            del tick
+            return df.with_column("pair__x", col("pair__x") + 1)
+
+    world = World(processors=[IncrementX()])
+    world.spawn(Pair(x=1, y=3))
+    before = world.history(Pair).to_pylist()
+
+    with pytest.raises(ValidationError):
+        world.step()
+
+    assert world.tick == 0
+    assert world.history(Pair).to_pylist() == before
 
 
 def test_tuple_shape_restoration_does_not_bypass_strict_validation() -> None:

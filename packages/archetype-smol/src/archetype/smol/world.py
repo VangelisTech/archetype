@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import cache
@@ -14,12 +15,17 @@ from typing import Any, cast
 
 import daft
 from daft import DataFrame
+from pydantic import BaseModel
 from pydantic_core import SchemaValidator, core_schema
 
 from .component import Component
 from .processor import Processor
 
 _METADATA_COLUMNS = ("entity_id", "tick", "is_active")
+_UNTOUCHED_FIELDS: ContextVar[dict[str, Any] | None] = ContextVar(
+    "archetype_smol_untouched_fields",
+    default=None,
+)
 _Signature = tuple[type[Component], ...]
 
 
@@ -90,9 +96,15 @@ def _restore_daft_shape(value: Any, template: Any) -> Any:
     if isinstance(template, tuple):
         items: list[Any] | None = None
         if isinstance(value, dict):
-            expected_keys = {f"_{index}" for index in range(len(value))}
-            if set(value) == expected_keys:
-                items = [value[f"_{index}"] for index in range(len(value))]
+            indexes = {
+                int(key[1:])
+                for key in value
+                if isinstance(key, str) and key.startswith("_") and key[1:].isdigit()
+            }
+            if indexes and indexes == set(range(max(indexes) + 1)) and len(indexes) == len(value):
+                items = [value[f"_{index}"] for index in range(len(indexes))]
+                while len(items) > len(template) and items[-1] is None:
+                    items.pop()
         elif isinstance(value, tuple):
             items = list(value)
         if items is not None:
@@ -105,10 +117,22 @@ def _restore_daft_shape(value: Any, template: Any) -> Any:
             _restore_daft_shape(item, template[index]) if index < len(template) else item
             for index, item in enumerate(value)
         ]
+    if isinstance(template, BaseModel) and isinstance(value, dict):
+        field_names = type(template).model_fields
+        restored = {
+            key: _restore_daft_shape(item, getattr(template, key)) if key in field_names else item
+            for key, item in value.items()
+        }
+        if set(restored) == set(field_names) and all(
+            _same_value(restored[name], getattr(template, name)) for name in field_names
+        ):
+            return template.model_copy(deep=True)
+        return restored
     if isinstance(template, dict) and isinstance(value, dict):
         return {
             key: _restore_daft_shape(item, template[key]) if key in template else item
             for key, item in value.items()
+            if key in template or item is not None
         }
     return value
 
@@ -154,6 +178,25 @@ def _find_model_fields_schema(schema: Any, component_type: type[Component]) -> d
     raise LookupError(component_type)
 
 
+def _preserve_or_validate_untouched_field(
+    value: Any,
+    validator: core_schema.ValidatorFunctionWrapHandler,
+    info: core_schema.ValidationInfo,
+) -> Any:
+    """Reuse an untouched value unless a model-before validator rewrote it."""
+
+    field_name = info.field_name
+    if not isinstance(field_name, str):
+        raise RuntimeError("Smol selective validation requires field context")
+    untouched = _UNTOUCHED_FIELDS.get()
+    if not isinstance(untouched, dict) or field_name not in untouched:
+        raise RuntimeError(f"Smol selective validation lost {field_name!r} context")
+    original = untouched[field_name]
+    if _same_value(value, original):
+        return deepcopy(original)
+    return validator(value)
+
+
 @cache
 def _changed_fields_validator(
     component_type: type[Component],
@@ -168,7 +211,10 @@ def _changed_fields_validator(
     changed = frozenset(changed_fields)
     for name, field_schema in fields.items():
         if name not in changed:
-            field_schema["schema"] = core_schema.any_schema()
+            field_schema["schema"] = core_schema.with_info_wrap_validator_function(
+                _preserve_or_validate_untouched_field,
+                field_schema["schema"],
+            )
     return SchemaValidator(schema)
 
 
@@ -183,8 +229,17 @@ def _validate_changed_fields[ComponentT: Component](
         name: deepcopy(changed_values.get(name, getattr(component, name)))
         for name in component_type.model_fields
     }
+    untouched = {
+        name: getattr(component, name)
+        for name in component_type.model_fields
+        if name not in changed_values
+    }
     validator = _changed_fields_validator(component_type, tuple(sorted(changed_values)))
-    return cast(ComponentT, validator.validate_python(values, by_name=True))
+    token = _UNTOUCHED_FIELDS.set(untouched)
+    try:
+        return cast(ComponentT, validator.validate_python(values, by_name=True))
+    finally:
+        _UNTOUCHED_FIELDS.reset(token)
 
 
 class World:
