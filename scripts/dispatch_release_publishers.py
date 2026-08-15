@@ -317,7 +317,7 @@ def dispatch_publishers(
             "POST",
             endpoint,
             token=token,
-            payload={"ref": tag, "inputs": inputs},
+            payload={"ref": tag, "inputs": inputs, "return_run_details": True},
             open_request=open_request,
             timeout_seconds=http_timeout_seconds,
         )

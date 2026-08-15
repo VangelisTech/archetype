@@ -152,6 +152,7 @@ def test_dispatch_posts_every_child_and_returns_exact_allowlist() -> None:
     assert [payload for _workflow, payload, _timeout in calls] == [
         {
             "ref": TAG,
+            "return_run_details": True,
             "inputs": {
                 "parent_run_id": str(PARENT_RUN_ID),
                 "parent_run_attempt": str(PARENT_RUN_ATTEMPT),
