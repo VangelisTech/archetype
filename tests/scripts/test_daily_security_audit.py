@@ -22,17 +22,17 @@ import daily_security_audit as audit  # noqa: E402
 
 def _result() -> dict:
     return {
-        "summary": "The current ingress boundary is default-deny.",
-        "standing_audit_delta": "Authentication moved under app/gateway/auth.",
+        "summary": "The current ingress boundary uses developer-mode roles.",
+        "standing_audit_delta": "Authentication moved under archetype.api.",
         "dependency_assessment": "The dependency audit completed without a resolver failure.",
         "findings": [
             {
                 "severity": "medium",
                 "title": "Example finding",
                 "evidence": [
-                    "src/archetype/app/gateway/service.py: authorization precedes delegation"
+                    "src/archetype/commands/dispatch.py: authorization precedes delegation"
                 ],
-                "recommendation": "Keep the executable gateway contract current.",
+                "recommendation": "Keep the executable API contract current.",
             }
         ],
         "positive_design_decisions": ["The actor-free application port is separated from ingress."],
@@ -144,9 +144,17 @@ def test_workflow_uses_current_read_only_scope_and_fail_loud_publication() -> No
 
     assert "SECURITY_AUDIT_2026-03-28.md" not in workflow
     assert "src/archetype/app/auth/" not in workflow
-    assert "src/archetype/app/gateway/auth/" in workflow
+    assert "src/archetype/app/gateway/auth/" not in workflow
+    assert "src/archetype/app/storage/" not in workflow
+    assert "src/archetype/app/artifacts/" not in workflow
+    assert "src/archetype/api/deps.py" in workflow
+    assert "src/archetype/commands/policy.py" in workflow
+    assert "src/archetype/storage/" in workflow
+    assert "src/archetype/missions/sandboxes/versions.toml" in workflow
     assert '--allowedTools "Read,Grep,Glob"' in workflow
-    assert "--max-turns 24" in workflow
+    assert "--max-turns 32" in workflow
+    assert "do not search for those removed legacy paths" in workflow
+    assert "before exhausting the turn budget" in workflow
     assert "--json-schema '${{ steps.schema.outputs.schema }}'" in workflow
     assert "id: security_review" in workflow
     assert "continue-on-error: true" in workflow
