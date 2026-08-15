@@ -9,10 +9,12 @@ construction-injected lower-family ports described here.
 public/internal classification, wiring, and enforcement. This document owns the
 purpose and active mapping of each family port.
 
-Agent Missions V1 uses the family-owned `MissionService`, `SandboxService`,
+Agent Missions V1 uses the family-owned concrete `MissionService`,
+`TrajectoryService`, `TranscriptIngestionService`, `SandboxService`,
 `SandboxBackend`, `SandboxSession`, coding-agent harness, exact-head critic
-harness, and combined Activity binding. The single-implementation Mission,
-trajectory, and transcript service mirrors are deleted.
+harness, and combined Activity binding. Their former application-layer facade
+and protocol mirrors are deleted; the concrete workflows remain private to the
+separately installed Missions distribution.
 
 The top-level `archetype.commands` family deliberately owns concrete
 `OperationRegistry`, `CommandDispatcher`, `Policy`, `CommandScheduler`, and
@@ -79,17 +81,19 @@ missions.MissionService
                             -> missions.SandboxSession
 ```
 
-`archetype.wiring` selects concrete implementations, registers exact handlers,
-and returns `RuntimeResources`. Agent Missions reaches its workflow only
-through those handlers and its exact pre-reserved owner.
+`archetype.wiring` composes the domain-free framework, resolves manifests, and
+returns `RuntimeResources`. Each world library's private `_extension.py`
+adapter constructs that library's internals and registers only its declared
+handlers over the bounded framework context. Agent Missions reaches its
+workflow only through those handlers and its exact pre-reserved owner.
 
 ## 3. Active mapping
 
 | Port | Implementation | Principal consumers | Responsibility |
 |---|---|---|---|
-| `iStorageService` | `StorageService` | world, commands, artifacts, evaluation, transcripts, research, physical AI, migration | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, app-table catalog/read/write/retry authority, and pinned table-transfer evidence |
+| `iStorageService` | `StorageService` | world, commands, artifacts, evaluation, Missions transcripts/trajectories, Research, Physical AI, migration | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, app-table catalog/read/write/retry authority, and pinned table-transfer evidence |
 | `iWorldRegistry` | `WorldRegistry` | lifecycle, mutation, simulation, research, physical AI | Live identity, storage coordinates, exact-world synchronization, retryable close ownership, and committed-receipt retention |
-| `iWorldLifecycle` | `WorldLifecycle` | wiring, research, physical AI | Managed construction, durable discovery, readonly open, fenced mutable resume, fork, and close |
+| `iWorldLifecycle` | `WorldLifecycle` | framework wiring plus installer-bound Research and Physical-AI handlers | Managed construction, durable discovery, readonly open, fenced mutable resume, fork, and close |
 | `iWorldCleanup` | `WorldCleanup` | reservation-owned mission cleanup | Exact-world, close-lease-bound retained updates, teardown staging, commit, and finish |
 | `MigrationControlCatalog` | local `SqliteControlCatalog` | local v1 storage migration | Versioned exact control export, immutable-plan reservation, hidden staging, fence-floor import, World activation last, and receipt completion |
 | `ColdMigrationVerifier` | composition-supplied fresh destination verifier | local v1 storage migration | Reopen destination-only resources and return bounded discovery, table, Artifact, resume, fence, and later-tick evidence |
@@ -103,7 +107,7 @@ through those handlers and its exact pre-reserved owner.
 
 | Component | Principal consumers | Responsibility |
 |---|---|---|
-| `OperationRegistry` | `CommandDispatcher`, `CommandScheduler`, composition root | Exact model/name registration, handler metadata, and optional durable decoder/materializer |
+| `OperationRegistry` | `CommandDispatcher`, `CommandScheduler`, framework wiring, private world-library adapters | Exact model/name registration, handler metadata, and optional durable decoder/materializer |
 | `CommandDispatcher` | runtime and API adapters | Trusted and actor-aware direct/durable entry, admission lifetime, policy order, and bounded evidence |
 | `Policy` | `CommandDispatcher` | Pure role preauthorization plus instance-owned world/tick and daily-token quotas |
 | `CommandScheduler` | `CommandDispatcher`, world materializer, wiring-provided destroy callback | Canonical durable admission, reservation, leasing, retry, settlement staging, cancellation, and outbox access |
@@ -112,25 +116,31 @@ through those handlers and its exact pre-reserved owner.
 The research family deliberately has no application service port.
 `archetype.research.handlers.handle_autoresearch` is a free handler closed over
 the world/storage ports, exact cleanup callback, and one process-shared
-`AutoResearchAdmissions` instance by `archetype.wiring`.
-The physical-AI family likewise has no application service port. Wiring closes
-its two free handlers over the world/storage ports and one narrow
-runtime-lifetime registrar.
+`AutoResearchAdmissions` instance by the private
+`archetype.research._extension` installer.
+The physical-AI family likewise has no application service port. Its private
+`archetype.physical_ai._extension` installer registers the one hosted-episode
+handler and constructs world-scoped Activity bindings over bounded framework
+capabilities, retaining their lifetime through `RuntimeResources`.
 
 ## 4. Boundary rules
 
 ### Runtime and API adapters
 
-Runtime methods construct exact family models and enter
-`CommandDispatcher.apply()` or durable variants. They expose boundary-safe
-results, never concrete services, process wiring, or live worlds. Runtime-only
-ergonomics and lazy handle state remain in `archetype.runtime`.
+Framework runtime methods construct exact framework operation models and enter
+`CommandDispatcher.apply()` or durable variants. Installed world-library typed
+adapters construct their own models over the generic runtime handles. Both
+expose boundary-safe results, never concrete services, process wiring, or live
+worlds. Framework-only ergonomics and lazy handle state remain in
+`archetype.runtime`.
 
-API routes parse transport, authenticate `ActorCtx`, construct the same exact
-models, and enter `CommandDispatcher.apply_as()` or durable variants. The
-commands-owned dispatcher and `Policy` perform authorization, quota admission,
-and bounded evidence. Routes own no policy counters, world, command ledger,
-audit log, grader, artifact ingestion, or storage.
+Base API routes parse transport, authenticate `ActorCtx`, construct the same
+exact framework models, and enter `CommandDispatcher.apply_as()` or durable
+variants. Manifest-declared world-library router factories add only their
+library's models over that same actor-aware boundary. The commands-owned
+dispatcher and `Policy` perform authorization, quota admission, and bounded
+evidence. Routes own no policy counters, world, command ledger, audit log,
+grader, artifact ingestion, or storage.
 
 ### World ports and operation surfaces
 
@@ -357,13 +367,15 @@ and cross-boundary workflow composition live under `archetype.missions`.
 
 ## 6. Construction and shutdown
 
-`archetype.wiring.build_runtime_resources()` is the sole concrete cross-family
-composition transaction. It builds:
+`archetype.wiring.build_runtime_resources()` is the sole enclosing
+process-composition transaction. It builds the domain-free framework and then
+invokes the resolved private world-library installers:
 
 ```text
 OperationRegistry + Policy + CommandScheduler + CommandDispatcher
 WorldRegistry + WorldLifecycle + AuditLog + StorageService
-family services + registered exact handlers
+framework handlers + bounded WorldLibraryContext
+private library adapters + their declared exact handlers
 RuntimeResources
 ```
 
