@@ -143,7 +143,14 @@ def test_workflow_uses_current_read_only_scope_and_fail_loud_publication() -> No
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "SECURITY_AUDIT_2026-03-28.md" not in workflow
-    assert "src/archetype/app/" not in workflow
+    for retired_path in (
+        "src/archetype/app/auth/",
+        "src/archetype/app/gateway/",
+        "src/archetype/app/storage/",
+        "src/archetype/app/artifacts/",
+        "src/archetype/app/container.py",
+    ):
+        assert retired_path not in workflow
     for current_path in (
         "docs/guide/api-layer.md",
         "packages/archetype-ecs/src/archetype/api/deps.py",
