@@ -3,6 +3,8 @@
 Archetype 0.6 is an intentional pre-1.0 boundary reset. It separates the
 generic ECS framework from three independently installable world libraries and
 removes APIs and persisted shapes that put domain behavior in the wrong owner.
+It also replaces the frozen parallel core-sync implementation with a separate,
+deliberately bounded teaching engine.
 
 This is a clean break. There are no world-library import shims, dynamic runtime
 or world method aliases, deprecated world-library spellings, or automatic
@@ -14,6 +16,7 @@ before upgrading its environment.
 | Install | Owns |
 |---|---|
 | `archetype-ecs` | Generic ECS execution, storage, migration, commands, Activities, artifacts, evaluation, runtime, API, and CLI |
+| `archetype-smol` | Synchronous in-memory Components, DataFrame Processors, atomic steps, and snapshot queries for education |
 | `archetype-missions` | Coding-agent missions, sandboxes, sessions, transcripts, and trajectory evidence |
 | `archetype-physical-ai` | Physical state, local policies, and hosted physical episodes |
 | `archetype-research` | Generic AutoResearch values, ledger state, views, and workflow |
@@ -21,6 +24,7 @@ before upgrading its environment.
 Install only the libraries an application uses, or install the complete
 world-library stack with `archetype-ecs[all]`. Each world library depends on the
 compatible framework release; world libraries do not depend on one another.
+`archetype-smol` is independent and is not selected by `archetype-ecs[all]`.
 
 ## Synchronous surface reset
 
@@ -32,7 +36,9 @@ contracts as the async handles.
 The parallel `archetype.core.sync` engine and its root aliases are removed:
 `World`, `Processor`, `System`, `Store`, `SyncWorld`, `SyncProcessor`,
 `SyncSystem`, `SyncStore`, `QueryManager`, and `UpdateManager`. Applications
-that need production semantics use the runtime facade.
+that need production semantics use the runtime facade. Educational code may
+choose `archetype-smol`, whose smaller contract is intentionally not a drop-in
+replacement.
 
 ## Required source changes
 
@@ -90,11 +96,12 @@ facade.
 
 ## Release unit
 
-The 0.6 release is one coordinated set: four wheels and four source
+The 0.6 release is one coordinated set: five wheels and five source
 distributions at version `0.6.0`. Release evidence installs the base framework,
 each individual library with the framework, and the complete stack from those
-exact artifacts. A partial four-project publication is not a completed release.
-Before the first release, register pending Trusted Publishers for the three new
+exact artifacts, plus Smol in isolation. A partial five-project publication is
+not a completed release. Before the first release, register pending Trusted
+Publishers for the four new
 project names on both PyPI and TestPyPI. Registration preconfigures OIDC; it does
 not reserve or claim a name, and each new name remains claimable until the first
 successful OIDC publication creates the project on that registry. See

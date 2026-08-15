@@ -224,11 +224,14 @@ accepted_kwargs = (
 df = await processor.process(df, **accepted_kwargs)
 ```
 
-## Blocking Facade
+## Smol Is a Separate Teaching Engine
 
-Production scripts that cannot use `await` use
-`with ArchetypeRuntime.sync()`; that facade still executes this same
-`AsyncWorld`/`AsyncSystem` engine.
+[`archetype-smol`](../smol/index.md) provides its own synchronous `World` and
+`Processor` for education and experimentation. It does not implement
+`AsyncSystem`, share the production runtime/storage contract, or serve as a
+blocking adapter for `archetype-ecs`. Production scripts that cannot use
+`await` use `with ArchetypeRuntime.sync()`; that facade still executes this
+same `AsyncWorld`/`AsyncSystem` engine.
 
 ## Per-Archetype Parallelism
 
