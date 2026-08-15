@@ -20,6 +20,7 @@ PARENT_RUN_ID = 123456
 PARENT_RUN_ATTEMPT = 2
 TAG = "v0.6.0"
 COMMIT = "a" * 40
+TAG_OBJECT = "b" * 40
 TOKEN = "github-test-token"
 REGISTRY = "testpypi"
 
@@ -56,6 +57,7 @@ def _context() -> dict[str, Any]:
         "parent_run_attempt": PARENT_RUN_ATTEMPT,
         "tag": TAG,
         "expected_commit": COMMIT,
+        "expected_tag_object": TAG_OBJECT,
         "registry": REGISTRY,
     }
 
@@ -72,6 +74,7 @@ def _allowlist() -> dict[str, Any]:
         "parent_run_attempt": PARENT_RUN_ATTEMPT,
         "tag": TAG,
         "commit": COMMIT,
+        "tag_object": TAG_OBJECT,
         "registry": REGISTRY,
         "runs": [
             {
@@ -154,6 +157,7 @@ def test_dispatch_posts_every_child_and_returns_exact_allowlist() -> None:
                 "parent_run_attempt": str(PARENT_RUN_ATTEMPT),
                 "tag": TAG,
                 "expected_commit": COMMIT,
+                "expected_tag_object": TAG_OBJECT,
                 "registry": REGISTRY,
             },
         }
@@ -365,6 +369,11 @@ def test_allowlist_rejects_wrong_context_order_and_forged_urls() -> None:
     with pytest.raises(target.PublisherDispatchError, match="parent run attempt"):
         target.validate_allowlist(wrong_context, **_context())
 
+    wrong_tag_object = _allowlist()
+    wrong_tag_object["tag_object"] = "c" * 40
+    with pytest.raises(target.PublisherDispatchError, match="tag object"):
+        target.validate_allowlist(wrong_tag_object, **_context())
+
     wrong_order = _allowlist()
     wrong_order["runs"][0], wrong_order["runs"][1] = (
         wrong_order["runs"][1],
@@ -377,6 +386,23 @@ def test_allowlist_rejects_wrong_context_order_and_forged_urls() -> None:
     forged["runs"][0]["url"] = "https://github.com/other/repo/actions/runs/9001"
     with pytest.raises(target.PublisherDispatchError, match="wrong URL"):
         target.validate_allowlist(forged, **_context())
+
+
+@pytest.mark.parametrize("tag_object", ["", "A" * 40, "a" * 39, 7, None])
+def test_context_rejects_malformed_tag_object(tag_object: object) -> None:
+    context = _context()
+    context["expected_tag_object"] = tag_object
+
+    with pytest.raises(ValueError, match="expected tag object"):
+        target.validate_allowlist(_allowlist(), **context)
+
+
+def test_allowlist_rejects_the_previous_schema() -> None:
+    allowlist = _allowlist()
+    allowlist["schema"] = "archetype.publisher-dispatch/v1"
+
+    with pytest.raises(target.PublisherDispatchError, match="unexpected schema"):
+        target.validate_allowlist(allowlist, **_context())
 
 
 def test_github_api_errors_are_diagnostic_and_redirects_fail_closed() -> None:

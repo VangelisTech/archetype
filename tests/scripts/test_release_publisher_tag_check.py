@@ -12,9 +12,10 @@ from pathlib import Path
 
 import pytest
 
+from scripts.release_artifact import PUBLISHER_WORKFLOWS
+
 ROOT = Path(__file__).resolve().parents[2]
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
-PUBLISHER_JOBS = ("publish-testpypi", "publish")
 EXPECTED_COMMIT = "a" * 40
 EXPECTED_TAG_OBJECT = "b" * 40
 REPLACEMENT_TAG_OBJECT = "c" * 40
@@ -34,10 +35,23 @@ def _job(workflow: str, job_id: str) -> str:
     return match.group("body")
 
 
-def _tag_check_bodies() -> tuple[str, str]:
-    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+def _publisher_jobs() -> tuple[tuple[Path, str], ...]:
+    jobs: list[tuple[Path, str]] = []
+    for workflow in PUBLISHER_WORKFLOWS.values():
+        path = ROOT / ".github" / "workflows" / workflow
+        job_ids = (
+            ("publish-testpypi", "publish")
+            if workflow == "release.yml"
+            else ("publish-testpypi", "publish-pypi")
+        )
+        jobs.extend((path, job_id) for job_id in job_ids)
+    return tuple(jobs)
+
+
+def _tag_check_bodies() -> tuple[str, ...]:
     bodies: list[str] = []
-    for job_id in PUBLISHER_JOBS:
+    for path, job_id in _publisher_jobs():
+        workflow = path.read_text(encoding="utf-8")
         job = _job(workflow, job_id)
         step_marker = "      - name: Reauthorize the remote release tag\n"
         assert job.count(step_marker) == 1
@@ -55,14 +69,14 @@ def _tag_check_bodies() -> tuple[str, str]:
         assert all(not line or line.startswith("          ") for line in lines)
         bodies.append("\n".join(line[10:] if line else "" for line in lines) + "\n")
 
-    assert len(bodies) == 2
-    return bodies[0], bodies[1]
+    assert len(bodies) == len(PUBLISHER_WORKFLOWS) * 2
+    return tuple(bodies)
 
 
 def _tag_check_body() -> str:
-    testpypi, pypi = _tag_check_bodies()
-    assert testpypi == pypi
-    return pypi
+    bodies = _tag_check_bodies()
+    assert len(set(bodies)) == 1
+    return bodies[0]
 
 
 def _run_tag_check(
@@ -125,10 +139,10 @@ def _run_tag_check(
 
 
 def test_publisher_jobs_execute_identical_tag_check_shells() -> None:
-    testpypi, pypi = _tag_check_bodies()
+    bodies = _tag_check_bodies()
 
-    assert testpypi == pypi
-    assert "${{" not in pypi
+    assert len(set(bodies)) == 1
+    assert all("${{" not in body for body in bodies)
 
 
 def test_publisher_tag_check_accepts_a_lightweight_tag(tmp_path: Path) -> None:

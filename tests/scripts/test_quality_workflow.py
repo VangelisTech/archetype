@@ -325,6 +325,8 @@ def test_new_distribution_publishers_are_direct_isolated_workflows() -> None:
         assert "workflow_dispatch:" in workflow
         assert "workflow_call:" not in workflow
         assert "push:" not in workflow
+        assert "expected_tag_object:" in workflow
+        assert 'description: "Exact immutable release tag object"' in workflow
         assert "group: archetype-release" not in workflow
         references = re.findall(r"^\s*- uses:\s+([^\s#]+)", workflow, re.MULTILINE)
         assert references
@@ -337,6 +339,8 @@ def test_new_distribution_publishers_are_direct_isolated_workflows() -> None:
         assert "scripts/verify_publisher_dispatch.py" in authorize
         assert f"--expected-workflow {workflow_name}" in authorize
         assert f"--distribution {distribution}" in authorize
+        assert "EXPECTED_TAG_OBJECT: ${{ inputs.expected_tag_object }}" in authorize
+        assert '--expected-tag-object "$EXPECTED_TAG_OBJECT"' in authorize
         assert "publisher-dispatch-${{ inputs.registry }}-${{ inputs.parent_run_attempt }}" in (
             authorize
         )
@@ -354,8 +358,42 @@ def test_new_distribution_publishers_are_direct_isolated_workflows() -> None:
             assert "skip-existing: true" in job
             assert "attestations: true" in job
             assert "actions/checkout@" not in job
-            assert "run:" not in job
-            assert job.count("- uses:") == 2
+            assert job.count("run:") == 2
+            assert job.count("- uses:") == 3
+            assert job.count("actions/download-artifact@") == 2
+            assert "name: Reauthorize the live parent release" in job
+            assert "publisher-dispatch-${{ inputs.registry }}-${{ inputs.parent_run_attempt }}" in (
+                job
+            )
+            assert "path: .context/publisher-dispatch-live/" in job
+            assert "GH_TOKEN: ${{ github.token }}" in job
+            assert f"PUBLISHER_DISTRIBUTION: {distribution}" in job
+            assert f"PUBLISHER_WORKFLOW: {workflow_name}" in job
+            assert 'parent_json="$(gh api' in job
+            assert '.status == "in_progress"' in job
+            assert ".conclusion == null" in job
+            assert '.actor.login == "everettVT"' in job
+            assert '.triggering_actor.login == "everettVT"' in job
+            assert '.schema == "archetype.publisher-dispatch/v2"' in job
+            assert ".run_id == $child_run_id" in job
+            assert "name: Reauthorize the remote release tag" in job
+            assert "EXPECTED_TAG_OBJECT: ${{ inputs.expected_tag_object }}" in job
+            assert "RELEASE_INPUT_TAG: ${{ inputs.tag }}" in job
+            assert "git ls-remote --exit-code" in job
+            assert '[[ "$direct_sha" == "$EXPECTED_TAG_OBJECT" ]]' in job
+            assert 'resolved_sha="${peeled_sha:-$direct_sha}"' in job
+            assert '[[ "$resolved_sha" == "$GITHUB_SHA" ]]' in job
+            assert "scripts/" not in job
+            assert (
+                job.index("actions/download-artifact@")
+                < job.index(
+                    "name: publisher-dispatch-${{ inputs.registry }}-"
+                    "${{ inputs.parent_run_attempt }}"
+                )
+                < job.index("name: Reauthorize the live parent release")
+                < job.index("name: Reauthorize the remote release tag")
+                < job.index("pypa/gh-action-pypi-publish@")
+            )
         assert "repository-url: https://test.pypi.org/legacy/" in testpypi
         assert "repository-url:" not in pypi
 
@@ -569,6 +607,13 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
         assert '--parent-run-attempt "$GITHUB_RUN_ATTEMPT"' in coordinator
         assert '--tag "$GITHUB_REF_NAME"' in coordinator
         assert '--expected-commit "$GITHUB_SHA"' in coordinator
+        assert (
+            coordinator.count(
+                '--expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"'
+            )
+            == 2
+        )
+        assert "needs: [authorize-release," in coordinator
         assert f"publisher-dispatch-{registry}.json" in coordinator
         assert f"name: publisher-dispatch-{registry}-${{{{ github.run_attempt }}}}" in coordinator
         assert (
@@ -666,7 +711,7 @@ def test_release_workflow_is_operator_dispatched_from_an_immutable_tag() -> None
         assert "scripts/verify_release_ref.py" in job
         assert '--expected-commit "$GITHUB_SHA"' in job
         assert (
-            '--expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}" in job
+            '--expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"' in job
         )
     assert "tag_name: ${{ github.ref_name }}" in github_release
 

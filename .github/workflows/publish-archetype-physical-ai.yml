@@ -19,6 +19,10 @@ on:
         description: "Exact release commit"
         required: true
         type: string
+      expected_tag_object:
+        description: "Exact immutable release tag object"
+        required: true
+        type: string
       registry:
         description: "Destination package registry"
         required: true
@@ -79,6 +83,7 @@ jobs:
         env:
           CHILD_RUN_ID: ${{ github.run_id }}
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          EXPECTED_TAG_OBJECT: ${{ inputs.expected_tag_object }}
           GITHUB_TOKEN: ${{ github.token }}
           PARENT_RUN_ATTEMPT: ${{ inputs.parent_run_attempt }}
           PARENT_RUN_ID: ${{ inputs.parent_run_id }}
@@ -93,6 +98,7 @@ jobs:
           --parent-run-attempt "$PARENT_RUN_ATTEMPT"
           --tag "$PUBLISHER_TAG"
           --expected-commit "$EXPECTED_COMMIT"
+          --expected-tag-object "$EXPECTED_TAG_OBJECT"
           --registry "$PUBLISHER_REGISTRY"
           --allowlist
           ".context/publisher-dispatch/publisher-dispatch-$PUBLISHER_REGISTRY.json"
@@ -113,6 +119,153 @@ jobs:
           path: dist/
           run-id: ${{ inputs.parent_run_id }}
           github-token: ${{ github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: publisher-dispatch-${{ inputs.registry }}-${{ inputs.parent_run_attempt }}
+          path: .context/publisher-dispatch-live/
+          run-id: ${{ inputs.parent_run_id }}
+          github-token: ${{ github.token }}
+      - name: Reauthorize the live parent release
+        shell: bash
+        env:
+          CHILD_RUN_ID: ${{ github.run_id }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          EXPECTED_TAG_OBJECT: ${{ inputs.expected_tag_object }}
+          GH_TOKEN: ${{ github.token }}
+          PARENT_RUN_ATTEMPT: ${{ inputs.parent_run_attempt }}
+          PARENT_RUN_ID: ${{ inputs.parent_run_id }}
+          PUBLISHER_DISTRIBUTION: archetype-physical-ai
+          PUBLISHER_REGISTRY: ${{ inputs.registry }}
+          PUBLISHER_TAG: ${{ inputs.tag }}
+          PUBLISHER_WORKFLOW: publish-archetype-physical-ai.yml
+        run: |
+          set -euo pipefail
+          fail() { echo "parent release check failed: $*" >&2; exit 1; }
+
+          [[ "$GITHUB_REPOSITORY" == "VangelisTech/archetype" ]] || fail "wrong repository"
+          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]] || fail "wrong event"
+          [[ "$GITHUB_ACTOR" == "github-actions[bot]" ]] || fail "wrong actor"
+          [[ "$GITHUB_TRIGGERING_ACTOR" == "github-actions[bot]" ]] || fail "wrong triggering actor"
+          [[ "$PARENT_RUN_ID" =~ ^[1-9][0-9]*$ ]] || fail "invalid parent run ID"
+          [[ "$PARENT_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || fail "invalid parent attempt"
+          [[ "$CHILD_RUN_ID" =~ ^[1-9][0-9]*$ ]] || fail "invalid child run ID"
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "invalid release commit"
+          [[ "$EXPECTED_TAG_OBJECT" =~ ^[0-9a-f]{40}$ ]] || fail "invalid tag object"
+          [[ "$PUBLISHER_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "invalid release tag"
+          [[ "$PUBLISHER_REGISTRY" == "testpypi" || "$PUBLISHER_REGISTRY" == "pypi" ]] || fail "invalid registry"
+          [[ "$GITHUB_SHA" == "$EXPECTED_COMMIT" ]] || fail "child commit differs"
+          expected_workflow_ref="$GITHUB_REPOSITORY/.github/workflows/$PUBLISHER_WORKFLOW@refs/tags/$PUBLISHER_TAG"
+          [[ "$GITHUB_WORKFLOW_REF" == "$expected_workflow_ref" ]] || fail "child workflow differs"
+
+          allowlist=".context/publisher-dispatch-live/publisher-dispatch-$PUBLISHER_REGISTRY.json"
+          child_url="https://github.com/$GITHUB_REPOSITORY/actions/runs/$CHILD_RUN_ID"
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg tag "$PUBLISHER_TAG" \
+            --arg commit "$EXPECTED_COMMIT" \
+            --arg tag_object "$EXPECTED_TAG_OBJECT" \
+            --arg registry "$PUBLISHER_REGISTRY" \
+            --arg distribution "$PUBLISHER_DISTRIBUTION" \
+            --arg workflow "$PUBLISHER_WORKFLOW" \
+            --arg url "$child_url" \
+            --argjson parent_run_id "$PARENT_RUN_ID" \
+            --argjson parent_run_attempt "$PARENT_RUN_ATTEMPT" \
+            --argjson child_run_id "$CHILD_RUN_ID" \
+            '
+              type == "object" and
+              (keys | sort) ==
+                (["schema", "repository", "parent_run_id", "parent_run_attempt",
+                  "tag", "commit", "tag_object", "registry", "runs"] | sort) and
+              .schema == "archetype.publisher-dispatch/v2" and
+              .repository == $repository and
+              .parent_run_id == $parent_run_id and
+              .parent_run_attempt == $parent_run_attempt and
+              .tag == $tag and
+              .commit == $commit and
+              .tag_object == $tag_object and
+              .registry == $registry and
+              (.runs | type) == "array" and
+              ([.runs[] | select(
+                type == "object" and
+                (keys | sort) == (["distribution", "workflow", "run_id", "url"] | sort) and
+                .distribution == $distribution and
+                .workflow == $workflow and
+                .run_id == $child_run_id and
+                .url == $url
+              )] | length) == 1
+            ' "$allowlist" >/dev/null || fail "child run is not allowlisted"
+
+          parent_json="$(gh api \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "/repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID")" || fail "parent lookup failed"
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg tag "$PUBLISHER_TAG" \
+            --arg commit "$EXPECTED_COMMIT" \
+            --argjson parent_run_id "$PARENT_RUN_ID" \
+            --argjson parent_run_attempt "$PARENT_RUN_ATTEMPT" \
+            '
+              type == "object" and
+              .id == $parent_run_id and
+              .run_attempt == $parent_run_attempt and
+              .event == "workflow_dispatch" and
+              (.path == ".github/workflows/release.yml" or
+                .path == (".github/workflows/release.yml@" + $tag) or
+                .path == (".github/workflows/release.yml@refs/tags/" + $tag)) and
+              .head_sha == $commit and
+              .head_branch == $tag and
+              .status == "in_progress" and
+              .conclusion == null and
+              .repository.full_name == $repository and
+              .actor.login == "everettVT" and
+              .triggering_actor.login == "everettVT"
+            ' <<< "$parent_json" >/dev/null || fail "parent is no longer authorized and live"
+      - name: Reauthorize the remote release tag
+        shell: bash
+        env:
+          EXPECTED_TAG_OBJECT: ${{ inputs.expected_tag_object }}
+          RELEASE_INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          fail() { echo "release tag check failed: $*" >&2; exit 1; }
+
+          [[ "$GITHUB_REPOSITORY" == "VangelisTech/archetype" ]] || fail "wrong repository"
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] || fail "workflow ref is not a tag"
+          [[ "$GITHUB_REF_NAME" == "$RELEASE_INPUT_TAG" ]] || fail "input and ref differ"
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "tag must be canonical vMAJOR.MINOR.PATCH"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "GITHUB_SHA is not 40-hex"
+          [[ "$EXPECTED_TAG_OBJECT" =~ ^[0-9a-f]{40}$ ]] || fail "authorized tag object is not 40-hex"
+
+          tag_ref="refs/tags/$GITHUB_REF_NAME"
+          [[ "$GITHUB_REF" == "$tag_ref" ]] || fail "workflow ref is not the exact tag ref"
+          remote="https://github.com/VangelisTech/archetype.git"
+          output="$(git ls-remote --exit-code "$remote" "$tag_ref" "$tag_ref^{}")"
+          direct_sha=
+          peeled_sha=
+          while IFS= read -r line; do
+            sha=
+            ref=
+            extra=
+            IFS=$'\t' read -r sha ref extra <<< "$line"
+            [[ -z "$extra" ]] || fail "malformed ls-remote output"
+            [[ "$line" == "$sha"$'\t'"$ref" ]] || fail "malformed ls-remote output"
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail "remote SHA is not 40-hex"
+            case "$ref" in
+              "$tag_ref")
+                [[ -z "$direct_sha" ]] || fail "duplicate direct tag ref"
+                direct_sha="$sha"
+                ;;
+              "$tag_ref^{}")
+                [[ -z "$peeled_sha" ]] || fail "duplicate peeled tag ref"
+                peeled_sha="$sha"
+                ;;
+              *) fail "unexpected remote ref $ref" ;;
+            esac
+          done <<< "$output"
+          [[ -n "$direct_sha" ]] || fail "direct tag ref is absent"
+          [[ "$direct_sha" == "$EXPECTED_TAG_OBJECT" ]] || fail "remote tag object differs"
+          resolved_sha="${peeled_sha:-$direct_sha}"
+          [[ "$resolved_sha" == "$GITHUB_SHA" ]] || fail "remote tag commit differs"
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           repository-url: https://test.pypi.org/legacy/
@@ -135,6 +288,153 @@ jobs:
           path: dist/
           run-id: ${{ inputs.parent_run_id }}
           github-token: ${{ github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: publisher-dispatch-${{ inputs.registry }}-${{ inputs.parent_run_attempt }}
+          path: .context/publisher-dispatch-live/
+          run-id: ${{ inputs.parent_run_id }}
+          github-token: ${{ github.token }}
+      - name: Reauthorize the live parent release
+        shell: bash
+        env:
+          CHILD_RUN_ID: ${{ github.run_id }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          EXPECTED_TAG_OBJECT: ${{ inputs.expected_tag_object }}
+          GH_TOKEN: ${{ github.token }}
+          PARENT_RUN_ATTEMPT: ${{ inputs.parent_run_attempt }}
+          PARENT_RUN_ID: ${{ inputs.parent_run_id }}
+          PUBLISHER_DISTRIBUTION: archetype-physical-ai
+          PUBLISHER_REGISTRY: ${{ inputs.registry }}
+          PUBLISHER_TAG: ${{ inputs.tag }}
+          PUBLISHER_WORKFLOW: publish-archetype-physical-ai.yml
+        run: |
+          set -euo pipefail
+          fail() { echo "parent release check failed: $*" >&2; exit 1; }
+
+          [[ "$GITHUB_REPOSITORY" == "VangelisTech/archetype" ]] || fail "wrong repository"
+          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]] || fail "wrong event"
+          [[ "$GITHUB_ACTOR" == "github-actions[bot]" ]] || fail "wrong actor"
+          [[ "$GITHUB_TRIGGERING_ACTOR" == "github-actions[bot]" ]] || fail "wrong triggering actor"
+          [[ "$PARENT_RUN_ID" =~ ^[1-9][0-9]*$ ]] || fail "invalid parent run ID"
+          [[ "$PARENT_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || fail "invalid parent attempt"
+          [[ "$CHILD_RUN_ID" =~ ^[1-9][0-9]*$ ]] || fail "invalid child run ID"
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "invalid release commit"
+          [[ "$EXPECTED_TAG_OBJECT" =~ ^[0-9a-f]{40}$ ]] || fail "invalid tag object"
+          [[ "$PUBLISHER_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "invalid release tag"
+          [[ "$PUBLISHER_REGISTRY" == "testpypi" || "$PUBLISHER_REGISTRY" == "pypi" ]] || fail "invalid registry"
+          [[ "$GITHUB_SHA" == "$EXPECTED_COMMIT" ]] || fail "child commit differs"
+          expected_workflow_ref="$GITHUB_REPOSITORY/.github/workflows/$PUBLISHER_WORKFLOW@refs/tags/$PUBLISHER_TAG"
+          [[ "$GITHUB_WORKFLOW_REF" == "$expected_workflow_ref" ]] || fail "child workflow differs"
+
+          allowlist=".context/publisher-dispatch-live/publisher-dispatch-$PUBLISHER_REGISTRY.json"
+          child_url="https://github.com/$GITHUB_REPOSITORY/actions/runs/$CHILD_RUN_ID"
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg tag "$PUBLISHER_TAG" \
+            --arg commit "$EXPECTED_COMMIT" \
+            --arg tag_object "$EXPECTED_TAG_OBJECT" \
+            --arg registry "$PUBLISHER_REGISTRY" \
+            --arg distribution "$PUBLISHER_DISTRIBUTION" \
+            --arg workflow "$PUBLISHER_WORKFLOW" \
+            --arg url "$child_url" \
+            --argjson parent_run_id "$PARENT_RUN_ID" \
+            --argjson parent_run_attempt "$PARENT_RUN_ATTEMPT" \
+            --argjson child_run_id "$CHILD_RUN_ID" \
+            '
+              type == "object" and
+              (keys | sort) ==
+                (["schema", "repository", "parent_run_id", "parent_run_attempt",
+                  "tag", "commit", "tag_object", "registry", "runs"] | sort) and
+              .schema == "archetype.publisher-dispatch/v2" and
+              .repository == $repository and
+              .parent_run_id == $parent_run_id and
+              .parent_run_attempt == $parent_run_attempt and
+              .tag == $tag and
+              .commit == $commit and
+              .tag_object == $tag_object and
+              .registry == $registry and
+              (.runs | type) == "array" and
+              ([.runs[] | select(
+                type == "object" and
+                (keys | sort) == (["distribution", "workflow", "run_id", "url"] | sort) and
+                .distribution == $distribution and
+                .workflow == $workflow and
+                .run_id == $child_run_id and
+                .url == $url
+              )] | length) == 1
+            ' "$allowlist" >/dev/null || fail "child run is not allowlisted"
+
+          parent_json="$(gh api \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "/repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID")" || fail "parent lookup failed"
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg tag "$PUBLISHER_TAG" \
+            --arg commit "$EXPECTED_COMMIT" \
+            --argjson parent_run_id "$PARENT_RUN_ID" \
+            --argjson parent_run_attempt "$PARENT_RUN_ATTEMPT" \
+            '
+              type == "object" and
+              .id == $parent_run_id and
+              .run_attempt == $parent_run_attempt and
+              .event == "workflow_dispatch" and
+              (.path == ".github/workflows/release.yml" or
+                .path == (".github/workflows/release.yml@" + $tag) or
+                .path == (".github/workflows/release.yml@refs/tags/" + $tag)) and
+              .head_sha == $commit and
+              .head_branch == $tag and
+              .status == "in_progress" and
+              .conclusion == null and
+              .repository.full_name == $repository and
+              .actor.login == "everettVT" and
+              .triggering_actor.login == "everettVT"
+            ' <<< "$parent_json" >/dev/null || fail "parent is no longer authorized and live"
+      - name: Reauthorize the remote release tag
+        shell: bash
+        env:
+          EXPECTED_TAG_OBJECT: ${{ inputs.expected_tag_object }}
+          RELEASE_INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          fail() { echo "release tag check failed: $*" >&2; exit 1; }
+
+          [[ "$GITHUB_REPOSITORY" == "VangelisTech/archetype" ]] || fail "wrong repository"
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] || fail "workflow ref is not a tag"
+          [[ "$GITHUB_REF_NAME" == "$RELEASE_INPUT_TAG" ]] || fail "input and ref differ"
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "tag must be canonical vMAJOR.MINOR.PATCH"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "GITHUB_SHA is not 40-hex"
+          [[ "$EXPECTED_TAG_OBJECT" =~ ^[0-9a-f]{40}$ ]] || fail "authorized tag object is not 40-hex"
+
+          tag_ref="refs/tags/$GITHUB_REF_NAME"
+          [[ "$GITHUB_REF" == "$tag_ref" ]] || fail "workflow ref is not the exact tag ref"
+          remote="https://github.com/VangelisTech/archetype.git"
+          output="$(git ls-remote --exit-code "$remote" "$tag_ref" "$tag_ref^{}")"
+          direct_sha=
+          peeled_sha=
+          while IFS= read -r line; do
+            sha=
+            ref=
+            extra=
+            IFS=$'\t' read -r sha ref extra <<< "$line"
+            [[ -z "$extra" ]] || fail "malformed ls-remote output"
+            [[ "$line" == "$sha"$'\t'"$ref" ]] || fail "malformed ls-remote output"
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail "remote SHA is not 40-hex"
+            case "$ref" in
+              "$tag_ref")
+                [[ -z "$direct_sha" ]] || fail "duplicate direct tag ref"
+                direct_sha="$sha"
+                ;;
+              "$tag_ref^{}")
+                [[ -z "$peeled_sha" ]] || fail "duplicate peeled tag ref"
+                peeled_sha="$sha"
+                ;;
+              *) fail "unexpected remote ref $ref" ;;
+            esac
+          done <<< "$output"
+          [[ -n "$direct_sha" ]] || fail "direct tag ref is absent"
+          [[ "$direct_sha" == "$EXPECTED_TAG_OBJECT" ]] || fail "remote tag object differs"
+          resolved_sha="${peeled_sha:-$direct_sha}"
+          [[ "$resolved_sha" == "$GITHUB_SHA" ]] || fail "remote tag commit differs"
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           skip-existing: true

@@ -477,7 +477,7 @@ jobs:
 
   publish-testpypi-libraries:
     name: Publish world libraries to TestPyPI
-    needs: testpypi-preflight
+    needs: [authorize-release, testpypi-preflight]
     if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -497,6 +497,7 @@ jobs:
           --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
           --tag "$GITHUB_REF_NAME"
           --expected-commit "$GITHUB_SHA"
+          --expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"
           --registry testpypi
           --out publisher-dispatch-testpypi.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -513,6 +514,7 @@ jobs:
           --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
           --tag "$GITHUB_REF_NAME"
           --expected-commit "$GITHUB_SHA"
+          --expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"
           --registry testpypi
           --allowlist publisher-dispatch-testpypi.json
           --out publisher-dispatch-testpypi.json
@@ -676,7 +678,7 @@ jobs:
 
   publish-libraries:
     name: Publish world libraries to PyPI
-    needs: pypi-preflight
+    needs: [authorize-release, pypi-preflight]
     if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -696,6 +698,7 @@ jobs:
           --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
           --tag "$GITHUB_REF_NAME"
           --expected-commit "$GITHUB_SHA"
+          --expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"
           --registry pypi
           --out publisher-dispatch-pypi.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -712,6 +715,7 @@ jobs:
           --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
           --tag "$GITHUB_REF_NAME"
           --expected-commit "$GITHUB_SHA"
+          --expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"
           --registry pypi
           --allowlist publisher-dispatch-pypi.json
           --out publisher-dispatch-pypi.json
