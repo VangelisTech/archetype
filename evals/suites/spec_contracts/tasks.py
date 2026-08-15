@@ -432,7 +432,7 @@ def task_runtime_dispatcher_boundary() -> list[GraderResult]:
                         node.module, node.lineno, tc_ranges
                     )
                 for alias in node.names:
-                    if alias.name in {"iWorld", "AsyncWorld"}:
+                    if alias.name == "AsyncWorld":
                         key = f"{rel}:{node.lineno}:world_import:{alias.name}"
                         world_ref_checks[key] = _in_ranges(node.lineno, tc_ranges)
 
@@ -443,14 +443,14 @@ def task_runtime_dispatcher_boundary() -> list[GraderResult]:
                         import_checks[key] = _runtime_app_import_is_allowed(
                             alias.name, node.lineno, tc_ranges
                         )
-                    if alias.name in {"iWorld", "AsyncWorld"}:
+                    if alias.name == "AsyncWorld":
                         key = f"{rel}:{node.lineno}:world_import:{alias.name}"
                         world_ref_checks[key] = _in_ranges(node.lineno, tc_ranges)
 
             if isinstance(node, ast.AnnAssign):
                 target = ast.unparse(node.target)
                 annotation = ast.unparse(node.annotation)
-                if "iWorld" in annotation or "AsyncWorld" in annotation:
+                if "AsyncWorld" in annotation:
                     world_ref_checks[f"{rel}:{node.lineno}:annotation:{target}"] = False
 
     return [

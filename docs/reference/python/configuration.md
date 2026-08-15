@@ -2,6 +2,11 @@
 
 # Configuration
 
+| Package | Value |
+| --- | --- |
+| Distribution | `archetype-ecs` |
+| Import package | `archetype` |
+
 **Recommended API.** Runtime configuration is user-facing. `WorldConfig` is primarily for custom hosts and lower-level engine construction.
 
 ::: archetype.core.config.StorageBackend

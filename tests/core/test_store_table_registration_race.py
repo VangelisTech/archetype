@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -13,7 +12,6 @@ from archetype.core.aio.async_store import AsyncStore
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
-from archetype.core.sync.store import SyncStore
 from archetype.storage.session import configure_session
 
 
@@ -65,22 +63,3 @@ async def test_async_store_recovers_concurrent_table_registration_loser(tmp_path
     assert [table.name for table in tables] == [table_name, table_name]
     assert await first.list_signatures() == [sig]
     assert await second.list_signatures() == [sig]
-
-
-def test_sync_store_recovers_concurrent_table_registration_loser(tmp_path, monkeypatch):
-    storage, first_session, second_session, sig = _stores(tmp_path)
-    first = SyncStore(uri=str(storage.uri), session=first_session, io_config=storage.io_config)
-    second = SyncStore(uri=str(storage.uri), session=second_session, io_config=storage.io_config)
-    _synchronize_first_absence(monkeypatch, first.sess, second.sess)
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [
-            executor.submit(first._ensure_table, sig),
-            executor.submit(second._ensure_table, sig),
-        ]
-        tables = [future.result(timeout=20) for future in futures]
-
-    table_name = Archetype.get_name(sig)
-    assert [table.name for table in tables] == [table_name, table_name]
-    assert first.list_signatures() == [sig]
-    assert second.list_signatures() == [sig]

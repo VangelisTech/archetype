@@ -2,6 +2,11 @@
 
 # Storage backends
 
+| Package | Value |
+| --- | --- |
+| Distribution | `archetype-ecs` |
+| Import package | `archetype` |
+
 **Integration API.** Supported asynchronous storage implementations for custom engine wiring.
 
 ::: archetype.core.AsyncStore

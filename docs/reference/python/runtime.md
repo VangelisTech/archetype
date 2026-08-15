@@ -2,9 +2,22 @@
 
 # Runtime
 
+| Package | Value |
+| --- | --- |
+| Distribution | `archetype-ecs` |
+| Import package | `archetype` |
+
 **Recommended API.** Start here for scripts, notebooks, and applications. A runtime owns process-level services and creates world handles.
 
 ::: archetype.runtime.ArchetypeRuntime
+
+::: archetype.runtime.SyncArchetypeRuntime
+
+::: archetype.runtime.SyncRuntimeWorld
+    options:
+      show_signature: false
+
+::: archetype.runtime.run_sync
 
 ::: archetype.runtime.configure_session
 

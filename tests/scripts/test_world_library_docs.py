@@ -148,6 +148,7 @@ def test_split_rest_references_are_navigable() -> None:
 
 def test_world_library_signature_contracts_are_in_the_reference_inventory() -> None:
     research = (ROOT / "docs/reference/python/autoresearch.md").read_text(encoding="utf-8")
+    evaluation = (ROOT / "docs/reference/python/evaluation.md").read_text(encoding="utf-8")
     physical = (ROOT / "docs/reference/python/physical-ai.md").read_text(encoding="utf-8")
     optimization = (ROOT / "docs/reference/python/physical-ai-optimization.md").read_text(
         encoding="utf-8"
@@ -156,6 +157,8 @@ def test_world_library_signature_contracts_are_in_the_reference_inventory() -> N
 
     assert "::: archetype.research.Evaluator" in research
     assert "::: archetype.research.CandidatePreparer" in research
+    assert "::: archetype.evaluation.models.FrameGrader" not in research
+    assert "::: archetype.evaluation.models.FrameGrader" in evaluation
     assert "::: archetype.physical_ai.PhysicalAIExtensionConfig" in host
     assert "::: archetype.physical_ai.hosted_activity_contracts.HostedEpisodeProvider" in host
     assert "::: archetype.physical_ai.hosted_activity_contracts.HostedEpisodeReconciliation" in host

@@ -2,6 +2,11 @@
 
 # File artifacts
 
+| Package | Value |
+| --- | --- |
+| Distribution | `archetype-ecs` |
+| Import package | `archetype` |
+
 **Recommended API.** Declare files, configure content-addressed storage, retain portable references to indexed artifact occurrences, and anchor interpretation to a task.
 
 ::: archetype.artifacts.models.ArtifactContext

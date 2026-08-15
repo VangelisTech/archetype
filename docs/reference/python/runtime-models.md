@@ -2,6 +2,11 @@
 
 # Runtime models
 
+| Package | Value |
+| --- | --- |
+| Distribution | `archetype-ecs` |
+| Import package | `archetype` |
+
 **Recommended API.** Configuration, result, and introspection records returned by world operations.
 
 ::: archetype.world.models.ProcessorInfo

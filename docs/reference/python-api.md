@@ -3,25 +3,26 @@
 # Python API
 
 Archetype's Python reference inventories and classifies the supported framework and world-library surfaces. Most applications only need the runtime, world-handle, and building-block pages.
+The independent [Smol](../smol/index.md) package documents its complete four-name surface on its package page rather than entering the framework inventory.
 
-| Surface | Use it for |
-| --- | --- |
-| [Runtime](python/runtime.md) | Start here for scripts, notebooks, and applications. A runtime owns process-level services and creates world handles. |
-| [World handle](python/world-handle.md) | Create entities, run simulations, query history, and manage one world. |
-| [Runtime models](python/runtime-models.md) | Configuration, result, and introspection records returned by world operations. |
-| [File artifacts](python/artifacts.md) | Declare files, configure content-addressed storage, retain portable references to indexed artifact occurrences, and anchor interpretation to a task. |
-| [Agent Missions](python/missions.md) | Run coding-agent missions and inspect mission-owned transcript and trajectory evidence. |
-| [Coding-agent transcripts](python/transcripts.md) | Ingest Claude Code JSONL through a redacted artifact boundary and append normalized mission rows linked to the sanitized file occurrence. |
-| [Building blocks](python/building-blocks.md) | Use these types to define component data, processors, and processor resources. |
-| [Hooks and ingress identity](python/hooks.md) | React to world lifecycle events and define the identity record used by trusted ingress adapters. |
-| [Configuration](python/configuration.md) | Runtime configuration is user-facing. `WorldConfig` is primarily for custom hosts and lower-level engine construction. |
-| [AutoResearch and evaluation](python/autoresearch.md) | Configure optimization loops and persist evaluation evidence with explicit identities. |
-| [Physical AI](python/physical-ai.md) | Run or recover complete Modal-hosted episode batches through a World. |
-| [Physical AI optimization](python/physical-ai-optimization.md) | Build pure instruction-search workflows over an injected evaluator and strategy. |
-| [Physical AI host configuration](python/physical-ai-host.md) | Configure trusted hosted-episode providers at process composition time. |
-| [Core engine](python/core.md) | Supported engine primitives for custom execution and world lifecycle extensions. |
-| [Storage backends](python/storage.md) | Supported asynchronous storage implementations for custom engine wiring. |
-| [Compatibility API](python/compatibility.md) | The synchronous educational engine and legacy aliases remain available for compatibility. New application code should use `ArchetypeRuntime`. |
+| Surface | Distribution | Use it for |
+| --- | --- | --- |
+| [Runtime](python/runtime.md) | `archetype-ecs` | Start here for scripts, notebooks, and applications. A runtime owns process-level services and creates world handles. |
+| [World handle](python/world-handle.md) | `archetype-ecs` | Create entities, run simulations, query history, and manage one world. |
+| [Runtime models](python/runtime-models.md) | `archetype-ecs` | Configuration, result, and introspection records returned by world operations. |
+| [File artifacts](python/artifacts.md) | `archetype-ecs` | Declare files, configure content-addressed storage, retain portable references to indexed artifact occurrences, and anchor interpretation to a task. |
+| [Agent Missions](python/missions.md) | `archetype-missions` | Run coding-agent missions and inspect mission-owned transcript and trajectory evidence. |
+| [Coding-agent transcripts](python/transcripts.md) | `archetype-missions` | Ingest Claude Code JSONL through a redacted artifact boundary and append normalized mission rows linked to the sanitized file occurrence. |
+| [Building blocks](python/building-blocks.md) | `archetype-ecs` | Use these types to define component data, processors, and processor resources. |
+| [Hooks and ingress identity](python/hooks.md) | `archetype-ecs` | React to world lifecycle events and define the identity record used by trusted ingress adapters. |
+| [Configuration](python/configuration.md) | `archetype-ecs` | Runtime configuration is user-facing. `WorldConfig` is primarily for custom hosts and lower-level engine construction. |
+| [Research and AutoResearch](python/autoresearch.md) | `archetype-research` | Use the separately installed `archetype-research` library to configure optimization loops and persist its experiment ledger. |
+| [Framework evaluation](python/evaluation.md) | `archetype-ecs` | Grade frames and persist generic evaluation outcomes and receipts owned by `archetype-ecs`. |
+| [Physical AI](python/physical-ai.md) | `archetype-physical-ai` | Run or recover complete Modal-hosted episode batches through a World. |
+| [Physical AI optimization](python/physical-ai-optimization.md) | `archetype-physical-ai` | Build pure instruction-search workflows over an injected evaluator and strategy. |
+| [Physical AI host configuration](python/physical-ai-host.md) | `archetype-physical-ai` | Configure trusted hosted-episode providers at process composition time. |
+| [Core engine](python/core.md) | `archetype-ecs` | Supported engine primitives for custom execution and world lifecycle extensions. |
+| [Storage backends](python/storage.md) | `archetype-ecs` | Supported asynchronous storage implementations for custom engine wiring. |
 
 ## Classification rule
 
@@ -51,12 +52,3 @@ Every name in a world-library facade is assigned exactly one tier. The docs buil
 ### `archetype.research`
 
 - **Extension:** `Research`, `AutoResearchConfig`, `AutoResearchResult`, `ResearchCandidateContext`, `Evaluation`, `EvaluationResult`, `Evaluator`, `CandidatePreparer`, `IterationResult`, `Experiment`, `Run`, `RunStatus`, `Result`, `BranchHead`
-
-## Compatibility aliases
-
-- `Processor` is an alias for `SyncProcessor`.
-- `World` is an alias for `SyncWorld`.
-- `System` is an alias for `SyncSystem`.
-- `Store` is an alias for `SyncStore`.
-- `Querier` is an alias for `QueryManager`.
-- `Updater` is an alias for `UpdateManager`.

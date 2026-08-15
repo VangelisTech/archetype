@@ -24,11 +24,11 @@ through these boxes:
 
 ```mermaid
 graph TB
-    World["World"]
-    System["System"]
-    QM["QueryManager"]
-    UM["UpdateManager"]
-    Store["Store"]
+    World["AsyncWorld"]
+    System["AsyncSystem"]
+    QM["AsyncQueryManager"]
+    UM["AsyncUpdateManager"]
+    Store["AsyncStore"]
 
     World --> System
     World --> QM
@@ -40,11 +40,11 @@ graph TB
 
 ```mermaid
 sequenceDiagram
-    participant World as World
-    participant System as System
-    participant QM as QueryManager
-    participant UM as UpdateManager
-    participant Store as Store
+    participant World as AsyncWorld
+    participant System as AsyncSystem
+    participant QM as AsyncQueryManager
+    participant UM as AsyncUpdateManager
+    participant Store as AsyncStore
 
     World->>System: execute per active archetype
     loop Eligible processors
@@ -57,10 +57,10 @@ sequenceDiagram
     UM->>Store: append tick rows
 ```
 
-`QueryManager` reads. `UpdateManager` appends. `World` orchestrates.
-`System` runs processors whose declared components are a subset of the
-archetype signature. Product features compose around this path; they do not
-replace it.
+`AsyncQueryManager` reads. `AsyncUpdateManager` appends. `AsyncWorld`
+orchestrates. `AsyncSystem` runs processors whose declared components are a
+subset of the archetype signature. Product features compose around this path;
+they do not replace it.
 
 ## The mental model
 

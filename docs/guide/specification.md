@@ -15,7 +15,7 @@ The current contract set is split across design docs and executable tests.
 | Contract source | Scope | Notes |
 |---|---|---|
 | `docs/guide/specification.md` | Umbrella contract overview | This page. Broad contracts plus links to focused specifications. |
-| [Runtime](runtime.md) | Trusted script boundary | `ArchetypeRuntime`, `RuntimeWorld`, sync parity, exact-operation dispatch, and process lifetime. |
+| [Runtime](runtime.md) | Trusted script boundary | `ArchetypeRuntime`, `RuntimeWorld`, blocking-facade parity, exact-operation dispatch, and process lifetime. |
 | [Observability](observability.md) | Safe advisory signals | Vendor-neutral trace/metric vocabulary, bounded failure semantics, context, and process-host provider ownership. |
 | [Application Architecture](application-architecture.md) | Supported boundaries and dependency policy | Normative current v0.6 ownership, family DAG, composition, encapsulation, and lint inputs. |
 | [World Libraries](world-libraries.md) | Framework and distribution extension boundary | Separately installed library manifests, deterministic discovery, typed adapters, framework version ranges, and release evidence. |
@@ -34,7 +34,7 @@ The current contract set is split across design docs and executable tests.
 | [Repository Harness](repository-harness.md) | Executable evidence | Focused tests, contract matrices, repository scenarios, benchmarks, static audits, and mutation probes. |
 | [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, the actor-free trust boundary, and smoke paths. |
 | [`tests/storage/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/storage/test_runtime_fork_storage.py) | Runtime fork storage contracts | Enforces fork storage inheritance through the runtime layer, lineage reads on fork handles, fork run_id minting, and gate-side storage resolution. |
-| [`tests/sync/test_sync_stack_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/sync/test_sync_stack_contracts.py) | Executable sync engine contracts | Enforces store/querier/updater/world behavior, mutation materialization, component migration, and despawn semantics. |
+| [`tests/core/test_no_legacy_sync_kernel.py`](https://github.com/VangelisTech/archetype/blob/main/tests/core/test_no_legacy_sync_kernel.py) | Synchronous-surface reset contract | Proves the parallel core kernel and root aliases are absent while `ArchetypeRuntime.sync()` and its blocking handles remain supported. |
 | [`tests/integration/test_command_flow.py`](https://github.com/VangelisTech/archetype/blob/main/tests/integration/test_command_flow.py) | Reserved spawn chain | Verifies reserved `entity_id` survives submit -> drain -> apply -> materialize. |
 | [`tests/app/test_services.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_services.py) | Service-layer execution contracts | Covers simulation service boundaries, processor metadata, and read-service expectations. |
 | [`tests/cli/test_cli.py`](https://github.com/VangelisTech/archetype/blob/main/tests/cli/test_cli.py) | CLI adapter contracts | Covers base URL handling, client lifecycle, error formatting, and server-backed command behavior. |
@@ -46,7 +46,7 @@ The current specification set covers the following contract families:
 - Top-level runtime contracts:
   pure construction, single-flight activation, honest `spawn()` return values,
   explicit runtime ownership, world-local shutdown, fork isolation, and
-  backwards-compatible exports.
+  explicit versioned public-surface changes.
 - Multi-world lifetime contracts:
   one world's shutdown must not invalidate sibling worlds, and runtime teardown
   must remain separate from per-world teardown.
@@ -56,10 +56,11 @@ The current specification set covers the following contract families:
 - Deferred spawn contracts:
   `spawn()` may return an `entity_id` only if that `entity_id` is reserved and
   preserved all the way through the command chain.
-- Sync engine contracts:
-  append/read consistency, active-state querying, deterministic
-  last-write-wins duplicate spawn handling, safe component migration, and
-  despawn-only archetype processing.
+- Production engine and blocking-facade contracts:
+  `AsyncWorld` owns append/read consistency, active-state querying,
+  deterministic last-write-wins duplicate spawn handling, safe component
+  migration, and despawn-only archetype processing. The blocking runtime
+  facade preserves those semantics without selecting another engine.
 - Adapter contracts:
   service and CLI layers must preserve the underlying engine/runtime semantics
   rather than invent new ones.
@@ -257,8 +258,7 @@ Failure observability:
 - The updater MUST raise when the store append fails. Persistence success is
   observable: a returned DataFrame means the rows were committed. A
   schemaless empty frame is skipped as a no-op before stamping.
-- Contract tests: `tests/core/test_async_store_updater_failures.py`,
-  `tests/sync/test_sync_stack_contracts.py::test_sync_update_manager_raises_on_store_errors`.
+- Contract test: `tests/core/test_async_store_updater_failures.py`.
 
 ## System and Processor Contracts
 
@@ -276,8 +276,7 @@ Failure observability:
 - Across different archetypes, execution MAY proceed concurrently.
 - Processor registration is instance-based; removal is type-based.
   `remove_processor(ProcessorType)` removes every registered instance of that
-  type, and removing a type with no registered instances is a no-op. Sync and
-  async stacks share this contract.
+  type, and removing a type with no registered instances is a no-op.
 - Only kwargs explicitly accepted by a processor should be passed through.
 - Shared resources MAY be injected through the world resource container.
 
@@ -289,16 +288,17 @@ Failure policy:
   failure therefore fails the WHOLE tick: the error is logged, `step()`
   raises, the tick counter does not advance, nothing is appended for any
   archetype, and staged mutations survive for retry.
-- A store failure during the commit phase preserves the failed archetype's
-  staged mutations; archetypes whose appends committed consume their caches
-  with the append.
+- A store failure during the commit phase preserves staged mutations. In a
+  managed coordinated world, every cache remains until the manifest publishes;
+  any physical append that succeeded before the failure stays invisible. A
+  directly constructed uncoordinated `AsyncWorld` consumes only the caches for
+  tables whose append succeeded.
 - The public failure type is `archetype.core.errors.TickExecutionError`, a
   `RuntimeError` subclass (issue #444). `failures` MUST preserve every failed
   table identity (`table_id`) and original exception object, in ascending
-  table-id order; `phase` MUST be `"compute"` or `"commit"`. Sync and async
-  stacks share this contract; the async stack chains the originals as an
-  `ExceptionGroup` cause, the fail-fast sync stack chains its single original
-  directly. Task cancellation MUST propagate unwrapped.
+  table-id order; `phase` MUST be `"compute"` or `"commit"`. `AsyncWorld`
+  chains the originals as an `ExceptionGroup` cause. Task cancellation MUST
+  propagate unwrapped.
 - The aggregate's message names failed tables and the phase only; original
   exception text MUST NOT enter it. Callers distinguish a provider timeout or
   rate limit from a processor bug by `isinstance` on `failure.error`, never
@@ -314,7 +314,6 @@ Failure policy:
   `test_step_preserves_ordered_structured_compute_failures`,
   `test_step_preserves_ordered_structured_commit_failures`,
   `test_step_does_not_wrap_task_cancellation`);
-  `tests/sync/test_sync_stack_contracts.py::test_sync_world_processor_error_fails_step_without_commit`;
   `tests/app/test_runtime_contracts.py::TestStructuredStepFailures`.
 - Composed public-boundary evidence: the `processor_adversarial` capability
   eval combines advisory hook failures, one-table processor failure, atomic
@@ -856,8 +855,7 @@ tested.
 
 These requirements apply to:
 
-- Any proposed top-level `World`, `Processor`, `Archetype`, `Runtime`, or
-  `run_sync` runtime API
+- `ArchetypeRuntime`, `RuntimeWorld`, their blocking facade, and `run_sync`
 - Any wrapper over the internal dispatcher and resource graph
 - Any re-export change that alters the default public API surface
 
@@ -1051,15 +1049,14 @@ remain explicit.
 
 Required behavior:
 
-- Users may define `World(...)` wrappers declaratively
+- Users may construct lazy runtime world handles declaratively
 - The start of runtime ownership must be explicit somewhere in the script
 - The API must make it clear where startup and teardown occur
 
 Acceptable shapes include:
 
 - `async with ArchetypeRuntime() as app:`
-- `async with Archetype() as app:`
-- `with Archetype.sync() as app:`
+- `with ArchetypeRuntime.sync() as app:`
 
 #### S2. Context management belongs at runtime scope
 
@@ -1073,28 +1070,32 @@ Required behavior:
 - Exiting a world context must not tear down process-shared infrastructure
   unless the world context is explicitly defined as owning a dedicated runtime
 
-#### S3. Sync helpers must not hide process lifetime
+#### S3. Blocking helpers must not hide process lifetime
 
-Sync conveniences are allowed, but they must not obscure resource ownership.
+Blocking conveniences are allowed, but they must not obscure resource
+ownership or imply a second production engine.
 
 Required behavior:
 
-- `run_sync()` must document whether it creates a temporary runtime or uses an
-  existing one
-- Repeated sync calls must not silently create and destroy incompatible runtime
-  state around objects that outlive a single call
-- Sync entry points must not leave shared global state in an ambiguous state
+- `run_sync()` is only a coroutine-to-blocking bridge. It creates no
+  `ArchetypeRuntime`, and callers retain ownership of any resources used by the
+  coroutine
+- Repeated blocking calls must not silently create and destroy incompatible
+  runtime state around objects that outlive a single call
+- Blocking entry points must not leave shared global state in an ambiguous
+  state
 
-#### S4. Preserve public API compatibility unless versioned
+#### S4. Public-surface resets must be explicit and versioned
 
 Top-level runtime exports must not silently redefine long-standing public imports.
 
 Required behavior:
 
-- Existing default exports such as `World` and `Processor` must remain stable
-  unless changed as part of an explicit breaking release
-- If new runtime types are introduced, prefer additive names first
-- Any future alias swap requires migration notes and compatibility tests
+- Removing or redefining a supported export requires an explicit breaking
+  release and migration note
+- The 0.6 removal of the parallel core-sync kernel and root aliases is guarded
+  by `tests/core/test_no_legacy_sync_kernel.py`
+- Removed engine aliases must not remain as compatibility shims
 
 #### S5. Ergonomics must not bypass governance
 
@@ -1154,9 +1155,8 @@ show how it satisfies all of the following:
 - Trust-boundary-preserving scaffolding is documented and tested
 - Same-entity same-tick mutation composition is either guaranteed and tested or
   explicitly documented as weaker
-- Async and sync script entry points have a clear resource ownership model
-- Existing public imports remain compatible, or the change is explicitly marked
-  as breaking and tested accordingly
+- Async and blocking script entry points have a clear resource ownership model
+- Public-surface changes are explicitly versioned, documented, and tested
 
 ### Non-Goals
 
@@ -1185,7 +1185,7 @@ the constraints that any acceptable design must satisfy.
 | `remove_components()` with no signature change | Idempotent no-op |
 | `world.step()` | Not idempotent; advances tick and appends new rows |
 | `world.run()` | Not idempotent; performs multiple steps under one run contract |
-| `QueryManager.query_archetype()` | Idempotent for fixed persisted state |
+| `AsyncQueryManager.query_archetype()` | Idempotent for fixed persisted state |
 | Store `append()` replay | Not idempotent; repeating an append persists duplicate rows |
 | Updater `update()` replay | Not idempotent; repeating an update appends another row version |
 | Store `get_archetype_df()` replay | Idempotent for the same persisted data |
@@ -1235,11 +1235,11 @@ behavior and an executable oracle.
 
 | Item | Status | Contract or remaining work | Oracle or tracking |
 |---|---|---|---|
-| 1 | Resolved | Async and sync updater/store failures raise instead of returning a stamped-but-uncommitted frame. | `tests/core/test_async_store_updater_failures.py`; `tests/sync/test_sync_stack_contracts.py` |
+| 1 | Resolved | Async updater/store failures raise instead of returning a stamped-but-uncommitted frame. | `tests/core/test_async_store_updater_failures.py` |
 | 2 | Resolved | Compatibility tick-deferred submission translates exactly six portable mutation envelopes. Direct-only operations and legacy `MESSAGE`, `CUSTOM`, and `QUERY_WORLD` envelopes fail before quota debit, evidence, or durable admission. | `tests/integration/test_command_flow.py::test_direct_only_commands_cannot_enter_tick_deferred_scheduler`; Issues #368, #415, #418 |
 | 3 | Resolved | Actor-aware `CommandDispatcher.defer*` rejects an unknown world with `WorldNotFoundError` without creating a durable command row. Pure role denial precedes world resolution and all effects; an authorized later failure may consume its instance-owned quota coordinate and emit bounded failed evidence. | `tests/integration/test_command_flow.py::test_submit_to_unknown_world_rejected`; `tests/commands/test_dispatch_policy_contracts.py` |
 | 4 | Resolved | Duplicate-name and catalog-registration failures leave no hidden live world. | `tests/core/test_orchestrator_errors_and_instrumentation.py`; `tests/app/test_durable_discovery.py::test_failed_catalog_registration_leaves_no_live_world` |
-| 5 | Resolved | Spawn, despawn, and component migration hooks fire from their public mutation paths with the documented queue-time semantics. | `tests/core/test_resources_hooks_messaging.py`; `tests/core/test_batch_spawn_contract.py`; `tests/sync/test_sync_world.py` |
+| 5 | Resolved | Spawn, despawn, and component migration hooks fire from their public mutation paths with the documented queue-time semantics. | `tests/core/test_resources_hooks_messaging.py`; `tests/core/test_batch_spawn_contract.py` |
 | 6 | Resolved | `archetype.world.query` performs durable archetype, component, lineage, and signature reads; command history comes from the commands-owned audit projection. | `tests/world/test_query_contracts.py`; `tests/world/test_atomic_visibility.py`; `tests/commands/test_audit_projection_contracts.py` |
 | 7 | Resolved | Gated destroy cancels only the target world's unsettled command state and preserves shared runtime and durable history. | `tests/integration/test_fork_destroy_contracts.py` |
 | 8 | Resolved | Same-entity, same-tick mutations compose in durable scheduler order. | `tests/core/test_same_tick_mutation_composition.py`; `evals/suites/idempotency/tasks.py::task_duplicate_same_tick_mutations_collapse`; Issue #193 |
@@ -1284,7 +1284,7 @@ all of the following:
   (`time_travel_and_run_id` repository check)
 - explicit runtime-vs-world lifetime boundaries
 - lazy single-flight activation, wait-then-close runtime shutdown, handle
-  invalidation, and sync/async handle parity (`runtime_contracts` repository check)
+  invalidation, and async/blocking handle parity (`runtime_contracts` repository check)
 - clear distinction between idempotent and non-idempotent operations
 
 ## Runtime Boundary
@@ -1316,8 +1316,9 @@ graph needs an explicit boundary.
 - Forked worlds share a runtime, but not world identity or lifecycle.
 - The recommended script boundary is `async with ArchetypeRuntime()` or
   `with ArchetypeRuntime.sync()`, not implicit per-call global setup/teardown.
-- Top-level `World` and `Processor` exports should remain stable unless there
-  is an intentional versioned breaking change. Add runtime ergonomics additively first.
+- The removed core-sync `World` and `Processor` aliases must not be restored as
+  compatibility shims. `archetype-smol` owns similarly named educational types
+  in an independent distribution.
 
 ### Contract Tests
 
@@ -1329,10 +1330,10 @@ High-value contract tests include:
 - shutdown vs admitted work, shutdown vs init, and fork vs init races
 - multi-world lifetime isolation
 - spawn materialization timing
-- async/sync smoke paths
+- async/blocking runtime smoke paths
 - example script smoke execution
 
-### Sync-Core Coverage
+### Async-Engine Coverage
 
 Contract-focused tests should cover correctness issues that happy-path tests
 often miss:

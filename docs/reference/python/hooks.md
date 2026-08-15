@@ -2,6 +2,11 @@
 
 # Hooks and ingress identity
 
+| Package | Value |
+| --- | --- |
+| Distribution | `archetype-ecs` |
+| Import package | `archetype` |
+
 **Extension API.** React to world lifecycle events and define the identity record used by trusted ingress adapters.
 
 ::: archetype.commands.models.ActorCtx

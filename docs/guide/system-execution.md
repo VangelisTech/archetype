@@ -1,7 +1,7 @@
 # System Execution Model
 
-`AsyncSystem.execute()` and `SyncSystem.execute()` each process one archetype
-DataFrame. They run registered processors in priority order when the
+`AsyncSystem.execute()` processes one archetype DataFrame. It runs registered
+processors in priority order when the
 processor's declared components are a subset of that archetype's signature.
 The subset check eliminates per-entity component lookups and guarantees that
 the declared component columns exist in the DataFrame.
@@ -109,12 +109,12 @@ table-identity contract.
 
 A processor runs on an archetype if and only if the processor's declared `components` are a **subset** of the archetype's signature. Not equality — subset.
 
-This is the critical two-line check in both `SyncSystem.execute()` and `AsyncSystem.execute()`:
+This is the critical subset check in `AsyncSystem.execute()`:
 
 ```python
 for proc_instance in sorted(self.processors, key=lambda x: x.priority):
     if set(proc_instance.components).issubset(set(sig)):
-        df = proc_instance.process(df, **kwargs)
+        df = await proc_instance.process(df, **accepted_kwargs)
 ```
 
 ### What This Means
@@ -191,30 +191,11 @@ composition. There is no registered portable message operation; the legacy
 HTTP `type="message"` spelling is rejected before durable admission rather
 than installing a delivery pipeline.
 
-## SyncSystem vs AsyncSystem
+## Keyword Forwarding and Failures
 
-Both systems share priority ordering, the subset check, resource injection, and
-fail-fast processor errors. When a caller supplies `resources`, both pass that
-same container to every matching processor. The differences are in keyword
-forwarding and in how their worlds schedule table execution.
-
-### SyncSystem (`packages/archetype-ecs/src/archetype/core/sync/system.py`)
-
-Straightforward loop:
-
-```python
-for proc_instance in sorted(self.processors, key=lambda x: x.priority):
-    if set(proc_instance.components).issubset(set(sig)):
-        df = proc_instance.process(df, **input_kwargs)
-```
-
-Passes all input kwargs directly, including `resources` when supplied. A
-processor exception is logged and re-raised, so the execution fails rather
-than continuing with a partial processor chain.
-
-### AsyncSystem (`packages/archetype-ecs/src/archetype/core/aio/async_system.py`)
-
-Same subset check, plus:
+The production framework has one system implementation:
+`packages/archetype-ecs/src/archetype/core/aio/async_system.py`. In addition to
+priority ordering and the subset check, `AsyncSystem` provides:
 
 - **Signature-aware forwarding** — `inspect.signature()` introspects each processor's `process()` method. A processor with `**kwargs` receives every input; otherwise only explicitly declared keywords are forwarded. Processors can opt into `resources`, `tick`, or `debug` without accepting unrelated inputs.
 - **Fail-fast errors** — a processor exception is logged and re-raised. The world aggregates compute failures and does not enter the commit phase for that tick.
@@ -242,6 +223,15 @@ accepted_kwargs = (
 )
 df = await processor.process(df, **accepted_kwargs)
 ```
+
+## Smol Is a Separate Teaching Engine
+
+[`archetype-smol`](../smol/index.md) provides its own synchronous `World` and
+`Processor` for education and experimentation. It does not implement
+`AsyncSystem`, share the production runtime/storage contract, or serve as a
+blocking adapter for `archetype-ecs`. Production scripts that cannot use
+`await` use `with ArchetypeRuntime.sync()`; that facade still executes this
+same `AsyncWorld`/`AsyncSystem` engine.
 
 ## Per-Archetype Parallelism
 
@@ -315,7 +305,6 @@ following step.
 |------|-----------------|
 | `packages/archetype-ecs/src/archetype/core/archetype.py` | Signature construction, storage schema, and table naming |
 | `packages/archetype-ecs/src/archetype/core/component.py` | Component prefixes and Arrow schemas |
-| `packages/archetype-ecs/src/archetype/core/sync/system.py` | Synchronous subset matching and failure behavior |
 | `packages/archetype-ecs/src/archetype/core/aio/async_system.py` | Async subset matching and keyword filtering |
 | `packages/archetype-ecs/src/archetype/core/aio/async_world.py` | Signature interning and two-phase per-table scheduling |
 | `packages/archetype-ecs/src/archetype/core/resources.py` | Mutable world-shared resource container |

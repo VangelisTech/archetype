@@ -6,20 +6,20 @@ from archetype.core.config import StorageConfig
 from tests.conftest import make_storage_service
 
 
-class FakeSyncStore:
+class FakeBlockingShutdownStore:
     def shutdown(self):
         self.called = True
 
 
 @pytest.mark.asyncio
-async def test_storage_service_shutdown_calls_sync_shutdown(monkeypatch, tmp_path):
-    """Shutdown should call sync shutdown() on stores that are not async."""
+async def test_storage_service_shutdown_calls_blocking_shutdown(monkeypatch, tmp_path):
+    """Shutdown should call a backend's non-awaitable shutdown method."""
     svc = make_storage_service()
     try:
         cfg = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
 
         async def fake_get_backend(storage_config, cache_config=None):
-            store = FakeSyncStore()
+            store = FakeBlockingShutdownStore()
             querier = object()
             updater = object()
             svc._instances[f"{cfg.uri}::{cfg.namespace}"] = (store, querier, updater)

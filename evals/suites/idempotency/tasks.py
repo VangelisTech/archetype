@@ -24,7 +24,7 @@ from daft.io import IOConfig
 from uuid_utils import uuid7
 
 from archetype.commands.models import ActorCtx, DurableOptions
-from archetype.core.aio import AsyncWorld
+from archetype.core.aio import AsyncQueryManager, AsyncStore, AsyncUpdateManager, AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import (
     CacheConfig,
@@ -34,7 +34,6 @@ from archetype.core.config import (
     WorldConfig,
 )
 from archetype.core.hooks import OnComponentAdded, OnComponentRemoved
-from archetype.core.sync import QueryManager, SyncStore, UpdateManager
 from archetype.storage.service import StorageService
 from archetype.storage.session import configure_session
 from archetype.world.lifecycle import WorldLifecycle
@@ -195,7 +194,7 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
         task_id="idempotency.step_and_run_non_idempotent",
     ),
     IdempotencyCase(
-        operation="`QueryManager.query_archetype()`",
+        operation="`AsyncQueryManager.query_archetype()`",
         expected_contract="Idempotent for fixed persisted state",
         task_id="idempotency.query_archetype_repeatable",
     ),
@@ -1042,74 +1041,76 @@ async def _task_fixed_reads_are_idempotent() -> list[GraderResult]:
 
 
 def task_query_archetype_repeatable() -> list[GraderResult]:
-    """Real sync store reads repeat; updater replay deliberately appends."""
+    """Real async-store reads repeat; updater replay deliberately appends."""
+    return asyncio.run(_task_query_archetype_repeatable())
+
+
+async def _task_query_archetype_repeatable() -> list[GraderResult]:
     import daft
 
     with tempfile.TemporaryDirectory() as tmp:
-        storage = StorageConfig(uri=f"{tmp}/store", namespace="real_sync_idempotency")
-        store = SyncStore(uri=str(storage.uri), session=configure_session(storage))
-        updater = UpdateManager(store)
-        query = QueryManager(store=store)
+        storage = StorageConfig(uri=f"{tmp}/store", namespace="real_async_idempotency")
+        store = AsyncStore(configure_session(storage), io_config=storage.io_config)
+        updater = AsyncUpdateManager(store)
+        query = AsyncQueryManager(store=store)
         sig = (IdemCounter,)
         raw = daft.from_pylist([{"entity_id": 1, "is_active": True, "idemcounter__value": 101}])
-
-        updater.update(raw, sig, tick=0, world_id="idem-query-world", run_id="idem-query-run")
-        first = (
-            query.query_archetype(
+        try:
+            await updater.update(
+                raw, sig, tick=0, world_id="idem-query-world", run_id="idem-query-run"
+            )
+            first_df = await query.query_archetype(
                 sig=sig,
                 world_id="idem-query-world",
                 run_id="idem-query-run",
                 ticks=[0],
                 entity_ids=[1],
             )
-            .collect()
-            .to_pylist()
-        )
-        second = (
-            query.query_archetype(
+            first = first_df.collect().to_pylist()
+            second_df = await query.query_archetype(
                 sig=sig,
                 world_id="idem-query-world",
                 run_id="idem-query-run",
                 ticks=[0],
                 entity_ids=[1],
             )
-            .collect()
-            .to_pylist()
-        )
+            second = second_df.collect().to_pylist()
 
-        updater.update(raw, sig, tick=0, world_id="idem-query-world", run_id="idem-query-run")
-        after_replayed_update = (
-            query.query_archetype(
+            await updater.update(
+                raw, sig, tick=0, world_id="idem-query-world", run_id="idem-query-run"
+            )
+            replayed_df = await query.query_archetype(
                 sig=sig,
                 world_id="idem-query-world",
                 run_id="idem-query-run",
                 ticks=[0],
                 entity_ids=[1],
             )
-            .collect()
-            .to_pylist()
-        )
-        store.shutdown()
+            after_replayed_update = replayed_df.collect().to_pylist()
 
-        return [
-            exact_match(first, second, name="real_store_fixed_read_repeatability"),
-            state_check(
-                {
-                    "one_active_filtered_row": len(first) == 1,
-                    "world_scoped": first[0].get("world_id") == "idem-query-world"
-                    if first
-                    else False,
-                    "run_scoped": first[0].get("run_id") == "idem-query-run" if first else False,
-                    "entity_filtered": first[0].get("entity_id") == 1 if first else False,
-                    "tick_filtered": first[0].get("tick") == 0 if first else False,
-                    "component_value_preserved": first[0].get("idemcounter__value") == 101
-                    if first
-                    else False,
-                    "replayed_updater_appends_again": len(after_replayed_update) == 2,
-                },
-                name="real_sync_store_contracts",
-            ),
-        ]
+            return [
+                exact_match(first, second, name="real_store_fixed_read_repeatability"),
+                state_check(
+                    {
+                        "one_active_filtered_row": len(first) == 1,
+                        "world_scoped": first[0].get("world_id") == "idem-query-world"
+                        if first
+                        else False,
+                        "run_scoped": first[0].get("run_id") == "idem-query-run"
+                        if first
+                        else False,
+                        "entity_filtered": first[0].get("entity_id") == 1 if first else False,
+                        "tick_filtered": first[0].get("tick") == 0 if first else False,
+                        "component_value_preserved": first[0].get("idemcounter__value") == 101
+                        if first
+                        else False,
+                        "replayed_updater_appends_again": len(after_replayed_update) == 2,
+                    },
+                    name="real_async_store_contracts",
+                ),
+            ]
+        finally:
+            await store.shutdown()
 
 
 def task_step_and_run_are_not_idempotent() -> list[GraderResult]:

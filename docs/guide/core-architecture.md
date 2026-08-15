@@ -3,7 +3,7 @@
 ## Purpose and Scope
 
 This page is the hub for Archetype's **engine**. It is the same mental model as
-the [Overview](../index.md), expanded so you can drill into each box.
+the [Framework overview](../framework/index.md), expanded so you can drill into each box.
 
 Product features — HTTP hosting, command gate, agent missions, physical AI,
 prefabs — live in the [Application layer](app-overview.md). They compose on
@@ -18,15 +18,15 @@ explanatory, not law.
 ```mermaid
 graph TB
     App["ArchetypeRuntime / app code"]
-    World["World"]
-    System["System"]
-    QM["QueryManager"]
-    UM["UpdateManager"]
-    Store["Store"]
+    World["AsyncWorld"]
+    System["AsyncSystem"]
+    QM["AsyncQueryManager"]
+    UM["AsyncUpdateManager"]
+    Store["AsyncStore"]
 
     subgraph "Types"
         Component["Component"]
-        Processor["Processor"]
+        Processor["AsyncProcessor"]
         Archetype["Archetype signature"]
     end
 
@@ -44,12 +44,12 @@ graph TB
 
 | Box | Owns | Does not own |
 |---|---|---|
-| **World** | Tick orchestration, entity identity, live run | Auth, HTTP, multi-tenant policy |
-| **System** | Processor ordering and eligibility | Persistence |
-| **Processor** | DataFrame transforms for a component set | Spawning other entities as a side channel |
-| **QueryManager** | Reads from the store | Writes |
-| **UpdateManager** | Appends to the store | Reads |
-| **Store** | Physical archetype tables | Simulation policy |
+| **AsyncWorld** | Tick orchestration, entity identity, live run | Auth, HTTP, multi-tenant policy |
+| **AsyncSystem** | Processor ordering and eligibility | Persistence |
+| **AsyncProcessor** | DataFrame transforms for a component set | Spawning other entities as a side channel |
+| **AsyncQueryManager** | Reads from the store | Writes |
+| **AsyncUpdateManager** | Appends to the store | Reads |
+| **AsyncStore** | Physical archetype tables | Simulation policy |
 | **Archetype** | Component-set → schema grouping | Runtime product workflows |
 
 ## Simulation execution pipeline
@@ -57,11 +57,11 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant App as Application
-    participant World as World
-    participant System as System
-    participant QM as QueryManager
-    participant UM as UpdateManager
-    participant Store as Store
+    participant World as AsyncWorld
+    participant System as AsyncSystem
+    participant QM as AsyncQueryManager
+    participant UM as AsyncUpdateManager
+    participant Store as AsyncStore
     participant Commit as CommitCoordinator
 
     App->>World: step() / run(steps=N)
@@ -89,16 +89,16 @@ durable visibility boundary.
 
 ## World and simulation management
 
-The world is the orchestrator. Facades keep concerns apart:
+`AsyncWorld` is the engine orchestrator. Facades keep concerns apart:
 
 ```mermaid
 graph TB
-    World["World"]
-    World --> Sys["System facade<br/>processors + priority"]
-    World --> Q["Query facade<br/>QueryManager"]
-    World --> U["Update facade<br/>UpdateManager"]
+    World["AsyncWorld"]
+    World --> Sys["AsyncSystem facade<br/>processors + priority"]
+    World --> Q["Read facade<br/>AsyncQueryManager"]
+    World --> U["Write facade<br/>AsyncUpdateManager"]
     World --> Meta["Run metadata<br/>world_id, run_id, tick"]
-    Q --> Store["Store"]
+    Q --> Store["AsyncStore"]
     U --> Store
 ```
 
@@ -148,9 +148,9 @@ Deeper pages: [Components](components.md) · [Processors](processors.md) ·
 
 ```mermaid
 graph TB
-    QM["QueryManager"]
-    UM["UpdateManager"]
-    Store["Store"]
+    QM["AsyncQueryManager"]
+    UM["AsyncUpdateManager"]
+    Store["AsyncStore"]
     Lance["LanceDB tables"]
     Daft["Daft DataFrames"]
 
@@ -171,12 +171,12 @@ Deeper pages: [Storage](stores.md) · [Queries](querier.md) ·
 
 ```mermaid
 flowchart TD
-    Start["World.step"] --> Arch["For each active archetype"]
+    Start["AsyncWorld.step"] --> Arch["For each active archetype"]
     Arch --> Eligible["Processors whose components ⊆ signature"]
     Eligible --> Priority["Sort by priority"]
     Priority --> Process["processor.process(df, ...)"]
     Process --> Collect["Collect transformed frames"]
-    Collect --> Commit["UpdateManager append + tick advance"]
+    Collect --> Commit["AsyncUpdateManager append + tick advance"]
 ```
 
 Processors are trusted once registered. They transform populations. They are
@@ -197,7 +197,7 @@ graph TB
     end
 
     subgraph "Core"
-        Engine["World · System · Query · Update · Store"]
+        Engine["AsyncWorld · AsyncSystem · async query/update/store"]
     end
 
     RT --> Disp

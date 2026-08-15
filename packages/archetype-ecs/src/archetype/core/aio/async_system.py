@@ -26,14 +26,13 @@ logger = logging.getLogger(__name__)
 
 class AsyncSystem(iAsyncSystem):
     """
-    Async version of SyncSystem that processes archetypes concurrently.
+    Executes matching processors in priority order for each archetype.
 
-    Key innovation: Each archetype is processed through all its relevant processors
-    concurrently with other archetypes, while maintaining priority-based ordering
-    within each archetype.
+    Each archetype is processed through all its relevant processors concurrently
+    with other archetypes, while preserving priority order within each archetype.
 
-    This provides the same semantic guarantees as SyncSystem but with
-    per-archetype parallelism.
+    Processor failures are isolated to their archetype while the other archetype
+    tasks finish before the failure is reported.
     """
 
     def __init__(self):

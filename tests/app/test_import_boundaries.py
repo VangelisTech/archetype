@@ -4,7 +4,7 @@
 """Import-boundary enforcement tests.
 
 Verifies that runtime/ and api/ do not depend on retired app-layer mirrors,
-and that runtime/ never holds a concrete iWorld or AsyncWorld reference outside
+and that runtime/ never holds a concrete AsyncWorld reference outside
 TYPE_CHECKING.
 """
 
@@ -207,11 +207,11 @@ def test_api_app_import_oracle_contract(module: str, expected: bool) -> None:
 
 
 class TestNoWorldLeakInRuntime:
-    """runtime/ must never import iWorld or AsyncWorld outside TYPE_CHECKING."""
+    """runtime/ must never import AsyncWorld outside TYPE_CHECKING."""
 
-    _FORBIDDEN = frozenset({"iWorld", "AsyncWorld"})
+    _FORBIDDEN = frozenset({"AsyncWorld"})
 
-    def test_no_iworld_or_asyncworld_import(self):
+    def test_no_asyncworld_import(self):
         violations: list[str] = []
         for py in _python_files(_RUNTIME_DIR):
             for name, lineno, in_tc in _extract_name_imports(py, self._FORBIDDEN):
@@ -220,12 +220,11 @@ class TestNoWorldLeakInRuntime:
                     violations.append(f"{rel}:{lineno}  imports {name} outside TYPE_CHECKING")
 
         assert not violations, (
-            "runtime/ imports iWorld/AsyncWorld outside TYPE_CHECKING:\n  "
-            + "\n  ".join(violations)
+            "runtime/ imports AsyncWorld outside TYPE_CHECKING:\n  " + "\n  ".join(violations)
         )
 
     def test_runtime_world_annotations_clean(self):
-        """RuntimeWorld and _RuntimeWorldState must not have iWorld/AsyncWorld in
+        """RuntimeWorld and _RuntimeWorldState must not have AsyncWorld in
         field annotations (checked via reflection on the actual classes)."""
         from archetype.runtime.world import RuntimeWorld, _RuntimeWorldState
 
@@ -239,6 +238,5 @@ class TestNoWorldLeakInRuntime:
                         violations.append(f"{cls.__name__}.{field} is typed as {hint_str}")
 
         assert not violations, (
-            "World classes reference iWorld/AsyncWorld in annotations:\n  "
-            + "\n  ".join(violations)
+            "World classes reference AsyncWorld in annotations:\n  " + "\n  ".join(violations)
         )

@@ -19,13 +19,14 @@ The important boundary is:
 ```text
                   AsyncWorld
                  /          \
-       QueryManager        UpdateManager
+  AsyncQueryManager      AsyncUpdateManager
             |                   |
         AsyncStore          AsyncStore
          reads              appends
 ```
 
-`QueryManager` owns reads. `UpdateManager` owns writes. This split is independent of auth.
+`AsyncQueryManager` owns reads. `AsyncUpdateManager` owns writes. This split
+is independent of auth.
 
 ## Direct paths
 
@@ -110,7 +111,7 @@ processor.process(df, resources=resources, tick=tick)
     |
 AsyncWorld._update_archetype(sig, df, run_config)
     |
-UpdateManager.update(df, sig, tick, world_id, run_id)
+AsyncUpdateManager.update(df, sig, tick, world_id, run_id)
 ```
 
 These writes are not individually command-gated. The trust boundary is processor registration, which is an operator/admin operation through the gate.

@@ -2,6 +2,11 @@
 
 # Coding-agent transcripts
 
+| Package | Value |
+| --- | --- |
+| Distribution | `archetype-missions` |
+| Import package | `archetype.missions` |
+
 **Recommended API.** Ingest Claude Code JSONL through a redacted artifact boundary and append normalized mission rows linked to the sanitized file occurrence.
 
 ::: archetype.missions.trajectories.ClaudeTranscriptSource

@@ -2,6 +2,11 @@
 
 # Physical AI optimization
 
+| Package | Value |
+| --- | --- |
+| Distribution | `archetype-physical-ai` |
+| Import package | `archetype.physical_ai` |
+
 **Extension API.** Build pure instruction-search workflows over an injected evaluator and strategy.
 
 ::: archetype.physical_ai.optimization.PerturbationStrategy

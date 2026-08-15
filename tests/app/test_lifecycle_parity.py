@@ -4,7 +4,8 @@
 """Lifecycle parity tests.
 
 Covers shutdown draining and error aggregation, op_lock serialization,
-multi-runtime isolation, sync/async surface parity, and viewer guardrails.
+multi-runtime isolation, blocking/async runtime-facade parity, and viewer
+guardrails.
 """
 
 from __future__ import annotations
@@ -257,12 +258,12 @@ class TestMultiRuntimeIsolation:
         await rt2.shutdown()
 
 
-# ── 4. Sync/async surface parity ──────────────────────────────────────
+# ── 4. Blocking/async runtime-facade parity ───────────────────────────
 
 
-class TestSyncAsyncSurfaceParity:
-    def test_framework_world_methods_have_sync_parity(self):
-        """Framework operations have sync parity; typed extensions stay async."""
+class TestBlockingAsyncRuntimeFacadeParity:
+    def test_framework_world_methods_have_blocking_facade_parity(self):
+        """Framework operations reach parity through the blocking facade."""
         async_methods = {
             name
             for name in dir(RuntimeWorld)

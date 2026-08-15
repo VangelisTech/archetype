@@ -58,10 +58,29 @@ record a fictional authorization decision.
 
 ### R4 — Async context manager is canonical
 
-```python
-async with ArchetypeRuntime() as runtime:
-    ...
-```
+<!-- markdownlint-disable MD046 -->
+
+=== "Async (recommended)"
+
+    ```python
+    from archetype import ArchetypeRuntime
+
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("experiment")
+        await world.step()
+    ```
+
+=== "Blocking script"
+
+    ```python
+    from archetype import ArchetypeRuntime
+
+    with ArchetypeRuntime.sync() as runtime:
+        world = runtime.world("experiment")
+        world.step()
+    ```
+
+<!-- markdownlint-enable MD046 -->
 
 Shutdown must:
 

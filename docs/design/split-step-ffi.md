@@ -618,16 +618,19 @@ Required scenarios:
 - update/reset rows preserve raw materialization semantics;
 - component migration writes an old-table tombstone and a new-table raw active
   row;
-- processor failure after one committed table produces the documented
-  partial-tick state and a Python exception.
+- processor failure after another table computes appends nothing, leaves the
+  tick retryable, and raises the structured Python error;
+- commit failure after one physical table append leaves that partial attempt
+  invisible until a later manifest-published retry succeeds.
 
 Existing tests to mirror or extend include:
 
 - `tests/aio/test_async_world_mutations.py`
 - `tests/aio/test_async_world_lifecycle.py`
 - `tests/core/test_async_world_duplicate_spawn_overwrite.py`
+- `tests/core/test_async_world_error_propagation.py`
+- `tests/app/test_application_atomic_visibility.py`
 - `tests/integration/test_command_flow.py`
-- `tests/sync/test_sync_stack_contracts.py`
 
 A C3 migration-gate suite covering those mirrored lifecycle, mutation, and
 failure cases should become the Phase 6 entry criterion before this adapter is

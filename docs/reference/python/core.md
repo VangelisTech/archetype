@@ -2,6 +2,11 @@
 
 # Core engine
 
+| Package | Value |
+| --- | --- |
+| Distribution | `archetype-ecs` |
+| Import package | `archetype` |
+
 **Extension API.** Supported engine primitives for custom execution and world lifecycle extensions.
 
 ::: archetype.core.Archetype

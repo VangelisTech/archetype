@@ -12,13 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Archetype Core
+"""Dataframe-first ECS primitives and the asynchronous execution kernel.
 
-Pure ECS primitives: Component, Archetype, World, System, Processor.
-Resources: Type-safe DI container for passing services to processors.
-
-Application-level orchestration lives in archetype.app.
+``Resources`` provides type-safe dependency injection for processors. Process
+composition and the supported blocking facade live above the core kernel.
 """
 
 # Async Module
@@ -39,16 +36,6 @@ from .errors import AmbiguousTickCommitError, TickExecutionError, TickFailure
 from .interfaces import ArchetypeSignature
 from .resources import Resources
 
-# Sync Module
-from .sync import (
-    QueryManager,
-    SyncProcessor,
-    SyncStore,
-    SyncSystem,
-    SyncWorld,
-    UpdateManager,
-)
-
 __all__ = [
     # Core types
     "Component",
@@ -64,13 +51,6 @@ __all__ = [
     "StorageConfig",
     "CacheConfig",
     "WorldConfig",
-    # Sync API
-    "SyncWorld",
-    "SyncStore",
-    "SyncSystem",
-    "SyncProcessor",
-    "QueryManager",
-    "UpdateManager",
     # Async API
     "AsyncWorld",
     "AsyncSystem",

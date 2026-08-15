@@ -18,13 +18,8 @@ Events are dataclasses, not strings. ``world.add_hook(OnSpawn, fn)`` is
 type-checked; ``world.add_hook(NotARealHook, fn)`` is a NameError.
 
 Every hook is registered against a concrete event type and handed back an
-opaque :class:`HookHandle` for removal. This module ships two registries
-that share the same event catalogue and handle type:
-
-- :class:`HookRegistry` — async handlers, awaited inline or run detached via
-  ``asyncio.create_task`` with ``mode="spawn"``.
-- :class:`SyncHookRegistry` — plain callables, called inline. No event loop
-  required, so no ``"spawn"`` mode.
+opaque :class:`HookHandle` for removal. :class:`HookRegistry` awaits handlers
+inline or runs them detached via ``asyncio.create_task`` with ``mode="spawn"``.
 
 Payloads intentionally omit the owning world. The handler was registered
 against that world; a back-reference would be redundant and prevents the
@@ -136,13 +131,6 @@ class AsyncHookHandler(Protocol[E]):
     def __call__(self, event: E, /) -> Awaitable[None]: ...
 
 
-class SyncHookHandler(Protocol[E]):
-    """Synchronous hook handler. Takes a single event argument of the
-    matching event type and returns None."""
-
-    def __call__(self, event: E, /) -> None: ...
-
-
 FireMode = Literal["blocking", "spawn"]
 
 
@@ -241,66 +229,6 @@ class HookRegistry:
                 asyncio.create_task(_fire_detached(fn, event))
 
 
-class SyncHookRegistry:
-    """Per-world synchronous hook storage. Handlers are called inline in
-    the firing thread — there is no event loop to defer to, so there is no
-    ``"spawn"`` fire mode.
-    """
-
-    __slots__ = ("_by_type", "_ids", "_token")
-
-    def __init__(self) -> None:
-        self._by_type: dict[type[HookEvent], list[tuple[HookHandle, Callable[..., None]]]] = {}
-        self._ids = itertools.count(1)
-        self._token = object()
-
-    def add(
-        self,
-        event_type: type[E],
-        fn: SyncHookHandler[E],
-    ) -> HookHandle:
-        handle = HookHandle(
-            _id=next(self._ids),
-            _event_type=event_type,
-            _registry_token=self._token,
-        )
-        self._by_type.setdefault(event_type, []).append((handle, fn))
-        return handle
-
-    def remove(self, handle: HookHandle) -> None:
-        bucket = self._by_type.get(handle._event_type)
-        if not bucket:
-            return
-        self._by_type[handle._event_type] = [row for row in bucket if row[0] != handle]
-
-    def clear(self) -> None:
-        self._by_type.clear()
-
-    def items(
-        self,
-    ) -> Iterator[tuple[type[HookEvent], HookHandle, Callable[..., None], FireMode]]:
-        """Iterate registered hooks as (event_type, handle, fn, mode) rows.
-
-        Sync hooks always fire inline, so mode is always "blocking"; the
-        4-tuple shape is kept uniform with the async registry.
-        """
-        for event_type, bucket in self._by_type.items():
-            for handle, fn in bucket:
-                yield event_type, handle, fn, "blocking"
-
-    def fire(self, event: HookEvent) -> None:
-        for _handle, fn in self._by_type.get(type(event), ()):
-            try:
-                fn(event)
-            except Exception as exc:
-                logger.warning(
-                    "Hook %s failed on %s: %s",
-                    getattr(fn, "__qualname__", fn),
-                    type(event).__name__,
-                    exc,
-                )
-
-
 async def _fire_detached(fn: Callable[..., Awaitable[None]], event: HookEvent) -> None:
     try:
         await fn(event)
@@ -326,6 +254,4 @@ __all__ = [
     "OnSpawn",
     "PostTick",
     "PreTick",
-    "SyncHookHandler",
-    "SyncHookRegistry",
 ]
