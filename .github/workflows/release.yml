@@ -21,10 +21,15 @@ jobs:
     name: Authorize release operator
     runs-on: ubuntu-latest
     permissions: {}
+    outputs:
+      tag_object_sha: ${{ steps.release_ref.outputs.tag_object_sha }}
     steps:
       - name: Require everettVT and an exact release tag
+        id: release_ref
+        shell: bash
         env:
           RELEASE_ACTOR: ${{ github.actor }}
+          RELEASE_COMMIT: ${{ github.sha }}
           RELEASE_EVENT: ${{ github.event_name }}
           RELEASE_INPUT_TAG: ${{ inputs.tag }}
           RELEASE_REF_NAME: ${{ github.ref_name }}
@@ -32,16 +37,47 @@ jobs:
           RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         run: |
-          test "$RELEASE_REPOSITORY" = "VangelisTech/archetype"
-          test "$RELEASE_EVENT" = "workflow_dispatch"
-          test "$RELEASE_ACTOR" = "everettVT"
-          test "$RELEASE_TRIGGERING_ACTOR" = "everettVT"
-          test "$RELEASE_REF_TYPE" = "tag"
-          test "$RELEASE_INPUT_TAG" = "$RELEASE_REF_NAME"
-          case "$RELEASE_REF_NAME" in
-            v*) ;;
-            *) echo "release ref must be a v* tag" >&2; exit 1 ;;
-          esac
+          set -euo pipefail
+          fail() { echo "release authorization failed: $*" >&2; exit 1; }
+
+          [[ "$RELEASE_REPOSITORY" == "VangelisTech/archetype" ]] || fail "wrong repository"
+          [[ "$RELEASE_EVENT" == "workflow_dispatch" ]] || fail "wrong event"
+          [[ "$RELEASE_ACTOR" == "everettVT" ]] || fail "wrong actor"
+          [[ "$RELEASE_TRIGGERING_ACTOR" == "everettVT" ]] || fail "wrong triggering actor"
+          [[ "$RELEASE_REF_TYPE" == "tag" ]] || fail "workflow ref is not a tag"
+          [[ "$RELEASE_INPUT_TAG" == "$RELEASE_REF_NAME" ]] || fail "input and ref differ"
+          [[ "$RELEASE_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "tag must be canonical vMAJOR.MINOR.PATCH"
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "release commit is not 40-hex"
+
+          tag_ref="refs/tags/$RELEASE_REF_NAME"
+          remote="https://github.com/VangelisTech/archetype.git"
+          output="$(git ls-remote --exit-code "$remote" "$tag_ref" "$tag_ref^{}")"
+          direct_sha=
+          peeled_sha=
+          while IFS= read -r line; do
+            sha=
+            ref=
+            extra=
+            IFS=$'\t' read -r sha ref extra <<< "$line"
+            [[ -z "$extra" ]] || fail "malformed ls-remote output"
+            [[ "$line" == "$sha"$'\t'"$ref" ]] || fail "malformed ls-remote output"
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail "remote SHA is not 40-hex"
+            case "$ref" in
+              "$tag_ref")
+                [[ -z "$direct_sha" ]] || fail "duplicate direct tag ref"
+                direct_sha="$sha"
+                ;;
+              "$tag_ref^{}")
+                [[ -z "$peeled_sha" ]] || fail "duplicate peeled tag ref"
+                peeled_sha="$sha"
+                ;;
+              *) fail "unexpected remote ref $ref" ;;
+            esac
+          done <<< "$output"
+          [[ -n "$direct_sha" ]] || fail "direct tag ref is absent"
+          resolved_sha="${peeled_sha:-$direct_sha}"
+          [[ "$resolved_sha" == "$RELEASE_COMMIT" ]] || fail "remote tag commit differs"
+          printf 'tag_object_sha=%s\n' "$direct_sha" >> "$GITHUB_OUTPUT"
 
   release-profile:
     name: Release verification
@@ -333,7 +369,7 @@ jobs:
 
   testpypi-preflight:
     name: TestPyPI exact-byte preflight
-    needs: [release-evidence-gate, python-compatibility]
+    needs: [authorize-release, release-evidence-gate, python-compatibility]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -346,6 +382,7 @@ jobs:
           python scripts/verify_release_ref.py
           --tag "$GITHUB_REF_NAME"
           --expected-commit "$GITHUB_SHA"
+          --expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"
           --repository "$GITHUB_REPOSITORY"
           --actor "$GITHUB_ACTOR"
           --triggering-actor "$GITHUB_TRIGGERING_ACTOR"
@@ -374,7 +411,7 @@ jobs:
 
   publish-testpypi:
     name: Publish attested artifacts to TestPyPI
-    needs: testpypi-preflight
+    needs: [authorize-release, testpypi-preflight]
     if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
     runs-on: ubuntu-latest
     environment: release-testpypi
@@ -389,6 +426,7 @@ jobs:
       - name: Reauthorize the remote release tag
         shell: bash
         env:
+          EXPECTED_TAG_OBJECT: ${{ needs.authorize-release.outputs.tag_object_sha }}
           RELEASE_INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
@@ -399,6 +437,7 @@ jobs:
           [[ "$GITHUB_REF_NAME" == "$RELEASE_INPUT_TAG" ]] || fail "input and ref differ"
           [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "tag must be canonical vMAJOR.MINOR.PATCH"
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "GITHUB_SHA is not 40-hex"
+          [[ "$EXPECTED_TAG_OBJECT" =~ ^[0-9a-f]{40}$ ]] || fail "authorized tag object is not 40-hex"
 
           tag_ref="refs/tags/$GITHUB_REF_NAME"
           [[ "$GITHUB_REF" == "$tag_ref" ]] || fail "workflow ref is not the exact tag ref"
@@ -427,6 +466,7 @@ jobs:
             esac
           done <<< "$output"
           [[ -n "$direct_sha" ]] || fail "direct tag ref is absent"
+          [[ "$direct_sha" == "$EXPECTED_TAG_OBJECT" ]] || fail "remote tag object differs"
           resolved_sha="${peeled_sha:-$direct_sha}"
           [[ "$resolved_sha" == "$GITHUB_SHA" ]] || fail "remote tag commit differs"
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
@@ -532,7 +572,7 @@ jobs:
 
   pypi-preflight:
     name: PyPI exact-byte preflight
-    needs: testpypi-smoke
+    needs: [authorize-release, testpypi-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -545,6 +585,7 @@ jobs:
           python scripts/verify_release_ref.py
           --tag "$GITHUB_REF_NAME"
           --expected-commit "$GITHUB_SHA"
+          --expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"
           --repository "$GITHUB_REPOSITORY"
           --actor "$GITHUB_ACTOR"
           --triggering-actor "$GITHUB_TRIGGERING_ACTOR"
@@ -570,7 +611,7 @@ jobs:
           --registry-artifact-host files.pythonhosted.org
 
   publish:
-    needs: pypi-preflight
+    needs: [authorize-release, pypi-preflight]
     if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
     runs-on: ubuntu-latest
     environment: release-pypi
@@ -585,6 +626,7 @@ jobs:
       - name: Reauthorize the remote release tag
         shell: bash
         env:
+          EXPECTED_TAG_OBJECT: ${{ needs.authorize-release.outputs.tag_object_sha }}
           RELEASE_INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
@@ -595,6 +637,7 @@ jobs:
           [[ "$GITHUB_REF_NAME" == "$RELEASE_INPUT_TAG" ]] || fail "input and ref differ"
           [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "tag must be canonical vMAJOR.MINOR.PATCH"
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "GITHUB_SHA is not 40-hex"
+          [[ "$EXPECTED_TAG_OBJECT" =~ ^[0-9a-f]{40}$ ]] || fail "authorized tag object is not 40-hex"
 
           tag_ref="refs/tags/$GITHUB_REF_NAME"
           [[ "$GITHUB_REF" == "$tag_ref" ]] || fail "workflow ref is not the exact tag ref"
@@ -623,6 +666,7 @@ jobs:
             esac
           done <<< "$output"
           [[ -n "$direct_sha" ]] || fail "direct tag ref is absent"
+          [[ "$direct_sha" == "$EXPECTED_TAG_OBJECT" ]] || fail "remote tag object differs"
           resolved_sha="${peeled_sha:-$direct_sha}"
           [[ "$resolved_sha" == "$GITHUB_SHA" ]] || fail "remote tag commit differs"
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
@@ -722,7 +766,7 @@ jobs:
           if-no-files-found: error
 
   github-release:
-    needs: registry-smoke
+    needs: [authorize-release, registry-smoke]
     if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
     runs-on: ubuntu-latest
     permissions:
@@ -740,6 +784,7 @@ jobs:
           python scripts/verify_release_ref.py
           --tag "$GITHUB_REF_NAME"
           --expected-commit "$GITHUB_SHA"
+          --expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"
           --repository "$GITHUB_REPOSITORY"
           --actor "$GITHUB_ACTOR"
           --triggering-actor "$GITHUB_TRIGGERING_ACTOR"

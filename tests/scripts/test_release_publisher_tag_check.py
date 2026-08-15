@@ -16,7 +16,9 @@ ROOT = Path(__file__).resolve().parents[2]
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 PUBLISHER_JOBS = ("publish-testpypi", "publish")
 EXPECTED_COMMIT = "a" * 40
-OTHER_COMMIT = "b" * 40
+EXPECTED_TAG_OBJECT = "b" * 40
+REPLACEMENT_TAG_OBJECT = "c" * 40
+OTHER_COMMIT = "d" * 40
 TAG = "v0.6.0"
 TAG_REF = f"refs/tags/{TAG}"
 REMOTE = "https://github.com/VangelisTech/archetype.git"
@@ -69,6 +71,7 @@ def _run_tag_check(
     output: str,
     tag: str = TAG,
     expected_commit: str = EXPECTED_COMMIT,
+    expected_tag_object: str = EXPECTED_TAG_OBJECT,
     git_status: int = 0,
     expect_git: bool = True,
 ) -> subprocess.CompletedProcess[str]:
@@ -96,6 +99,7 @@ def _run_tag_check(
         "GITHUB_REF_TYPE": "tag",
         "GITHUB_REPOSITORY": "VangelisTech/archetype",
         "GITHUB_SHA": expected_commit,
+        "EXPECTED_TAG_OBJECT": expected_tag_object,
         "RELEASE_INPUT_TAG": tag,
     }
     result = subprocess.run(  # noqa: S603 - exact trusted workflow shell under test
@@ -131,6 +135,7 @@ def test_publisher_tag_check_accepts_a_lightweight_tag(tmp_path: Path) -> None:
     result = _run_tag_check(
         tmp_path,
         output=f"{EXPECTED_COMMIT}\t{TAG_REF}\n",
+        expected_tag_object=EXPECTED_COMMIT,
     )
 
     assert result.returncode == 0, result.stderr
@@ -139,7 +144,7 @@ def test_publisher_tag_check_accepts_a_lightweight_tag(tmp_path: Path) -> None:
 def test_publisher_tag_check_accepts_an_annotated_tag(tmp_path: Path) -> None:
     result = _run_tag_check(
         tmp_path,
-        output=(f"{OTHER_COMMIT}\t{TAG_REF}\n{EXPECTED_COMMIT}\t{TAG_REF}^{{}}\n"),
+        output=(f"{EXPECTED_TAG_OBJECT}\t{TAG_REF}\n{EXPECTED_COMMIT}\t{TAG_REF}^{{}}\n"),
     )
 
     assert result.returncode == 0, result.stderr
@@ -149,10 +154,21 @@ def test_publisher_tag_check_rejects_a_moved_commit(tmp_path: Path) -> None:
     result = _run_tag_check(
         tmp_path,
         output=f"{OTHER_COMMIT}\t{TAG_REF}\n",
+        expected_tag_object=OTHER_COMMIT,
     )
 
     assert result.returncode != 0
     assert "remote tag commit differs" in result.stderr
+
+
+def test_publisher_tag_check_rejects_replaced_annotated_tag_object(tmp_path: Path) -> None:
+    result = _run_tag_check(
+        tmp_path,
+        output=(f"{REPLACEMENT_TAG_OBJECT}\t{TAG_REF}\n{EXPECTED_COMMIT}\t{TAG_REF}^{{}}\n"),
+    )
+
+    assert result.returncode != 0
+    assert "remote tag object differs" in result.stderr
 
 
 def test_publisher_tag_check_rejects_a_duplicate_ref(tmp_path: Path) -> None:

@@ -13,6 +13,7 @@ import pytest
 from scripts.verify_release_ref import verify_release_ref
 
 COMMIT = "a" * 40
+TAG_OBJECT = "b" * 40
 
 
 def _run(
@@ -24,7 +25,7 @@ def _run(
     return subprocess.CompletedProcess(
         command,
         0,
-        stdout=f"{'b' * 40}\trefs/tags/v0.6.0\n{COMMIT}\trefs/tags/v0.6.0^{{}}\n",
+        stdout=f"{TAG_OBJECT}\trefs/tags/v0.6.0\n{COMMIT}\trefs/tags/v0.6.0^{{}}\n",
         stderr="",
     )
 
@@ -34,6 +35,7 @@ def test_release_ref_accepts_exact_annotated_tag_and_operator(tmp_path: Path) ->
         root=tmp_path,
         tag="v0.6.0",
         expected_commit=COMMIT,
+        expected_tag_object=TAG_OBJECT,
         repository="VangelisTech/archetype",
         actor="everettVT",
         triggering_actor="everettVT",
@@ -41,6 +43,7 @@ def test_release_ref_accepts_exact_annotated_tag_and_operator(tmp_path: Path) ->
     )
 
     assert result["commit"] == COMMIT
+    assert result["tag_object"] == TAG_OBJECT
     assert result["tag"] == "v0.6.0"
 
 
@@ -50,6 +53,7 @@ def test_release_ref_rejects_rerun_by_another_actor(tmp_path: Path) -> None:
             root=tmp_path,
             tag="v0.6.0",
             expected_commit=COMMIT,
+            expected_tag_object=TAG_OBJECT,
             repository="VangelisTech/archetype",
             actor="everettVT",
             triggering_actor="another-user",
@@ -73,6 +77,7 @@ def test_release_ref_rejects_moved_remote_tag(tmp_path: Path) -> None:
             root=tmp_path,
             tag="v0.6.0",
             expected_commit=COMMIT,
+            expected_tag_object=TAG_OBJECT,
             repository="VangelisTech/archetype",
             actor="everettVT",
             triggering_actor="everettVT",
@@ -96,8 +101,35 @@ def test_release_ref_rejects_duplicate_remote_evidence(tmp_path: Path) -> None:
             root=tmp_path,
             tag="v0.6.0",
             expected_commit=COMMIT,
+            expected_tag_object=TAG_OBJECT,
             repository="VangelisTech/archetype",
             actor="everettVT",
             triggering_actor="everettVT",
             run=duplicate,
+        )
+
+
+def test_release_ref_rejects_replaced_annotated_tag_object(tmp_path: Path) -> None:
+    replacement = "c" * 40
+
+    def replaced(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[1:3] == ["rev-parse", "HEAD"]:
+            return _run(command, **kwargs)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=(f"{replacement}\trefs/tags/v0.6.0\n{COMMIT}\trefs/tags/v0.6.0^{{}}\n"),
+            stderr="",
+        )
+
+    with pytest.raises(ValueError, match="release tag object moved"):
+        verify_release_ref(
+            root=tmp_path,
+            tag="v0.6.0",
+            expected_commit=COMMIT,
+            expected_tag_object=TAG_OBJECT,
+            repository="VangelisTech/archetype",
+            actor="everettVT",
+            triggering_actor="everettVT",
+            run=replaced,
         )
