@@ -91,6 +91,18 @@ def test_pending_trusted_publishers_do_not_claim_new_project_names() -> None:
         assert "remains claimable until the first successful oidc publication" in content
 
 
+def test_contributing_names_each_trusted_publisher_workflow() -> None:
+    contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+    for workflow in (
+        "release.yml",
+        "publish-archetype-missions.yml",
+        "publish-archetype-physical-ai.yml",
+        "publish-archetype-research.yml",
+    ):
+        assert f"`{workflow}`" in contributing
+
+
 def test_missions_reference_renders_the_primary_workflow_methods() -> None:
     runtime = (ROOT / "packages/archetype-missions/src/archetype/missions/runtime.py").read_text(
         encoding="utf-8"

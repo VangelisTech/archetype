@@ -186,9 +186,10 @@ Apple lanes download that same matrix; Python 3.13 compatibility runs alongside 
 The evidence gate requires every release receipt to name all four wheel digests.
 
 Publication then proceeds as one fail-closed chain: an unprivileged job rejects any
-conflicting TestPyPI files, a dedicated OIDC job uploads the original `dist/` artifact,
-and isolated environments install the base, each selective library, and the full stack
-from TestPyPI. The same preflight, upload, exact-byte index verification, and five-shape
+conflicting TestPyPI files, then the coordinator and package-specific OIDC workflows
+upload exact distribution slices from the original `dist/` artifact. Isolated
+environments install the base, each selective library, and the full stack from
+TestPyPI. The same preflight, upload, exact-byte index verification, and five-shape
 install matrix run against PyPI. The GitHub Release is created only after PyPI serves
 all eight attested files and the registry-installed matrix passes. Exact matching
 partial uploads are resumable; an existing filename with different bytes fails before
@@ -202,9 +203,20 @@ three new project names on both PyPI and TestPyPI. This preconfigures their OIDC
 identities; it does not reserve or claim the names. Each new name remains claimable
 until the first successful OIDC publication creates the project on that registry.
 All four projects on each registry must trust repository `VangelisTech/archetype`,
-workflow `release.yml`, and the exact environment for that registry: `release-pypi`
-or `release-testpypi`. Protect both GitHub environments to allow only `v*` tags,
-require the release operator's review, and disable administrator bypass.
+the exact workflow below, and the environment for that registry: `release-pypi` or
+`release-testpypi`.
+
+| Project | Trusted Publisher workflow |
+|---|---|
+| `archetype-ecs` | `release.yml` |
+| `archetype-missions` | `publish-archetype-missions.yml` |
+| `archetype-physical-ai` | `publish-archetype-physical-ai.yml` |
+| `archetype-research` | `publish-archetype-research.yml` |
+
+The coordinator publishes ECS directly and dispatches each other distribution's
+direct workflow with an exact-run allowlist. Protect both GitHub environments to
+allow only `v*` tags, require the release operator's review, and disable administrator
+bypass.
 
 The hosted OIDC chain is the sole publishing authority. The read-only
 `make verify-test-index` and `make verify-published` targets are available for operator
