@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from math import isnan
-from typing import Any
+from typing import Any, cast
 
 import daft
 from daft import DataFrame
@@ -79,6 +79,22 @@ def _same_value(left: Any, right: Any) -> bool:
     if isinstance(left, float) and isnan(left):
         return isnan(right)
     return bool(left == right)
+
+
+def _validate_changed_fields[ComponentT: Component](
+    component: ComponentT,
+    changed_values: dict[str, Any],
+) -> ComponentT:
+    """Validate processor changes without replaying untouched field validators."""
+
+    candidate = component.model_copy(deep=True)
+    validator = type(component).__pydantic_validator__
+    for name, value in changed_values.items():
+        candidate = cast(
+            ComponentT,
+            validator.validate_assignment(candidate, name, value, by_name=True),
+        )
+    return candidate
 
 
 class World:
@@ -367,12 +383,19 @@ class World:
             for component_type in signature:
                 prefix = component_type.prefix()
                 values = {name: row[f"{prefix}{name}"] for name in component_type.model_fields}
-                source_values = {
-                    name: source_row[f"{prefix}{name}"] for name in component_type.model_fields
+                changed_values = {
+                    name: value
+                    for name, value in values.items()
+                    if not _same_value(value, source_row[f"{prefix}{name}"])
                 }
-                if _same_value(values, source_values):
+                if not changed_values:
                     components.append(current_by_type[component_type])
                 else:
-                    components.append(component_type.model_validate(values, by_name=True))
+                    components.append(
+                        _validate_changed_fields(
+                            current_by_type[component_type],
+                            changed_values,
+                        )
+                    )
             decoded[entity_id] = tuple(components)
         return decoded

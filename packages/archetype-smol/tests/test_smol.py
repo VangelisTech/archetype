@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -264,6 +265,59 @@ def test_noop_steps_do_not_replay_component_validators() -> None:
     ] == [1, 1]
 
 
+def test_partial_updates_do_not_replay_untouched_field_validators() -> None:
+    validated: list[tuple[str, int]] = []
+
+    class StatefulPosition(Component):
+        position: int
+        generation: int
+
+        @field_validator("position")
+        @classmethod
+        def validate_position(cls, value: int) -> int:
+            validated.append(("position", value))
+            return value
+
+        @field_validator("generation")
+        @classmethod
+        def increment_generation(cls, value: int) -> int:
+            validated.append(("generation", value))
+            return value + 1
+
+    class MovePosition(Processor):
+        components = (StatefulPosition,)
+
+        def process(self, df, *, tick):
+            del tick
+            return df.with_column(
+                "statefulposition__position",
+                col("statefulposition__position") + 1,
+            )
+
+    world = World(processors=[MovePosition()])
+    world.spawn(StatefulPosition(position=0, generation=0))
+
+    world.step()
+
+    assert validated == [("position", 0), ("generation", 0), ("position", 1)]
+    assert world.history(StatefulPosition).to_pylist() == [
+        {
+            "entity_id": 1,
+            "tick": 0,
+            "is_active": True,
+            "statefulposition__position": 0,
+            "statefulposition__generation": 1,
+        },
+        {
+            "entity_id": 1,
+            "tick": 1,
+            "is_active": True,
+            "statefulposition__position": 1,
+            "statefulposition__generation": 1,
+        },
+    ]
+
+
 def test_equal_but_differently_typed_processor_values_are_revalidated() -> None:
     class StrictCount(Component):
         value: int = Field(strict=True)
@@ -432,3 +486,10 @@ def test_distribution_is_not_a_framework_compatibility_layer() -> None:
     assert '"archetype-ecs' not in project
     assert "archetype.core" not in sources
     assert "archetype.runtime" not in sources
+
+
+def test_distribution_requires_pydantic_assignment_validation_api() -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((package_root / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert "pydantic>=2.11" in project["project"]["dependencies"]
