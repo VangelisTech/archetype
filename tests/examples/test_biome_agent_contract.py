@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import runpy
 import signal
@@ -558,7 +559,12 @@ def test_launch_revalidates_exact_upstream_heads_and_starts_an_owned_group(
     )
     monkeypatch.setattr(biome_bootstrap, "is_port_open", lambda *args, **kwargs: False)
     launched: list[tuple[list[str], dict[str, object]]] = []
+
     sentinel = object()
+    lease_file = tmp_path / "process-leases.jsonl"
+    wrapper = tmp_path / "process-lease-guardian.py"
+    monkeypatch.setenv(biome_bootstrap._PROCESS_LEASE_ENV, str(lease_file))
+    monkeypatch.setenv(biome_bootstrap._PROCESS_LEASE_WRAPPER_ENV, str(wrapper))
 
     def popen(command, **kwargs):
         launched.append((command, kwargs))
@@ -569,10 +575,25 @@ def test_launch_revalidates_exact_upstream_heads_and_starts_an_owned_group(
     assert launch(checkout) is sentinel
     assert launched == [
         (
-            [str(executable), "--scene", "etc/scenes/archetype_agent.flecs"],
+            [
+                sys.executable,
+                str(wrapper),
+                "exec",
+                "--lease-prefix",
+                "biome",
+                "--host",
+                BIOME_HOST,
+                "--port",
+                str(biome_bootstrap.BIOME_PORT),
+                "--",
+                str(executable),
+                "--scene",
+                "etc/scenes/archetype_agent.flecs",
+            ],
             {"cwd": biome, "start_new_session": True},
         )
     ]
+    assert not lease_file.exists(), "the exec wrapper, not its parent, must acquire the lease"
 
     revisions[biome] = "0" * 40
     with pytest.raises(RuntimeError, match="expected exact pin"):
@@ -586,7 +607,10 @@ def test_launch_revalidates_exact_upstream_heads_and_starts_an_owned_group(
     assert len(launched) == 1
 
 
-def test_terminate_closes_owned_descendants_and_listener(tmp_path: Path) -> None:
+def test_terminate_closes_owned_descendants_and_listener(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     with socket.socket() as reservation:
         reservation.bind((BIOME_HOST, 0))
         port = reservation.getsockname()[1]
@@ -627,6 +651,8 @@ time.sleep(60)
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    lease_file = tmp_path / "process-leases.jsonl"
+    monkeypatch.setenv(biome_bootstrap._PROCESS_LEASE_ENV, str(lease_file))
     try:
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and not marker.exists():
@@ -645,6 +671,14 @@ time.sleep(60)
 
         assert not is_process_group_alive(process.pid)
         assert not is_port_open(BIOME_HOST, port)
+        records = [json.loads(line) for line in lease_file.read_text().splitlines()]
+        assert records == [
+            {
+                "schema": biome_bootstrap._PROCESS_LEASE_SCHEMA,
+                "operation": "release",
+                "lease_id": f"biome:{process.pid}",
+            }
+        ]
     finally:
         if is_process_group_alive(process.pid):
             try:

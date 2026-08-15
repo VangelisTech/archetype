@@ -9,14 +9,37 @@ import asyncio
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 import scripts.run_operational_scenarios as operational_runner
+from scripts.process_lease_guardian import (
+    ACK_DIR_ENV as PROCESS_LEASE_ACK_DIR_ENV,
+)
+from scripts.process_lease_guardian import (
+    CLOSED_ENV as PROCESS_LEASE_CLOSED_ENV,
+)
+from scripts.process_lease_guardian import (
+    LEASE_ENV as PROCESS_LEASE_ENV,
+)
+from scripts.process_lease_guardian import LEASE_SCHEMA as PROCESS_LEASE_SCHEMA
+from scripts.process_lease_guardian import (
+    READY_ENV as PROCESS_LEASE_READY_ENV,
+)
+from scripts.process_lease_guardian import (
+    RESULT_SCHEMA as PROCESS_LEASE_RESULT_SCHEMA,
+)
+from scripts.process_lease_guardian import (
+    WRAPPER_ENV as PROCESS_LEASE_WRAPPER_ENV,
+)
+from scripts.process_lease_guardian import _process_birth_identity, guard
 from scripts.run_example_receipt import (
     CAPTURED_RECEIPT_ENV,
     MAX_RECEIPT_BYTES,
@@ -311,6 +334,741 @@ def test_timeout_is_failed_and_process_group_is_cleaned(tmp_path: Path) -> None:
     assert result["timed_out"] is True
     assert result["returncode"] != 0
     assert result["process_group_leaked"] is False
+
+
+def test_timeout_reaps_registered_nested_process_group_and_listener(tmp_path: Path) -> None:
+    marker = tmp_path / "nested.json"
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    nested_source = """
+import json
+import os
+import signal
+import socket
+import sys
+import time
+from pathlib import Path
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", int(sys.argv[3])))
+listener.listen()
+Path(sys.argv[1]).write_text(json.dumps({
+    "pid": os.getpid(),
+    "pgid": os.getpgrp(),
+    "parent_pgid": int(sys.argv[2]),
+    "port": int(sys.argv[3]),
+}))
+while True:
+    time.sleep(1)
+"""
+    outer_source = f"""
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+marker = Path(sys.argv[1])
+nested = subprocess.Popen(
+    [
+        sys.executable,
+        os.environ[{PROCESS_LEASE_WRAPPER_ENV!r}],
+        "exec",
+        "--lease-prefix",
+        "nested",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        sys.argv[3],
+        "--",
+        sys.executable,
+        "-c",
+        sys.argv[2],
+        str(marker),
+        str(os.getpgrp()),
+        sys.argv[3],
+    ],
+    start_new_session=True,
+)
+while not marker.is_file():
+    if nested.poll() is not None:
+        raise SystemExit("nested listener exited before registration")
+    time.sleep(0.01)
+time.sleep(60)
+"""
+    env = os.environ.copy()
+    env[operational_runner._PROCESS_LEASE_GUARDIAN_ENV] = "1"
+    nested_group: int | None = None
+    try:
+        result = _run_process(
+            [sys.executable, "-c", outer_source, str(marker), nested_source, str(port)],
+            cwd=tmp_path,
+            env=env,
+            timeout_seconds=5,
+            log_prefix=tmp_path / "nested-timeout",
+            redacted=False,
+        )
+        state = json.loads(marker.read_text(encoding="utf-8"))
+        nested_group = state["pgid"]
+
+        assert state["pid"] != nested_group
+        assert nested_group != state["parent_pgid"]
+        assert result["timed_out"] is True
+        assert result["returncode"] != 0
+        assert result["process_group_leaked"] is False
+        cleanup = cast(dict[str, Any], result["process_leases"])
+        assert cleanup["schema"] == PROCESS_LEASE_RESULT_SCHEMA
+        assert cleanup["status"] == "closed"
+        assert cleanup["active_lease_count"] == 1
+        assert cleanup["errors"] == []
+        (lease,) = cast(list[dict[str, Any]], cleanup["leases"])
+        assert lease["lease_id"] == f"nested:{nested_group}"
+        assert lease["pid"] == nested_group
+        assert lease["process_group"] == nested_group
+        assert lease["host"] == "127.0.0.1"
+        assert lease["port"] == state["port"]
+        assert isinstance(lease["birth_identity"], str)
+        assert lease["birth_identity"]
+        assert lease["ownership_matches"] is True
+        assert lease["released"] is False
+        assert lease["release_was_truthful"] is None
+        assert lease["group_was_alive"] is True
+        assert lease["port_was_open"] is True
+        assert lease["group_closed"] is True
+        assert lease["port_closed"] is True
+        with pytest.raises(ProcessLookupError):
+            os.killpg(nested_group, 0)
+        with socket.socket() as probe:
+            probe.settimeout(0.2)
+            assert probe.connect_ex(("127.0.0.1", state["port"])) != 0
+    finally:
+        if nested_group is not None:
+            try:
+                os.killpg(nested_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_guarded_normal_release_is_verified_before_cleanup_closes(tmp_path: Path) -> None:
+    marker = tmp_path / "normal-release.json"
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    target_source = """
+import json
+import os
+import socket
+import sys
+import time
+from pathlib import Path
+
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", int(sys.argv[2])))
+listener.listen()
+Path(sys.argv[1]).write_text(json.dumps({"pid": os.getpid(), "pgid": os.getpgrp()}))
+time.sleep(60)
+"""
+    outer_source = f"""
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, {str(ROOT / "examples")!r})
+from biome_agent.bootstrap import terminate
+
+marker = Path(sys.argv[1])
+process = subprocess.Popen(
+    [
+        sys.executable,
+        os.environ[{PROCESS_LEASE_WRAPPER_ENV!r}],
+        "exec",
+        "--lease-prefix",
+        "biome",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        sys.argv[3],
+        "--",
+        sys.executable,
+        "-c",
+        sys.argv[2],
+        str(marker),
+        sys.argv[3],
+    ],
+    start_new_session=True,
+)
+while not marker.is_file():
+    if process.poll() is not None:
+        raise SystemExit("guarded target exited before readiness")
+    time.sleep(0.01)
+terminate(
+    process,
+    host="127.0.0.1",
+    port=int(sys.argv[3]),
+    term_timeout=1,
+    kill_timeout=2,
+    port_timeout=2,
+)
+"""
+    env = os.environ.copy()
+    env[operational_runner._PROCESS_LEASE_GUARDIAN_ENV] = "1"
+
+    result = _run_process(
+        [sys.executable, "-c", outer_source, str(marker), target_source, str(port)],
+        cwd=tmp_path,
+        env=env,
+        timeout_seconds=10,
+        log_prefix=tmp_path / "normal-release",
+        redacted=False,
+    )
+
+    assert result["returncode"] == 0
+    assert result["timed_out"] is False
+    assert result["launch_error"] is None
+    assert result["process_group_leaked"] is False
+    cleanup = cast(dict[str, Any], result["process_leases"])
+    assert cleanup["status"] == "closed"
+    assert cleanup["active_lease_count"] == 0
+    assert cleanup["errors"] == []
+    (lease,) = cast(list[dict[str, Any]], cleanup["leases"])
+    assert lease["released"] is True
+    assert lease["release_was_truthful"] is True
+    assert lease["ownership_matches"] is True
+    assert lease["group_was_alive"] is False
+    assert lease["port_was_open"] is False
+    assert lease["group_closed"] is True
+    assert lease["port_closed"] is True
+
+
+def test_guardian_rejects_release_while_group_and_port_are_live(tmp_path: Path) -> None:
+    marker = tmp_path / "dishonest-release-ready"
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    target_source = """
+import socket
+import sys
+import time
+from pathlib import Path
+
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", int(sys.argv[2])))
+listener.listen()
+Path(sys.argv[1]).write_text("ready")
+time.sleep(60)
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", target_source, str(marker), str(port)],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not marker.is_file():
+            assert process.poll() is None
+            time.sleep(0.01)
+        assert marker.is_file()
+        birth_identity = _process_birth_identity(process.pid)
+        assert birth_identity is not None
+        lease_id = f"dishonest:{process.pid}"
+        acquire = {
+            "schema": PROCESS_LEASE_SCHEMA,
+            "operation": "acquire",
+            "lease_id": lease_id,
+            "pid": process.pid,
+            "process_group": process.pid,
+            "host": "127.0.0.1",
+            "port": port,
+            "birth_identity": birth_identity,
+        }
+        release = {
+            "schema": PROCESS_LEASE_SCHEMA,
+            "operation": "release",
+            "lease_id": lease_id,
+        }
+        lease_file = tmp_path / "dishonest-leases.jsonl"
+        lease_file.write_text(
+            json.dumps(acquire, sort_keys=True) + "\n" + json.dumps(release, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        result_file = tmp_path / "dishonest-result.json"
+        reaper = threading.Thread(target=process.wait, daemon=True)
+        reaper.start()
+
+        assert guard(lease_file, result_file) is False
+        reaper.join(timeout=2)
+
+        result = json.loads(result_file.read_text(encoding="utf-8"))
+        assert result["status"] == "leaked"
+        assert result["active_lease_count"] == 0
+        (lease,) = result["leases"]
+        assert lease["released"] is True
+        assert lease["release_was_truthful"] is False
+        assert lease["group_was_alive"] is True
+        assert lease["port_was_open"] is True
+        assert lease["group_closed"] is True
+        assert lease["port_closed"] is True
+        with pytest.raises(ProcessLookupError):
+            os.killpg(process.pid, 0)
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=2)
+
+
+def test_guardian_refuses_stale_group_after_original_leader_exits(tmp_path: Path) -> None:
+    child_ready = tmp_path / "descendant-ready"
+    leader_ready = tmp_path / "leader.json"
+    release_leader = tmp_path / "release-leader"
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    child_source = """
+import socket
+import sys
+import time
+from pathlib import Path
+
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", int(sys.argv[2])))
+listener.listen()
+Path(sys.argv[1]).write_text("ready")
+time.sleep(60)
+"""
+    leader_source = """
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+child = subprocess.Popen([
+    sys.executable,
+    "-c",
+    sys.argv[1],
+    sys.argv[2],
+    sys.argv[5],
+])
+while not Path(sys.argv[2]).is_file():
+    if child.poll() is not None:
+        raise SystemExit("descendant exited before readiness")
+    time.sleep(0.01)
+Path(sys.argv[3]).write_text(json.dumps({
+    "pid": os.getpid(),
+    "pgid": os.getpgrp(),
+    "child_pid": child.pid,
+}))
+while not Path(sys.argv[4]).is_file():
+    time.sleep(0.01)
+"""
+    leader = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            leader_source,
+            child_source,
+            str(child_ready),
+            str(leader_ready),
+            str(release_leader),
+            str(port),
+        ],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    process_group: int | None = None
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not leader_ready.is_file():
+            assert leader.poll() is None
+            time.sleep(0.01)
+        state = json.loads(leader_ready.read_text())
+        process_group = state["pgid"]
+        assert state["pid"] == leader.pid == process_group
+        birth_identity = _process_birth_identity(leader.pid)
+        assert birth_identity is not None
+        lease_id = f"leader-exit:{leader.pid}"
+        lease_file = tmp_path / "leader-exit-leases.jsonl"
+        lease_file.write_text(
+            json.dumps(
+                {
+                    "schema": PROCESS_LEASE_SCHEMA,
+                    "operation": "acquire",
+                    "lease_id": lease_id,
+                    "pid": leader.pid,
+                    "process_group": process_group,
+                    "host": "127.0.0.1",
+                    "port": port,
+                    "birth_identity": birth_identity,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        release_leader.write_text("exit")
+        leader.wait(timeout=2)
+        with socket.socket() as probe:
+            probe.settimeout(0.2)
+            assert probe.connect_ex(("127.0.0.1", port)) == 0
+
+        result_file = tmp_path / "leader-exit-result.json"
+        assert guard(lease_file, result_file) is False
+
+        result = json.loads(result_file.read_text())
+        assert result["status"] == "leaked"
+        (lease,) = result["leases"]
+        assert lease["ownership_matches"] is False
+        assert lease["group_was_alive"] is True
+        assert lease["group_closed"] is False
+        assert lease["port_closed"] is False
+        os.killpg(process_group, 0)
+        with socket.socket() as probe:
+            probe.settimeout(0.2)
+            assert probe.connect_ex(("127.0.0.1", port)) == 0
+    finally:
+        if process_group is not None:
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if leader.poll() is None:
+            leader.kill()
+            leader.wait(timeout=2)
+
+
+def test_shutdown_during_ready_publication_still_closes_guardian(tmp_path: Path) -> None:
+    lease_file = tmp_path / "ready-race-leases.jsonl"
+    ack_dir = tmp_path / "ready-race-acks"
+    ready_file = tmp_path / "ready-race-ready.json"
+    closed_file = tmp_path / "ready-race-closed.json"
+    result_file = tmp_path / "ready-race-result.json"
+    source = """
+import os
+import signal
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+import scripts.process_lease_guardian as guardian
+
+ready_file = Path(sys.argv[4])
+write_marker = guardian._write_marker
+
+def write_then_cancel(path, payload):
+    write_marker(path, payload)
+    if path == ready_file:
+        os.kill(os.getpid(), signal.SIGTERM)
+
+guardian._write_marker = write_then_cancel
+closed = guardian.serve(
+    lease_file=Path(sys.argv[2]),
+    ack_dir=Path(sys.argv[3]),
+    ready_file=ready_file,
+    closed_file=Path(sys.argv[5]),
+    result_file=Path(sys.argv[6]),
+)
+raise SystemExit(0 if closed else 1)
+"""
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            source,
+            str(ROOT),
+            str(lease_file),
+            str(ack_dir),
+            str(ready_file),
+            str(closed_file),
+            str(result_file),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        assert process.wait(timeout=5) == 0
+        assert ready_file.is_file()
+        assert closed_file.is_file()
+        result = json.loads(result_file.read_text())
+        assert result["status"] == "closed"
+        assert result["active_lease_count"] == 0
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=2)
+
+
+def test_parent_death_and_repeated_signals_still_close_guarded_listener(
+    tmp_path: Path,
+) -> None:
+    lease_file = tmp_path / "abrupt-leases.jsonl"
+    ack_dir = tmp_path / "abrupt-acks"
+    ready_file = tmp_path / "abrupt-ready.json"
+    closed_file = tmp_path / "abrupt-closed.json"
+    result_file = tmp_path / "abrupt-result.json"
+    guardian_pid_file = tmp_path / "guardian.pid"
+    listener_marker = tmp_path / "listener.json"
+    runner_ready = tmp_path / "runner-ready"
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    listener_source = """
+import json
+import os
+import signal
+import socket
+import sys
+import time
+from pathlib import Path
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", int(sys.argv[2])))
+listener.listen()
+Path(sys.argv[1]).write_text(json.dumps({
+    "pid": os.getpid(),
+    "pgid": os.getpgrp(),
+    "port": int(sys.argv[2]),
+}))
+time.sleep(60)
+"""
+    runner_source = """
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+guardian = subprocess.Popen(
+    [
+        sys.executable,
+        sys.argv[1],
+        "serve",
+        "--lease-file",
+        sys.argv[2],
+        "--ack-dir",
+        sys.argv[3],
+        "--ready-file",
+        sys.argv[4],
+        "--closed-file",
+        sys.argv[5],
+        "--result-file",
+        sys.argv[6],
+    ],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    start_new_session=True,
+)
+while not Path(sys.argv[4]).is_file():
+    if guardian.poll() is not None:
+        raise SystemExit("guardian exited before readiness")
+    time.sleep(0.01)
+env = os.environ.copy()
+env.update({
+    "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_FILE": sys.argv[2],
+    "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_ACK_DIR": sys.argv[3],
+    "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_READY_FILE": sys.argv[4],
+    "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_CLOSED_FILE": sys.argv[5],
+    "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_WRAPPER": sys.argv[1],
+})
+listener = subprocess.Popen(
+    [
+        sys.executable,
+        sys.argv[1],
+        "exec",
+        "--lease-prefix",
+        "abrupt",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        sys.argv[10],
+        "--",
+        sys.executable,
+        "-c",
+        sys.argv[11],
+        sys.argv[8],
+        sys.argv[10],
+    ],
+    env=env,
+    start_new_session=True,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+while not Path(sys.argv[8]).is_file():
+    if listener.poll() is not None:
+        raise SystemExit("listener exited before readiness")
+    time.sleep(0.01)
+Path(sys.argv[7]).write_text(str(guardian.pid))
+Path(sys.argv[9]).write_text(str(listener.pid))
+time.sleep(60)
+"""
+    guardian_script = ROOT / "scripts" / "process_lease_guardian.py"
+    runner = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            runner_source,
+            str(guardian_script),
+            str(lease_file),
+            str(ack_dir),
+            str(ready_file),
+            str(closed_file),
+            str(result_file),
+            str(guardian_pid_file),
+            str(listener_marker),
+            str(runner_ready),
+            str(port),
+            listener_source,
+        ],
+        cwd=tmp_path,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    guardian_group: int | None = None
+    listener_group: int | None = None
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not runner_ready.is_file():
+            assert runner.poll() is None
+            time.sleep(0.02)
+        assert runner_ready.is_file()
+        guardian_group = int(guardian_pid_file.read_text())
+        listener_state = json.loads(listener_marker.read_text())
+        listener_group = listener_state["pgid"]
+        assert listener_state["pid"] != listener_group
+        with socket.socket() as probe:
+            probe.settimeout(0.2)
+            assert probe.connect_ex(("127.0.0.1", port)) == 0
+
+        os.kill(runner.pid, signal.SIGKILL)
+        runner.wait(timeout=2)
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not closed_file.is_file():
+            time.sleep(0.02)
+        assert closed_file.is_file(), "guardian did not observe parent-pipe EOF"
+        os.kill(guardian_group, signal.SIGTERM)
+        os.kill(guardian_group, signal.SIGTERM)
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not result_file.is_file():
+            time.sleep(0.05)
+        assert result_file.is_file(), "guardian emitted no result after repeated cancellation"
+        result = json.loads(result_file.read_text())
+        assert result["status"] == "closed"
+        assert result["active_lease_count"] == 1
+        (lease,) = result["leases"]
+        assert lease["ownership_matches"] is True
+        assert lease["released"] is False
+        assert lease["group_closed"] is True
+        assert lease["port_closed"] is True
+        with pytest.raises(ProcessLookupError):
+            os.killpg(listener_group, 0)
+        with socket.socket() as probe:
+            probe.settimeout(0.2)
+            assert probe.connect_ex(("127.0.0.1", port)) != 0
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(guardian_group, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        else:
+            pytest.fail("guardian wrote its result but did not exit")
+    finally:
+        for process_group in (listener_group, guardian_group, runner.pid):
+            if process_group is None:
+                continue
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if runner.poll() is None:
+            runner.wait(timeout=2)
+
+
+def test_guarded_exec_refuses_target_when_guardian_closes_before_ack(tmp_path: Path) -> None:
+    lease_file = tmp_path / "leases.jsonl"
+    ack_dir = tmp_path / "acks"
+    ready_file = tmp_path / "ready.json"
+    closed_file = tmp_path / "closed.json"
+    target_marker = tmp_path / "target-ran"
+    ready_file.write_text('{"status":"ready"}\n', encoding="utf-8")
+    env = os.environ.copy()
+    env.update(
+        {
+            PROCESS_LEASE_ENV: str(lease_file),
+            PROCESS_LEASE_ACK_DIR_ENV: str(ack_dir),
+            PROCESS_LEASE_READY_ENV: str(ready_file),
+            PROCESS_LEASE_CLOSED_ENV: str(closed_file),
+        }
+    )
+    wrapper = ROOT / "scripts" / "process_lease_guardian.py"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(wrapper),
+            "exec",
+            "--lease-prefix",
+            "preack",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "27750",
+            "--",
+            sys.executable,
+            "-c",
+            f"from pathlib import Path; Path({str(target_marker)!r}).write_text('ran')",
+        ],
+        cwd=tmp_path,
+        env=env,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        record: dict[str, Any] | None = None
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and record is None:
+            assert process.poll() is None
+            if lease_file.is_file():
+                try:
+                    records = [json.loads(line) for line in lease_file.read_text().splitlines()]
+                except json.JSONDecodeError:
+                    records = []
+                if len(records) == 1 and records[0].get("birth_identity"):
+                    record = records[0]
+            time.sleep(0.01)
+        assert record is not None, "wrapper never published a complete pre-exec lease"
+        assert record["pid"] == process.pid
+        assert record["process_group"] == process.pid
+        time.sleep(0.1)
+        assert process.poll() is None
+        assert not target_marker.exists(), "target ran without a guardian acknowledgement"
+
+        closed_file.write_text('{"status":"closed"}\n', encoding="utf-8")
+        assert process.wait(timeout=2) != 0
+        assert not target_marker.exists()
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=2)
 
 
 def test_transient_group_signal_denial_still_requires_exit_proof(monkeypatch) -> None:
@@ -747,10 +1505,18 @@ def test_external_service_prerequisites_enable_dedicated_test_lanes() -> None:
             "prerequisites": ["credential:MODAL_TOKEN_ID"],
         },
     )
+    biome = _scenario_environment(
+        {},
+        {
+            "id": "example.14_biome_agent",
+            "prerequisites": ["infrastructure:ARCHETYPE_BIOME_LIVE"],
+        },
+    )
 
     assert docker["ARCHETYPE_DOCKER_SANDBOX_PARITY"] == "1"
     assert apple["ARCHETYPE_APPLE_CONTAINER_SANDBOX_PARITY"] == "1"
     assert modal["ARCHETYPE_MODAL_AGENT_MISSION_LIVE"] == "1"
+    assert biome[operational_runner._PROCESS_LEASE_GUARDIAN_ENV] == "1"
 
 
 def test_skipped_only_pytest_evidence_cannot_pass(tmp_path: Path) -> None:

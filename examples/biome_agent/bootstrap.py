@@ -5,11 +5,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
 import socket
+import stat
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +32,9 @@ BIOME_URL = f"http://{BIOME_HOST}:{BIOME_PORT}"
 _PROCESS_TERM_GRACE_SECONDS = 5.0
 _PROCESS_KILL_GRACE_SECONDS = 5.0
 _PORT_CLOSE_GRACE_SECONDS = 5.0
+_PROCESS_LEASE_ENV = "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_FILE"
+_PROCESS_LEASE_WRAPPER_ENV = "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_WRAPPER"
+_PROCESS_LEASE_SCHEMA = "archetype.operational-process-lease/v1"
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CHECKOUT_ROOT = _REPOSITORY_ROOT / ".context" / "upstream"
@@ -114,6 +120,34 @@ def _wait_for_port_close(host: str, port: int, timeout: float) -> bool:
             return True
         time.sleep(0.05)
     return not is_port_open(host, port)
+
+
+def _release_process_lease(process_id: int) -> bool:
+    """Record release only after local group and port closure were proven."""
+
+    lease_path = os.environ.get(_PROCESS_LEASE_ENV)
+    if lease_path is None:
+        return False
+    payload: dict[str, object] = {
+        "schema": _PROCESS_LEASE_SCHEMA,
+        "operation": "release",
+        "lease_id": f"biome:{process_id}",
+    }
+
+    encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lease_path, flags, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RuntimeError("operational process lease journal is not a regular file")
+        if os.write(descriptor, encoded) != len(encoded):
+            raise RuntimeError("operational process lease journal accepted a partial record")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return True
 
 
 def _ensure_checkout(
@@ -278,14 +312,32 @@ def launch(checkout: BiomeCheckout) -> subprocess.Popen[bytes]:
     _verify_pinned_checkout(checkout)
     if is_port_open():
         raise RuntimeError(f"refusing to launch Biome while {BIOME_HOST}:{BIOME_PORT} is in use")
+    command = [str(checkout.executable), "--scene", "etc/scenes/archetype_agent.flecs"]
+    if os.environ.get(_PROCESS_LEASE_ENV) is not None:
+        wrapper = os.environ.get(_PROCESS_LEASE_WRAPPER_ENV)
+        if not wrapper:
+            raise RuntimeError("operational Biome launch requires the process lease wrapper")
+        command = [
+            sys.executable,
+            wrapper,
+            "exec",
+            "--lease-prefix",
+            "biome",
+            "--host",
+            BIOME_HOST,
+            "--port",
+            str(BIOME_PORT),
+            "--",
+            *command,
+        ]
     return subprocess.Popen(
-        [str(checkout.executable), "--scene", "etc/scenes/archetype_agent.flecs"],
+        command,
         cwd=checkout.biome,
         start_new_session=True,
     )
 
 
-def terminate(
+def _terminate_owned_process(
     process: subprocess.Popen[bytes],
     *,
     host: str = BIOME_HOST,
@@ -313,3 +365,30 @@ def terminate(
         raise RuntimeError(f"Biome process group {process_group} survived cleanup")
     if not _wait_for_port_close(host, port, port_timeout):
         raise RuntimeError(f"Biome REST port {host}:{port} survived cleanup")
+
+
+def terminate(
+    process: subprocess.Popen[bytes],
+    *,
+    host: str = BIOME_HOST,
+    port: int = BIOME_PORT,
+    term_timeout: float = _PROCESS_TERM_GRACE_SECONDS,
+    kill_timeout: float = _PROCESS_KILL_GRACE_SECONDS,
+    port_timeout: float = _PORT_CLOSE_GRACE_SECONDS,
+) -> None:
+    """Close owned Biome state, then release its operational guardian lease."""
+
+    _terminate_owned_process(
+        process,
+        host=host,
+        port=port,
+        term_timeout=term_timeout,
+        kill_timeout=kill_timeout,
+        port_timeout=port_timeout,
+    )
+    try:
+        _release_process_lease(process.pid)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Biome closed, but its operational process lease could not be released: {exc}"
+        ) from exc
