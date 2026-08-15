@@ -36,7 +36,9 @@ _PREFIXES = {
     "archetype-missions": "archetype_missions",
     "archetype-physical-ai": "archetype_physical_ai",
     "archetype-research": "archetype_research",
+    "archetype-smol": "archetype_smol",
 }
+_ARTIFACT_COUNT = len(DISTRIBUTIONS) * 2
 
 
 def _manifest() -> dict[str, Any]:
@@ -153,7 +155,7 @@ def test_preflight_accepts_empty_or_exact_partial_publication() -> None:
     assert result["projects"]["archetype-ecs"] == 1
 
 
-def test_complete_index_requires_all_eight_attested_artifacts() -> None:
+def test_complete_index_requires_all_ten_attested_artifacts() -> None:
     manifest = _manifest()
     payloads = _payloads(manifest)
 
@@ -165,7 +167,7 @@ def test_complete_index_requires_all_eight_attested_artifacts() -> None:
     )
 
     assert result["complete"] is True
-    assert result["artifact_count"] == 8
+    assert result["artifact_count"] == _ARTIFACT_COUNT
     assert result["manifest_commit"] == "a" * 40
     assert len(result["manifest_sha256"]) == 64
     assert [row["name"] for row in result["artifacts"]] == sorted(
@@ -333,7 +335,7 @@ def test_provenance_binds_every_file_to_exact_publisher_and_digest() -> None:
             }
             for distribution in DISTRIBUTIONS
         },
-        "artifact_count": 8,
+        "artifact_count": _ARTIFACT_COUNT,
         "artifacts": sorted(provenances),
     }
 
@@ -399,7 +401,7 @@ def test_complete_index_retries_provenance_propagation() -> None:
         sleep=sleeps.append,
     )
 
-    assert result["provenance"]["artifact_count"] == 8
+    assert result["provenance"]["artifact_count"] == _ARTIFACT_COUNT
     assert result["index_api_template"].startswith("https://index.invalid/")
     assert sleeps == [3]
 
@@ -494,8 +496,8 @@ def test_complete_index_retries_transient_testpypi_crypto_propagation() -> None:
     )
 
     assert result["cryptographic_provenance"]["sigstore_environment"] == "production"
-    assert result["cryptographic_provenance"]["artifact_count"] == 8
-    assert len(calls) == 9
+    assert result["cryptographic_provenance"]["artifact_count"] == _ARTIFACT_COUNT
+    assert len(calls) == _ARTIFACT_COUNT + 1
     assert all(
         artifact_url.startswith("https://test-files.pythonhosted.org/")
         and repository == "https://github.com/VangelisTech/archetype"

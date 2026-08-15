@@ -18,17 +18,19 @@ from email.parser import Parser
 from pathlib import Path
 from typing import Any
 
-_DISTRIBUTIONS = (
+_WORLD_STACK_DISTRIBUTIONS = (
     "archetype-ecs",
     "archetype-missions",
     "archetype-physical-ai",
     "archetype-research",
 )
+_DISTRIBUTIONS = (*_WORLD_STACK_DISTRIBUTIONS, "archetype-smol")
 _PACKAGE_PREFIXES = {
     "archetype-ecs": "archetype_ecs",
     "archetype-missions": "archetype_missions",
     "archetype-physical-ai": "archetype_physical_ai",
     "archetype-research": "archetype_research",
+    "archetype-smol": "archetype_smol",
 }
 _LIBRARY_IMPORTS = {
     "missions": "archetype.missions",
@@ -116,6 +118,7 @@ def _validate_wheel_contents(
         "missions": "archetype/missions/",
         "physical-ai": "archetype/physical_ai/",
         "research": "archetype/research/",
+        "smol": "archetype/smol/",
     }
     if distribution == "archetype-ecs":
         if root_init not in names:
@@ -127,7 +130,8 @@ def _validate_wheel_contents(
         )
         if leaked_families:
             raise RuntimeError(
-                f"framework wheel contains world-library code: {leaked_families[:5]}"
+                "framework wheel contains separately distributed package code: "
+                f"{leaked_families[:5]}"
             )
         for library in ("missions", "physical-ai", "research"):
             requirement = f'Requires-Dist: archetype-{library}<0.7,>=0.6; extra == "all"'
@@ -136,6 +140,15 @@ def _validate_wheel_contents(
                     "framework all extra does not converge on every first-party "
                     f"world library: missing {requirement}"
                 )
+        smol_requirements = [
+            requirement
+            for requirement in parsed_metadata.get_all("Requires-Dist", [])
+            if requirement.lower().startswith("archetype-smol")
+        ]
+        if smol_requirements:
+            raise RuntimeError(
+                "framework all extra must not install the independent archetype-smol package"
+            )
         return metadata_version
 
     if root_init in names:
@@ -148,6 +161,20 @@ def _validate_wheel_contents(
         raise RuntimeError(
             f"{distribution} wheel has invalid namespace contents; foreign={foreign[:5]}"
         )
+    if distribution == "archetype-smol":
+        if "archetype/smol/py.typed" not in names:
+            raise RuntimeError("Smol wheel is missing its typed-package marker")
+        first_party_requirements = [
+            requirement
+            for requirement in parsed_metadata.get_all("Requires-Dist", [])
+            if requirement.lower().startswith("archetype-")
+        ]
+        if first_party_requirements:
+            raise RuntimeError(
+                "Smol must remain independent of the Archetype framework and world libraries: "
+                + ", ".join(first_party_requirements)
+            )
+        return metadata_version
     if distribution == "archetype-missions" and (
         "archetype/missions/sandboxes/versions.toml" not in names
     ):
@@ -232,7 +259,7 @@ def _run_matrix(
         # METADATA assertion above separately proves that its ``all`` extra
         # declares the same dependency set without letting an index satisfy
         # this installed-bytes oracle with an older published distribution.
-        "all": [str(wheels[distribution].resolve()) for distribution in _DISTRIBUTIONS],
+        "all": [str(wheels[distribution].resolve()) for distribution in _WORLD_STACK_DISTRIBUTIONS],
     }[matrix]
     expected_libraries = {
         "base": [],
@@ -298,6 +325,7 @@ for name, module in imports.items():
     if name in expected:
         assert version("archetype-" + name) == release_version
 assert importlib.util.find_spec("archetype.episodes") is None
+assert importlib.util.find_spec("archetype.smol") is None
 resources = build_runtime_resources(RuntimeBootstrapConfig.from_env())
 try:
     names = [manifest.name for manifest in resources.world_library_manifests]
@@ -317,6 +345,133 @@ print(json.dumps({{"matrix": {matrix!r}, "libraries": expected, "operations": op
 """
     process = subprocess.run(
         [str(python), "-c", probe],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=clean_env,
+    )
+    if process.returncode:
+        raise RuntimeError(
+            f"installed {matrix} package probe failed\n"
+            f"stdout:\n{process.stdout}\nstderr:\n{process.stderr}"
+        )
+    return json.loads(process.stdout.strip().splitlines()[-1])
+
+
+def _smol_probe_source(version: str, matrix: str = "smol") -> str:
+    """Return an isolated installed-package probe for the independent teaching ECS."""
+
+    return f"""
+import importlib.util
+import json
+import sys
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+
+from daft import col
+from archetype.smol import Component, Processor, World, __version__
+
+release_version = {version!r}
+assert __version__ == release_version
+assert version("archetype-smol") == release_version
+assert importlib.util.find_spec("archetype.core") is None
+try:
+    version("archetype-ecs")
+except PackageNotFoundError:
+    pass
+else:
+    raise AssertionError("the isolated Smol lane installed archetype-ecs")
+
+package_root = Path(importlib.util.find_spec("archetype.smol").origin).resolve()
+assert "site-packages" in package_root.parts, package_root
+assert not any("/packages/" in value and "/src" in value for value in sys.path), sys.path
+
+class Counter(Component):
+    value: int = 0
+
+class Increment(Processor):
+    components = (Counter,)
+
+    def process(self, df, *, tick):
+        del tick
+        return df.with_column("counter__value", col("counter__value") + 1)
+
+world = World(processors=(Increment(),))
+entity_id = world.spawn(Counter(value=1))
+result = world.run(steps=2)
+rows = world.query(Counter).to_pylist()
+history = world.history(Counter).to_pylist()
+assert result.ticks_completed == 2
+assert result.tick == world.tick == 2
+assert len(rows) == 1
+assert rows[0]["entity_id"] == entity_id
+assert rows[0]["counter__value"] == 3
+assert [row["tick"] for row in history] == [0, 1, 2]
+assert all(row["is_active"] is True for row in history)
+print(json.dumps({{
+    "matrix": {matrix!r},
+    "entities": len(rows),
+    "snapshots": len(history),
+    "tick": world.tick,
+    "module": str(package_root),
+    "version": release_version,
+}}))
+"""
+
+
+def _run_smol(
+    *,
+    matrix: str,
+    version: str,
+    dist_dir: Path,
+    wheel: Path,
+    uv: str,
+    root: Path,
+) -> dict[str, Any]:
+    """Install and exercise only the Smol wheel outside the checkout."""
+
+    clean_env = _clean_subprocess_environment()
+    environment = root / f"venv-{matrix}"
+    subprocess.run(
+        [uv, "--no-config", "venv", "--python", sys.executable, str(environment)],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=clean_env,
+    )
+    python = environment / "bin" / "python"
+    subprocess.run(
+        [
+            uv,
+            "--no-config",
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            "--find-links",
+            str(dist_dir.resolve()),
+            "--no-cache",
+            "--only-binary=:all:",
+            str(wheel.resolve()),
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=clean_env,
+    )
+    subprocess.run(
+        [uv, "--no-config", "pip", "check", "--python", str(python)],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=clean_env,
+    )
+    process = subprocess.run(
+        [str(python), "-c", _smol_probe_source(version, matrix)],
         cwd=root,
         check=False,
         capture_output=True,
@@ -356,6 +511,16 @@ def smoke(dist_dir: Path) -> list[dict[str, Any]]:
             )
             for matrix in _OPERATION_COUNTS
         ]
+        results.append(
+            _run_smol(
+                matrix="smol",
+                version=version,
+                dist_dir=dist_dir,
+                wheel=wheels["archetype-smol"],
+                uv=uv,
+                root=root,
+            )
+        )
         rebuilt_wheels = _rebuild_sdists(sdists=sdists, uv=uv, root=root)
         for distribution, rebuilt_wheel in rebuilt_wheels.items():
             _validate_wheel_contents(
@@ -375,6 +540,16 @@ def smoke(dist_dir: Path) -> list[dict[str, Any]]:
         )
         rebuilt_result["matrix"] = "sdist-all"
         results.append(rebuilt_result)
+        results.append(
+            _run_smol(
+                matrix="sdist-smol",
+                version=version,
+                dist_dir=next(iter(rebuilt_wheels.values())).parent,
+                wheel=rebuilt_wheels["archetype-smol"],
+                uv=uv,
+                root=sdist_probe_root,
+            )
+        )
         return results
 
 
@@ -385,7 +560,10 @@ def main(argv: list[str] | None = None) -> int:
     results = smoke(args.dist_dir)
     print(
         "Installed distribution matrix passed: "
-        + ", ".join(f"{row['matrix']}={row['operations']}" for row in results)
+        + ", ".join(
+            f"{row['matrix']}={row['operations']}" if "operations" in row else f"{row['matrix']}=ok"
+            for row in results
+        )
     )
     return 0
 

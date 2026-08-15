@@ -22,10 +22,20 @@ from urllib.parse import urlparse
 from packaging.version import InvalidVersion, Version
 
 if __package__:
-    from .package_smoke import _DISTRIBUTIONS, _LIBRARY_IMPORTS, _OPERATION_COUNTS
+    from .package_smoke import (
+        _LIBRARY_IMPORTS,
+        _OPERATION_COUNTS,
+        _WORLD_STACK_DISTRIBUTIONS,
+        _smol_probe_source,
+    )
     from .release_artifact import SCHEMA, artifact_records, manifest_sha256
 else:  # pragma: no cover - exercised by the command-line entry point
-    from package_smoke import _DISTRIBUTIONS, _LIBRARY_IMPORTS, _OPERATION_COUNTS
+    from package_smoke import (  # type: ignore[no-redef]
+        _LIBRARY_IMPORTS,
+        _OPERATION_COUNTS,
+        _WORLD_STACK_DISTRIBUTIONS,
+        _smol_probe_source,
+    )
     from release_artifact import SCHEMA, artifact_records, manifest_sha256
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -101,13 +111,17 @@ def _index_url(value: str) -> str:
 
 
 def _requirements(matrix: str, version: str) -> tuple[str, ...]:
-    exact = {distribution: f"{distribution}=={version}" for distribution in _DISTRIBUTIONS}
+    exact = {
+        distribution: f"{distribution}=={version}"
+        for distribution in (*_WORLD_STACK_DISTRIBUTIONS, "archetype-smol")
+    }
     selected = {
         "base": (exact["archetype-ecs"],),
         "missions": (exact["archetype-ecs"], exact["archetype-missions"]),
         "physical-ai": (exact["archetype-ecs"], exact["archetype-physical-ai"]),
         "research": (exact["archetype-ecs"], exact["archetype-research"]),
-        "all": tuple(exact[distribution] for distribution in _DISTRIBUTIONS),
+        "all": tuple(exact[distribution] for distribution in _WORLD_STACK_DISTRIBUTIONS),
+        "smol": (exact["archetype-smol"],),
     }
     try:
         return selected[matrix]
@@ -197,6 +211,9 @@ def _run_checked(
 
 
 def _probe_source(matrix: str, version: str) -> str:
+    if matrix == "smol":
+        return _smol_probe_source(version, matrix)
+
     expected_libraries = {
         "base": [],
         "missions": ["missions"],
@@ -234,6 +251,7 @@ for name, module in imports.items():
         assert version("archetype-" + name) == release_version
 assert importlib.util.find_spec("archetype.episodes") is None
 assert importlib.util.find_spec("archetype.artifacts.contracts") is None
+assert importlib.util.find_spec("archetype.smol") is None
 
 removed_root_names = (
     "AutoResearchConfig",
@@ -379,7 +397,7 @@ def smoke_registry(
                 uv=uv,
                 root=root,
             )
-            for matrix in _OPERATION_COUNTS
+            for matrix in (*_OPERATION_COUNTS, "smol")
         ]
 
 
@@ -410,7 +428,10 @@ def main(argv: list[str] | None = None) -> int:
         args.out.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
         "Registry distribution matrix passed: "
-        + ", ".join(f"{row['matrix']}={row['operations']}" for row in results)
+        + ", ".join(
+            f"{row['matrix']}={row['operations']}" if "operations" in row else f"{row['matrix']}=ok"
+            for row in results
+        )
     )
     return 0
 

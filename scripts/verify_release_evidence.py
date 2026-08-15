@@ -17,6 +17,7 @@ if __package__:
     from .release_artifact import (
         DISTRIBUTIONS,
         FRAMEWORK_DISTRIBUTION,
+        WORLD_STACK_DISTRIBUTIONS,
         artifact_records,
     )
     from .release_artifact import (
@@ -26,6 +27,7 @@ else:  # pragma: no cover - exercised by the command-line entry point
     from release_artifact import (  # type: ignore[no-redef]
         DISTRIBUTIONS,
         FRAMEWORK_DISTRIBUTION,
+        WORLD_STACK_DISTRIBUTIONS,
         artifact_records,
     )
     from release_artifact import (
@@ -68,11 +70,17 @@ def _verify_receipt_artifact_set(
     wheel: dict[str, Any],
     release_wheels: dict[str, dict[str, str]],
 ) -> None:
-    """Verify the exact four-wheel matrix emitted by the operational runner."""
+    """Verify the exact four-wheel world stack emitted by the operational runner."""
 
     raw = wheel.get("artifacts")
-    if not isinstance(raw, list) or len(raw) != len(DISTRIBUTIONS):
-        raise ValueError(f"{path} wheel artifact set must contain all four distributions")
+    if not isinstance(raw, list) or len(raw) != len(WORLD_STACK_DISTRIBUTIONS):
+        raise ValueError(
+            f"{path} wheel artifact set must contain all four world-stack distributions"
+        )
+
+    expected = {
+        distribution: release_wheels[distribution] for distribution in WORLD_STACK_DISTRIBUTIONS
+    }
 
     observed: dict[str, dict[str, str]] = {}
     for value in raw:
@@ -84,12 +92,12 @@ def _verify_receipt_artifact_set(
         if not all(isinstance(item, str) and item for item in (distribution, filename, digest)):
             raise ValueError(f"{path} wheel artifact record has invalid fields")
         assert isinstance(distribution, str)
-        if distribution not in release_wheels or distribution in observed:
+        if distribution not in expected or distribution in observed:
             raise ValueError(
                 f"{path} wheel artifact set has invalid or duplicate distribution {distribution!r}"
             )
         observed[distribution] = {"filename": str(filename), "digest": str(digest)}
-    if observed != release_wheels:
+    if observed != expected:
         raise ValueError(f"{path} wheel artifact set does not match release manifest digests")
 
 

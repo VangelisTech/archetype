@@ -12,7 +12,12 @@ from typing import Any
 
 import pytest
 
-from scripts.release_artifact import DISTRIBUTIONS, _distribution_files, record
+from scripts.release_artifact import (
+    DISTRIBUTIONS,
+    WORLD_STACK_DISTRIBUTIONS,
+    _distribution_files,
+    record,
+)
 from scripts.release_artifact import SCHEMA as ARTIFACT_SCHEMA
 from scripts.release_artifact import verify as verify_artifact
 from scripts.verify_release_evidence import RESULT_SCHEMA, SUMMARY_SCHEMA, verify
@@ -22,6 +27,7 @@ _PREFIXES = {
     "archetype-missions": "archetype_missions",
     "archetype-physical-ai": "archetype_physical_ai",
     "archetype-research": "archetype_research",
+    "archetype-smol": "archetype_smol",
 }
 
 
@@ -92,7 +98,8 @@ def _receipt(
     }
     if include_matrix:
         wheel["artifacts"] = [
-            {"distribution": distribution, **wheels[distribution]} for distribution in DISTRIBUTIONS
+            {"distribution": distribution, **wheels[distribution]}
+            for distribution in WORLD_STACK_DISTRIBUTIONS
         ]
     path.write_text(
         json.dumps(
@@ -112,13 +119,13 @@ def _receipt(
     )
 
 
-def test_release_artifact_verification_accepts_exact_four_distribution_matrix(
+def test_release_artifact_verification_accepts_exact_five_distribution_matrix(
     tmp_path: Path,
 ) -> None:
     dist, manifest_path, _wheels = _artifact(tmp_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    assert len(_distribution_files(dist)) == 8
+    assert len(_distribution_files(dist)) == 10
     assert verify_artifact(manifest, dist, expected_commit="a" * 40) is manifest
 
 
@@ -244,7 +251,7 @@ def test_release_artifact_manifest_binds_every_filename_to_its_version(
 ) -> None:
     dist, manifest_path, _wheels = _artifact(tmp_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["artifacts"][-1]["name"] = "archetype_research-0.6.1.tar.gz"
+    manifest["artifacts"][-1]["name"] = "archetype_smol-0.6.1.tar.gz"
 
     with pytest.raises(ValueError, match="not bound to manifest version 0.6.0"):
         verify_artifact(manifest, dist, expected_commit="a" * 40)
@@ -294,7 +301,7 @@ def test_release_evidence_requires_every_scenario_on_framework_wheel(tmp_path: P
     assert summary["version"] == "0.6.0"
     assert summary["passed_scenarios"] == 2
     assert summary["framework_wheel_sha256"] == wheels["archetype-ecs"]["digest"].split(":")[1]
-    assert len(summary["wheel_artifacts"]) == 4
+    assert len(summary["wheel_artifacts"]) == 5
 
 
 def test_release_evidence_requires_exact_wheel_artifact_set(tmp_path: Path) -> None:
@@ -314,7 +321,10 @@ def test_release_evidence_rejects_legacy_single_wheel_anchor(tmp_path: Path) -> 
     receipt = tmp_path / "receipt.json"
     _receipt(receipt, "one", wheels, include_matrix=False)
 
-    with pytest.raises(ValueError, match="artifact set must contain all four distributions"):
+    with pytest.raises(
+        ValueError,
+        match="artifact set must contain all four world-stack distributions",
+    ):
         verify(registry=registry, manifest_path=manifest_path, receipt_paths=[receipt])
 
 

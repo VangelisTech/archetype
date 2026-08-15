@@ -39,6 +39,16 @@ extra:
 uv add "archetype-ecs[all]"
 ```
 
+For a small synchronous, in-memory teaching engine with no framework
+dependency, install Smol separately:
+
+```bash
+uv add archetype-smol
+```
+
+Smol is not selected by `archetype-ecs[all]` and is not a compatibility layer
+for the production engine.
+
 The same package specifiers work with `pip install`. Selective framework extras
 are also available as `missions`, `physical-ai`, and `research`, for example
 `uv add "archetype-ecs[missions,research]"`. Installed libraries are discovered
@@ -51,7 +61,8 @@ See the [0.6 release note](docs/guide/release-0.6.md) for the exact source and
 storage changes.
 
 For a checkout, install the development environment with `make sync-dev`.
-The repository is one uv workspace containing all four distributions.
+The repository is one uv workspace containing all five distributions: the
+framework, three world libraries, and the independent Smol teaching engine.
 
 ## Run a simulation
 
