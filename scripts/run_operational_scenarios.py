@@ -45,6 +45,9 @@ if __package__:
         RESULT_SCHEMA as PROCESS_LEASE_RESULT_SCHEMA,
     )
     from scripts.process_lease_guardian import (
+        TARGET_STATUS_DIR_ENV as PROCESS_TARGET_STATUS_DIR_ENV,
+    )
+    from scripts.process_lease_guardian import (
         WRAPPER_ENV as PROCESS_LEASE_WRAPPER_ENV,
     )
     from scripts.process_lease_guardian import (
@@ -75,6 +78,9 @@ else:
     )
     from process_lease_guardian import (
         RESULT_SCHEMA as PROCESS_LEASE_RESULT_SCHEMA,
+    )
+    from process_lease_guardian import (
+        TARGET_STATUS_DIR_ENV as PROCESS_TARGET_STATUS_DIR_ENV,
     )
     from process_lease_guardian import (
         WRAPPER_ENV as PROCESS_LEASE_WRAPPER_ENV,
@@ -578,6 +584,7 @@ def _run_process(
         stderr_path = capture_root / "stderr"
         lease_file = capture_root / "process-leases.jsonl"
         lease_ack_dir = capture_root / "process-lease-acks"
+        target_status_dir = capture_root / "process-target-status"
         lease_ready_file = capture_root / "process-lease-ready.json"
         lease_closed_file = capture_root / "process-lease-closed.json"
         lease_result_file = capture_root / "process-lease-cleanup.json"
@@ -623,6 +630,7 @@ def _run_process(
                         process_env[PROCESS_LEASE_ACK_DIR_ENV] = str(lease_ack_dir)
                         process_env[PROCESS_LEASE_READY_ENV] = str(lease_ready_file)
                         process_env[PROCESS_LEASE_CLOSED_ENV] = str(lease_closed_file)
+                        process_env[PROCESS_TARGET_STATUS_DIR_ENV] = str(target_status_dir)
                         process_env[PROCESS_LEASE_WRAPPER_ENV] = str(
                             Path(__file__).with_name("process_lease_guardian.py").resolve()
                         )

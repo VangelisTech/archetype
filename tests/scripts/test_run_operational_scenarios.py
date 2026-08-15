@@ -37,6 +37,9 @@ from scripts.process_lease_guardian import (
     RESULT_SCHEMA as PROCESS_LEASE_RESULT_SCHEMA,
 )
 from scripts.process_lease_guardian import (
+    TARGET_STATUS_DIR_ENV as PROCESS_TARGET_STATUS_DIR_ENV,
+)
+from scripts.process_lease_guardian import (
     WRAPPER_ENV as PROCESS_LEASE_WRAPPER_ENV,
 )
 from scripts.process_lease_guardian import _process_birth_identity, guard
@@ -450,6 +453,79 @@ time.sleep(60)
                 os.killpg(nested_group, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+def test_guarded_wrapper_reports_target_exit_without_abandoning_group(tmp_path: Path) -> None:
+    observed = tmp_path / "target-exit.json"
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    outer_source = f"""
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+wrapper = subprocess.Popen(
+    [
+        sys.executable,
+        os.environ[{PROCESS_LEASE_WRAPPER_ENV!r}],
+        "exec",
+        "--lease-prefix",
+        "status",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        sys.argv[2],
+        "--",
+        sys.executable,
+        "-c",
+        "raise SystemExit(7)",
+    ],
+    start_new_session=True,
+)
+lease_id = f"status:{{wrapper.pid}}"
+digest = hashlib.sha256(lease_id.encode()).hexdigest()
+status = Path(os.environ[{PROCESS_TARGET_STATUS_DIR_ENV!r}]) / f"{{digest}}.target.json"
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline and not status.is_file():
+    if wrapper.poll() is not None:
+        raise SystemExit("supervisor abandoned its process group")
+    time.sleep(0.01)
+if not status.is_file():
+    raise SystemExit("supervisor emitted no target status")
+payload = json.loads(status.read_text())
+payload["wrapper_poll"] = wrapper.poll()
+Path(sys.argv[1]).write_text(json.dumps(payload))
+time.sleep(60)
+"""
+    env = os.environ.copy()
+    env[operational_runner._PROCESS_LEASE_GUARDIAN_ENV] = "1"
+
+    result = _run_process(
+        [sys.executable, "-c", outer_source, str(observed), str(port)],
+        cwd=tmp_path,
+        env=env,
+        timeout_seconds=3,
+        log_prefix=tmp_path / "target-exit",
+        redacted=False,
+    )
+
+    payload = json.loads(observed.read_text())
+    assert payload["schema"] == PROCESS_LEASE_SCHEMA
+    assert payload["lease_id"] == f"status:{payload['pid']}"
+    assert payload["pid"] == payload["process_group"]
+    assert payload["target_pid"] != payload["pid"]
+    assert payload["returncode"] == 7
+    assert payload["status"] == "target_exited"
+    assert payload["wrapper_poll"] is None
+    assert result["timed_out"] is True
+    assert result["process_group_leaked"] is False
+    cleanup = cast(dict[str, Any], result["process_leases"])
+    assert cleanup["status"] == "closed"
 
 
 def test_guarded_normal_release_is_verified_before_cleanup_closes(tmp_path: Path) -> None:
@@ -884,6 +960,9 @@ env.update({
     "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_READY_FILE": sys.argv[4],
     "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_CLOSED_FILE": sys.argv[5],
     "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_WRAPPER": sys.argv[1],
+    "ARCHETYPE_OPERATIONAL_PROCESS_TARGET_STATUS_DIR": str(
+        Path(sys.argv[3]).with_name("abrupt-target-status")
+    ),
 })
 listener = subprocess.Popen(
     [
@@ -1017,6 +1096,7 @@ def test_guarded_exec_refuses_target_when_guardian_closes_before_ack(tmp_path: P
             PROCESS_LEASE_ACK_DIR_ENV: str(ack_dir),
             PROCESS_LEASE_READY_ENV: str(ready_file),
             PROCESS_LEASE_CLOSED_ENV: str(closed_file),
+            PROCESS_TARGET_STATUS_DIR_ENV: str(tmp_path / "target-status"),
         }
     )
     wrapper = ROOT / "scripts" / "process_lease_guardian.py"

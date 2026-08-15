@@ -5,9 +5,9 @@
 
 from __future__ import annotations
 
-import subprocess
 import time
 from dataclasses import dataclass
+from typing import Protocol
 
 from archetype import ArchetypeRuntime, StorageConfig
 
@@ -36,9 +36,13 @@ class DurableBiomeEpisodeResult:
     episode_entity_id: int
 
 
+class _PollableProcess(Protocol):
+    def poll(self) -> int | None: ...
+
+
 def wait_until_ready(
     client: BiomeClient,
-    process: subprocess.Popen[bytes] | None,
+    process: _PollableProcess | None,
     *,
     timeout: float = 30.0,
 ) -> bool:
@@ -46,10 +50,10 @@ def wait_until_ready(
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if client.is_ready():
-            return True
         if process is not None and process.poll() is not None:
             return False
+        if client.is_ready():
+            return True
         time.sleep(0.1)
     return False
 

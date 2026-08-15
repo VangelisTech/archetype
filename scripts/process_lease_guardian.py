@@ -7,7 +7,8 @@
 ``serve`` runs outside the scenario session and treats EOF on its parent-owned
 stdin pipe as the cleanup signal. ``exec`` is a fail-closed launch wrapper: it
 registers its own new-session PID/PGID, waits for the live guardian to
-acknowledge ownership, and only then replaces itself with the target command.
+acknowledge ownership, retains session leadership, and reports target exit
+without abandoning any descendants that still belong to the group.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ ACK_DIR_ENV = "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_ACK_DIR"
 READY_ENV = "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_READY_FILE"
 CLOSED_ENV = "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_CLOSED_FILE"
 WRAPPER_ENV = "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_WRAPPER"
+TARGET_STATUS_DIR_ENV = "ARCHETYPE_OPERATIONAL_PROCESS_TARGET_STATUS_DIR"
 LEASE_SCHEMA = "archetype.operational-process-lease/v1"
 RESULT_SCHEMA = "archetype.operational-process-lease-cleanup/v1"
 _TERM_GRACE_SECONDS = 5.0
@@ -150,6 +152,13 @@ def _lease_history(
 def _marker_path(directory: Path, lease_id: str) -> Path:
     digest = hashlib.sha256(lease_id.encode()).hexdigest()
     return directory / f"{digest}.ack"
+
+
+def target_status_path(directory: Path, lease_id: str) -> Path:
+    """Return the stable private target-status path for one acknowledged lease."""
+
+    digest = hashlib.sha256(lease_id.encode()).hexdigest()
+    return directory / f"{digest}.target.json"
 
 
 def _write_marker(path: Path, payload: dict[str, object]) -> None:
@@ -426,6 +435,7 @@ def execute(*, lease_prefix: str, host: str, port: int, command: list[str]) -> N
     ack_dir = _required_env_path(ACK_DIR_ENV)
     ready_file = _required_env_path(READY_ENV)
     closed_file = _required_env_path(CLOSED_ENV)
+    target_status_dir = _required_env_path(TARGET_STATUS_DIR_ENV)
     process_id = os.getpid()
     if os.getpgrp() != process_id:
         raise RuntimeError("guarded exec must be launched as a new session leader")
@@ -462,7 +472,24 @@ def execute(*, lease_prefix: str, host: str, port: int, command: list[str]) -> N
     if closed_file.exists():
         raise RuntimeError("process lease guardian closed before target exec")
     target = subprocess.Popen(command, env=os.environ.copy())
-    target.wait()
+    target_returncode = target.wait()
+    try:
+        _write_marker(
+            target_status_path(target_status_dir, lease_id),
+            {
+                "schema": LEASE_SCHEMA,
+                "lease_id": lease_id,
+                "pid": process_id,
+                "process_group": process_id,
+                "status": "target_exited",
+                "target_pid": target.pid,
+                "returncode": target_returncode,
+            },
+        )
+    except OSError:
+        # Failure to report must not abandon the kernel ownership anchor. The
+        # caller will time out and the independent guardian will still reap it.
+        pass
     # The wrapper intentionally remains the kernel-visible session leader even
     # after an unexpected target exit. Its owner will observe failed readiness
     # or I/O, close the group through ``terminate()``, and only then release the

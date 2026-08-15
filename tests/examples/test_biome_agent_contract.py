@@ -42,6 +42,7 @@ from biome_agent import (  # noqa: E402
     TerrainCell,
     monitor_mission,
     run_durable_episode,
+    wait_until_ready,
 )
 from biome_agent import bootstrap as biome_bootstrap  # noqa: E402
 from biome_agent.bootstrap import (  # noqa: E402
@@ -51,6 +52,7 @@ from biome_agent.bootstrap import (  # noqa: E402
     FLECS_REVISION,
     MISSION_SCENE,
     BiomeCheckout,
+    BiomeProcess,
     is_port_open,
     is_process_group_alive,
     launch,
@@ -560,11 +562,19 @@ def test_launch_revalidates_exact_upstream_heads_and_starts_an_owned_group(
     monkeypatch.setattr(biome_bootstrap, "is_port_open", lambda *args, **kwargs: False)
     launched: list[tuple[list[str], dict[str, object]]] = []
 
-    sentinel = object()
+    class Sentinel:
+        pid = 4321
+
+    sentinel = Sentinel()
     lease_file = tmp_path / "process-leases.jsonl"
     wrapper = tmp_path / "process-lease-guardian.py"
+    target_status_dir = tmp_path / "target-status"
     monkeypatch.setenv(biome_bootstrap._PROCESS_LEASE_ENV, str(lease_file))
     monkeypatch.setenv(biome_bootstrap._PROCESS_LEASE_WRAPPER_ENV, str(wrapper))
+    monkeypatch.setenv(
+        biome_bootstrap._PROCESS_TARGET_STATUS_DIR_ENV,
+        str(target_status_dir),
+    )
 
     def popen(command, **kwargs):
         launched.append((command, kwargs))
@@ -572,7 +582,11 @@ def test_launch_revalidates_exact_upstream_heads_and_starts_an_owned_group(
 
     monkeypatch.setattr(biome_bootstrap.subprocess, "Popen", popen)
 
-    assert launch(checkout) is sentinel
+    process = launch(checkout)
+    assert process == BiomeProcess(
+        sentinel,  # type: ignore[arg-type]
+        biome_bootstrap._target_status_path(target_status_dir, "biome:4321"),
+    )
     assert launched == [
         (
             [
@@ -605,6 +619,49 @@ def test_launch_revalidates_exact_upstream_heads_and_starts_an_owned_group(
     with pytest.raises(RuntimeError, match="unrelated source changes"):
         launch(checkout)
     assert len(launched) == 1
+
+
+def test_native_target_exit_is_visible_while_group_leader_remains(
+    tmp_path: Path,
+) -> None:
+    class Leader:
+        pid = 4321
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+        @staticmethod
+        def wait(timeout: float | None = None) -> int:
+            del timeout
+            return 0
+
+    class ReadyClient:
+        @staticmethod
+        def is_ready() -> bool:
+            return True
+
+    status_file = biome_bootstrap._target_status_path(tmp_path, "biome:4321")
+    status_file.write_text(
+        json.dumps(
+            {
+                "schema": biome_bootstrap._PROCESS_LEASE_SCHEMA,
+                "lease_id": "biome:4321",
+                "pid": 4321,
+                "process_group": 4321,
+                "status": "target_exited",
+                "target_pid": 4322,
+                "returncode": 7,
+            }
+        ),
+        encoding="utf-8",
+    )
+    process = BiomeProcess(Leader(), status_file)  # type: ignore[arg-type]
+
+    started = time.monotonic()
+    assert wait_until_ready(ReadyClient(), process, timeout=5) is False  # type: ignore[arg-type]
+    assert time.monotonic() - started < 0.5
+    assert process.poll() == 7
 
 
 def test_terminate_closes_owned_descendants_and_listener(

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -34,6 +35,7 @@ _PROCESS_KILL_GRACE_SECONDS = 5.0
 _PORT_CLOSE_GRACE_SECONDS = 5.0
 _PROCESS_LEASE_ENV = "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_FILE"
 _PROCESS_LEASE_WRAPPER_ENV = "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_WRAPPER"
+_PROCESS_TARGET_STATUS_DIR_ENV = "ARCHETYPE_OPERATIONAL_PROCESS_TARGET_STATUS_DIR"
 _PROCESS_LEASE_SCHEMA = "archetype.operational-process-lease/v1"
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -55,6 +57,59 @@ class BiomeCheckout:
     build: Path
     executable: Path
     scene: Path
+
+
+@dataclass(frozen=True)
+class BiomeProcess:
+    """Owned group leader with prompt native-target exit observation."""
+
+    _leader: subprocess.Popen[bytes]
+    _target_status: Path | None = None
+
+    @property
+    def pid(self) -> int:
+        return self._leader.pid
+
+    def poll(self) -> int | None:
+        leader_returncode = self._leader.poll()
+        if leader_returncode is not None or self._target_status is None:
+            return leader_returncode
+        if not self._target_status.is_file():
+            return None
+        try:
+            payload = json.loads(self._target_status.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise RuntimeError("Biome target exit marker is invalid") from exc
+        lease_id = f"biome:{self.pid}"
+        returncode = payload.get("returncode") if isinstance(payload, dict) else None
+        target_pid = payload.get("target_pid") if isinstance(payload, dict) else None
+        expected = {
+            "schema": _PROCESS_LEASE_SCHEMA,
+            "lease_id": lease_id,
+            "pid": self.pid,
+            "process_group": self.pid,
+            "status": "target_exited",
+        }
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {*expected, "target_pid", "returncode"}
+            or any(payload.get(key) != value for key, value in expected.items())
+            or not isinstance(target_pid, int)
+            or isinstance(target_pid, bool)
+            or target_pid <= 1
+            or not isinstance(returncode, int)
+            or isinstance(returncode, bool)
+        ):
+            raise RuntimeError("Biome target exit marker is invalid")
+        return returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self._leader.wait(timeout=timeout)
+
+
+def _target_status_path(directory: Path, lease_id: str) -> Path:
+    digest = hashlib.sha256(lease_id.encode()).hexdigest()
+    return directory / f"{digest}.target.json"
 
 
 def _run(command: list[str], *, cwd: Path | None = None) -> None:
@@ -306,17 +361,22 @@ def _verify_pinned_checkout(checkout: BiomeCheckout) -> None:
         raise RuntimeError("refusing to launch with an unexpected native Biome bridge")
 
 
-def launch(checkout: BiomeCheckout) -> subprocess.Popen[bytes]:
+def launch(checkout: BiomeCheckout) -> BiomeProcess:
     """Launch the pinned game and its Flecs REST server."""
 
     _verify_pinned_checkout(checkout)
     if is_port_open():
         raise RuntimeError(f"refusing to launch Biome while {BIOME_HOST}:{BIOME_PORT} is in use")
     command = [str(checkout.executable), "--scene", "etc/scenes/archetype_agent.flecs"]
+    target_status_dir: Path | None = None
     if os.environ.get(_PROCESS_LEASE_ENV) is not None:
         wrapper = os.environ.get(_PROCESS_LEASE_WRAPPER_ENV)
         if not wrapper:
             raise RuntimeError("operational Biome launch requires the process lease wrapper")
+        target_status_dir_value = os.environ.get(_PROCESS_TARGET_STATUS_DIR_ENV)
+        if not target_status_dir_value:
+            raise RuntimeError("operational Biome launch requires target status evidence")
+        target_status_dir = Path(target_status_dir_value)
         command = [
             sys.executable,
             wrapper,
@@ -330,15 +390,21 @@ def launch(checkout: BiomeCheckout) -> subprocess.Popen[bytes]:
             "--",
             *command,
         ]
-    return subprocess.Popen(
+    leader = subprocess.Popen(
         command,
         cwd=checkout.biome,
         start_new_session=True,
     )
+    target_status = (
+        _target_status_path(target_status_dir, f"biome:{leader.pid}")
+        if target_status_dir is not None
+        else None
+    )
+    return BiomeProcess(leader, target_status)
 
 
 def _terminate_owned_process(
-    process: subprocess.Popen[bytes],
+    process: BiomeProcess | subprocess.Popen[bytes],
     *,
     host: str = BIOME_HOST,
     port: int = BIOME_PORT,
@@ -368,7 +434,7 @@ def _terminate_owned_process(
 
 
 def terminate(
-    process: subprocess.Popen[bytes],
+    process: BiomeProcess | subprocess.Popen[bytes],
     *,
     host: str = BIOME_HOST,
     port: int = BIOME_PORT,
