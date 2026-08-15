@@ -6,16 +6,23 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import subprocess
+import threading
+from collections.abc import Mapping
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+from scripts import verify_release_index as release_index
 from scripts.release_artifact import DISTRIBUTIONS, SCHEMA
 from scripts.verify_release_index import (
     CryptographicVerificationError,
     IncompleteIndexError,
+    RegistryTransportError,
     verify_attestation,
     verify_index,
     verify_payloads,
@@ -63,7 +70,11 @@ def _manifest() -> dict[str, Any]:
     }
 
 
-def _payloads(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _payloads(
+    manifest: dict[str, Any],
+    *,
+    artifact_host: str = "files.pythonhosted.org",
+) -> dict[str, dict[str, Any]]:
     payloads = {
         distribution: {"info": {"version": manifest["version"]}, "urls": []}
         for distribution in DISTRIBUTIONS
@@ -77,6 +88,7 @@ def _payloads(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "size": record["size_bytes"],
                 "packagetype": "bdist_wheel" if record["kind"] == "wheel" else "sdist",
                 "yanked": False,
+                "url": f"https://{artifact_host}/packages/{record['name']}",
             }
         )
     return payloads
@@ -195,6 +207,46 @@ def test_index_rejects_unattested_filename() -> None:
     payloads["archetype-research"]["urls"][0]["filename"] = "surprise.whl"
 
     with pytest.raises(ValueError, match="unattested artifact"):
+        verify_payloads(
+            manifest,
+            payloads,
+            require_complete=False,
+            expected_commit=COMMIT,
+        )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.invalid/packages/archetype_ecs-0.6.0-py3-none-any.whl",
+        "https://files.pythonhosted.org/packages/a-different-file.whl",
+        "http://files.pythonhosted.org/packages/archetype_ecs-0.6.0-py3-none-any.whl",
+        "https://user@files.pythonhosted.org/packages/archetype_ecs-0.6.0-py3-none-any.whl",
+        "https://files.pythonhosted.org/packages/archetype_ecs-0.6.0-py3-none-any.whl?download=1",
+        "https://files.pythonhosted.org/packages/archetype_ecs-0.6.0-py3-none-any.whl#fragment",
+        "https://files.pythonhosted.org/packages/%2Farchetype_ecs-0.6.0-py3-none-any.whl",
+    ],
+)
+def test_index_rejects_untrusted_or_mismatched_artifact_url(url: str) -> None:
+    manifest = _manifest()
+    payloads = _payloads(manifest)
+    payloads["archetype-ecs"]["urls"][0]["url"] = url
+
+    with pytest.raises(ValueError, match="unexpected download URL"):
+        verify_payloads(
+            manifest,
+            payloads,
+            require_complete=False,
+            expected_commit=COMMIT,
+        )
+
+
+def test_index_requires_an_artifact_download_url() -> None:
+    manifest = _manifest()
+    payloads = _payloads(manifest)
+    del payloads["archetype-ecs"]["urls"][0]["url"]
+
+    with pytest.raises(TypeError, match="has no download URL"):
         verify_payloads(
             manifest,
             payloads,
@@ -328,6 +380,7 @@ def test_complete_index_retries_provenance_propagation() -> None:
         ),
         publisher=publisher,
         attestation_repository="https://github.com/VangelisTech/archetype",
+        registry_artifact_host="files.pythonhosted.org",
         require_complete=True,
         expected_commit=COMMIT,
         fetch=fetch,
@@ -342,24 +395,28 @@ def test_complete_index_retries_provenance_propagation() -> None:
     assert sleeps == [3]
 
 
-def test_complete_index_retries_transient_staging_crypto_propagation() -> None:
+@pytest.mark.parametrize("failure_phase", ["index", "integrity"])
+def test_complete_index_retries_transient_registry_transport(failure_phase: str) -> None:
     manifest = _manifest()
     payloads = _payloads(manifest)
-    publisher = _publisher("release-testpypi")
+    publisher = _publisher()
     records = {record["name"]: record for record in manifest["artifacts"]}
-    calls: list[tuple[str, str, bool]] = []
+    failed = False
     sleeps: list[float] = []
 
     def fetch(url: str) -> dict[str, Any]:
-        if "/pypi/" in url:
+        nonlocal failed
+        is_index = "/pypi/" in url
+        if not failed and (
+            (failure_phase == "index" and is_index)
+            or (failure_phase == "integrity" and not is_index)
+        ):
+            failed = True
+            raise RegistryTransportError(f"transient {failure_phase} transport failure")
+        if is_index:
             return payloads[url.split("/")[-3]]
         filename = url.split("/")[-2]
         return _provenance(records[filename], publisher)
-
-    def verify_crypto(filename: str, repository: str, staging: bool) -> None:
-        calls.append((filename, repository, staging))
-        if len(calls) == 1:
-            raise CryptographicVerificationError("staging provenance is still propagating")
 
     result = verify_index(
         manifest,
@@ -369,7 +426,55 @@ def test_complete_index_retries_transient_staging_crypto_propagation() -> None:
         ),
         publisher=publisher,
         attestation_repository="https://github.com/VangelisTech/archetype",
-        attestation_staging=True,
+        registry_artifact_host="files.pythonhosted.org",
+        require_complete=True,
+        expected_commit=COMMIT,
+        fetch=fetch,
+        verify_cryptographic_attestation=lambda *_args: None,
+        attempts=2,
+        interval_seconds=2,
+        sleep=sleeps.append,
+    )
+
+    assert result["complete"] is True
+    assert failed is True
+    assert sleeps == [2]
+
+
+def test_complete_index_retries_transient_testpypi_crypto_propagation() -> None:
+    manifest = _manifest()
+    payloads = _payloads(manifest, artifact_host="test-files.pythonhosted.org")
+    publisher = _publisher("release-testpypi")
+    records = {record["name"]: record for record in manifest["artifacts"]}
+    calls: list[tuple[str, str, str]] = []
+    sleeps: list[float] = []
+
+    def fetch(url: str) -> dict[str, Any]:
+        if "/pypi/" in url:
+            return payloads[url.split("/")[-3]]
+        filename = url.split("/")[-2]
+        return _provenance(records[filename], publisher)
+
+    def verify_crypto(
+        artifact: Mapping[str, Any],
+        provenance: Mapping[str, Any],
+        repository: str,
+    ) -> None:
+        filename = cast(str, artifact["name"])
+        assert provenance == _provenance(records[filename], publisher)
+        calls.append((filename, cast(str, artifact["url"]), repository))
+        if len(calls) == 1:
+            raise CryptographicVerificationError("TestPyPI provenance is still propagating")
+
+    result = verify_index(
+        manifest,
+        api_template="https://index.invalid/pypi/{distribution}/{version}/json",
+        integrity_template=(
+            "https://index.invalid/integrity/{distribution}/{version}/{filename}/provenance"
+        ),
+        publisher=publisher,
+        attestation_repository="https://github.com/VangelisTech/archetype",
+        registry_artifact_host="test-files.pythonhosted.org",
         require_complete=True,
         expected_commit=COMMIT,
         fetch=fetch,
@@ -379,12 +484,13 @@ def test_complete_index_retries_transient_staging_crypto_propagation() -> None:
         sleep=sleeps.append,
     )
 
-    assert result["cryptographic_provenance"]["staging"] is True
+    assert result["cryptographic_provenance"]["sigstore_environment"] == "production"
     assert result["cryptographic_provenance"]["artifact_count"] == 8
     assert len(calls) == 9
     assert all(
-        repository == "https://github.com/VangelisTech/archetype" and staging is True
-        for _filename, repository, staging in calls
+        artifact_url.startswith("https://test-files.pythonhosted.org/")
+        and repository == "https://github.com/VangelisTech/archetype"
+        for _filename, artifact_url, repository in calls
     )
     assert sleeps == [4]
 
@@ -394,7 +500,7 @@ def test_complete_index_exhausts_persistent_crypto_failure_with_diagnostics() ->
     payloads = _payloads(manifest)
     publisher = _publisher()
     records = {record["name"]: record for record in manifest["artifacts"]}
-    calls: list[tuple[str, str, bool]] = []
+    calls: list[tuple[str, str]] = []
     sleeps: list[float] = []
 
     def fetch(url: str) -> dict[str, Any]:
@@ -403,8 +509,13 @@ def test_complete_index_exhausts_persistent_crypto_failure_with_diagnostics() ->
         filename = url.split("/")[-2]
         return _provenance(records[filename], publisher)
 
-    def verify_crypto(filename: str, repository: str, staging: bool) -> None:
-        calls.append((filename, repository, staging))
+    def verify_crypto(
+        artifact: Mapping[str, Any],
+        _provenance: Mapping[str, Any],
+        repository: str,
+    ) -> None:
+        filename = cast(str, artifact["name"])
+        calls.append((filename, repository))
         raise CryptographicVerificationError(
             f"cryptographic provenance verification failed for {filename!r}\n"
             "stdout:\nregistry response\nstderr:\nbad signature"
@@ -425,6 +536,7 @@ def test_complete_index_exhausts_persistent_crypto_failure_with_diagnostics() ->
             ),
             publisher=publisher,
             attestation_repository="https://github.com/VangelisTech/archetype",
+            registry_artifact_host="files.pythonhosted.org",
             require_complete=True,
             expected_commit=COMMIT,
             fetch=fetch,
@@ -435,8 +547,7 @@ def test_complete_index_exhausts_persistent_crypto_failure_with_diagnostics() ->
         )
 
     assert len(calls) == 3
-    assert len({filename for filename, _repository, _staging in calls}) == 1
-    assert all(staging is False for _filename, _repository, staging in calls)
+    assert len({filename for filename, _repository in calls}) == 1
     assert sleeps == [2, 2]
 
 
@@ -461,7 +572,7 @@ def test_preflight_requires_provenance_and_crypto_for_exact_partial_upload() -> 
         "info": payloads[first["distribution"]]["info"],
         "urls": payloads[first["distribution"]]["urls"][:1],
     }
-    crypto: list[tuple[str, str, bool]] = []
+    crypto: list[tuple[str, str, str]] = []
 
     def fetch(url: str) -> dict[str, Any] | None:
         if "/integrity/" in url:
@@ -477,18 +588,25 @@ def test_preflight_requires_provenance_and_crypto_for_exact_partial_upload() -> 
         ),
         publisher=publisher,
         attestation_repository="https://github.com/VangelisTech/archetype",
+        registry_artifact_host="files.pythonhosted.org",
         require_complete=False,
         expected_commit=COMMIT,
         fetch=fetch,
-        verify_cryptographic_attestation=lambda *values: crypto.append(values),
+        verify_cryptographic_attestation=lambda artifact, provenance, repository: crypto.append(
+            (
+                cast(str, artifact["name"]),
+                cast(str, provenance["attestation_bundles"][0]["publisher"]["environment"]),
+                repository,
+            )
+        ),
     )
 
     assert result["artifact_count"] == 1
     assert crypto == [
         (
             first["name"],
+            "release-pypi",
             "https://github.com/VangelisTech/archetype",
-            False,
         )
     ]
 
@@ -506,6 +624,7 @@ def test_preflight_requires_provenance_and_crypto_for_exact_partial_upload() -> 
             ),
             publisher=publisher,
             attestation_repository="https://github.com/VangelisTech/archetype",
+            registry_artifact_host="files.pythonhosted.org",
             require_complete=False,
             expected_commit=COMMIT,
             fetch=token_upload,
@@ -513,25 +632,233 @@ def test_preflight_requires_provenance_and_crypto_for_exact_partial_upload() -> 
         )
 
 
-def test_cryptographic_verifier_is_pinned_and_preserves_failure_output(
+def test_testpypi_verifier_uses_local_files_and_production_sigstore(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         "scripts.verify_release_index.importlib.metadata.version",
         lambda _name: "0.0.30",
     )
+    filename = "archetype_ecs-0.6.0-py3-none-any.whl"
+    distribution_bytes = b"exact TestPyPI artifact bytes"
+    provenance = {"version": 1, "attestation_bundles": []}
+    artifact = {
+        "name": filename,
+        "sha256": hashlib.sha256(distribution_bytes).hexdigest(),
+        "size_bytes": len(distribution_bytes),
+        "url": f"https://test-files.pythonhosted.org/packages/{filename}",
+    }
     calls: list[list[str]] = []
+    observed_files: list[tuple[bytes, dict[str, Any]]] = []
 
     def fail(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(command)
+        provenance_path = Path(command[command.index("--provenance-file") + 1])
+        observed_files.append(
+            (
+                Path(command[-1]).read_bytes(),
+                json.loads(provenance_path.read_text(encoding="utf-8")),
+            )
+        )
         return subprocess.CompletedProcess(command, 1, "verification output", "bad signature")
 
     with pytest.raises(RuntimeError, match=r"(?s)verification output.*bad signature"):
         verify_attestation(
-            "archetype_ecs-0.6.0-py3-none-any.whl",
+            artifact,
+            provenance,
             "https://github.com/VangelisTech/archetype",
-            True,
             run=fail,
+            fetch_bytes=lambda url, expected_size: (
+                distribution_bytes
+                if url == artifact["url"] and expected_size == len(distribution_bytes)
+                else pytest.fail(f"unexpected artifact download: url={url}, size={expected_size}")
+            ),
         )
 
-    assert calls[0][-2:] == ["--staging", "pypi:archetype_ecs-0.6.0-py3-none-any.whl"]
+    assert calls[0][-1].endswith(filename)
+    assert "--staging" not in calls[0]
+    assert not any(value.startswith("pypi:") for value in calls[0])
+    assert observed_files == [(distribution_bytes, provenance)]
+
+
+@pytest.mark.parametrize(
+    "downloaded",
+    [
+        b"different registry bytes",
+        b"EXPECTED REGISTRY BYTES",
+    ],
+)
+def test_cryptographic_verifier_rejects_downloaded_byte_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    downloaded: bytes,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.verify_release_index.importlib.metadata.version",
+        lambda _name: "0.0.30",
+    )
+    filename = "archetype_ecs-0.6.0.tar.gz"
+    expected = b"expected registry bytes"
+    artifact = {
+        "name": filename,
+        "sha256": hashlib.sha256(expected).hexdigest(),
+        "size_bytes": len(expected),
+        "url": f"https://files.pythonhosted.org/packages/{filename}",
+    }
+
+    with pytest.raises(CryptographicVerificationError, match="unexpected bytes"):
+        verify_attestation(
+            artifact,
+            {"version": 1},
+            "https://github.com/VangelisTech/archetype",
+            run=lambda *_args, **_kwargs: pytest.fail("verifier must not run"),
+            fetch_bytes=lambda _url, _expected_size: downloaded,
+        )
+
+
+def test_index_rejects_cross_registry_artifact_url() -> None:
+    manifest = _manifest()
+    payloads = _payloads(manifest)
+
+    with pytest.raises(ValueError, match="unexpected download URL"):
+        verify_payloads(
+            manifest,
+            payloads,
+            require_complete=True,
+            expected_commit=COMMIT,
+            expected_artifact_host="test-files.pythonhosted.org",
+        )
+
+
+def test_cryptographic_verifier_wraps_transient_download_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.verify_release_index.importlib.metadata.version",
+        lambda _name: "0.0.30",
+    )
+    filename = "archetype_ecs-0.6.0.tar.gz"
+    artifact = {
+        "name": filename,
+        "sha256": hashlib.sha256(b"artifact").hexdigest(),
+        "size_bytes": len(b"artifact"),
+        "url": f"https://files.pythonhosted.org/packages/{filename}",
+    }
+
+    def fail_download(_url: str, _expected_size: int) -> bytes:
+        raise TimeoutError("registry read timed out")
+
+    with pytest.raises(
+        CryptographicVerificationError,
+        match=r"could not fetch.*registry read timed out",
+    ):
+        verify_attestation(
+            artifact,
+            {"version": 1},
+            "https://github.com/VangelisTech/archetype",
+            run=lambda *_args, **_kwargs: pytest.fail("verifier must not run"),
+            fetch_bytes=fail_download,
+        )
+
+
+def test_cryptographic_verifier_bounds_subprocess_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.verify_release_index.importlib.metadata.version",
+        lambda _name: "0.0.30",
+    )
+    filename = "archetype_ecs-0.6.0.tar.gz"
+    distribution_bytes = b"artifact"
+    artifact = {
+        "name": filename,
+        "sha256": hashlib.sha256(distribution_bytes).hexdigest(),
+        "size_bytes": len(distribution_bytes),
+        "url": f"https://files.pythonhosted.org/packages/{filename}",
+    }
+
+    def timeout(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        timeout_seconds = cast(float, kwargs["timeout"])
+        raise subprocess.TimeoutExpired(command, timeout_seconds)
+
+    with pytest.raises(CryptographicVerificationError, match="timed out.*180 seconds"):
+        verify_attestation(
+            artifact,
+            {"version": 1},
+            "https://github.com/VangelisTech/archetype",
+            run=timeout,
+            fetch_bytes=lambda _url, _expected_size: distribution_bytes,
+        )
+
+
+def test_artifact_downloader_rejects_redirects() -> None:
+    target_requests: list[str] = []
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler protocol
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", "/target")
+                self.end_headers()
+                return
+            target_requests.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "8")
+            self.end_headers()
+            self.wfile.write(b"artifact")
+
+        def log_message(self, format: str, *args: Any) -> None:
+            del format, args
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = cast(tuple[str, int], server.server_address)
+        with pytest.raises(RuntimeError, match="HTTP 302"):
+            release_index._fetch_bytes(f"http://{host}:{port}/redirect", 8)
+        assert target_requests == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
+def test_artifact_downloader_caps_response_at_expected_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OversizedResponse:
+        headers: dict[str, str] = {}
+
+        def __init__(self) -> None:
+            self.read_sizes: list[int] = []
+
+        def __enter__(self) -> OversizedResponse:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, size: int) -> bytes:
+            self.read_sizes.append(size)
+            return b"x" * size
+
+    class OversizedOpener:
+        def __init__(self, response: OversizedResponse) -> None:
+            self.response = response
+
+        def open(self, _url: str, *, timeout: int) -> OversizedResponse:
+            assert timeout == 30
+            return self.response
+
+    response = OversizedResponse()
+    monkeypatch.setattr(release_index, "_ARTIFACT_OPENER", OversizedOpener(response))
+
+    with pytest.raises(RuntimeError, match="unexpected size"):
+        release_index._fetch_bytes(
+            "https://files.pythonhosted.org/packages/artifact.whl",
+            8,
+        )
+
+    assert response.read_sizes == [9]

@@ -548,7 +548,7 @@ verify-test-index:
 		--publisher-repository VangelisTech/archetype --publisher-workflow release.yml \
 		--publisher-environment release-testpypi \
 		--attestation-repository https://github.com/VangelisTech/archetype \
-		--attestation-staging \
+		--registry-artifact-host test-files.pythonhosted.org \
 		--attempts 12 --interval-seconds 5
 	@uv run --no-project --with packaging==26.1 python scripts/registry_smoke.py \
 		--manifest "$(RELEASE_ARTIFACT_MANIFEST)" --index-url https://test.pypi.org/simple \
@@ -564,6 +564,7 @@ verify-published:
 		--publisher-repository VangelisTech/archetype --publisher-workflow release.yml \
 		--publisher-environment release-pypi \
 		--attestation-repository https://github.com/VangelisTech/archetype \
+		--registry-artifact-host files.pythonhosted.org \
 		--attempts 12 --interval-seconds 5
 	@uv run --no-project --with packaging==26.1 python scripts/registry_smoke.py \
 		--manifest "$(RELEASE_ARTIFACT_MANIFEST)"

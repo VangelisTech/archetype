@@ -8,17 +8,20 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import importlib.metadata
 import json
 import re
 import subprocess
 import time
 from collections.abc import Callable, Mapping
+from http.client import HTTPException, HTTPMessage
 from pathlib import Path
-from typing import Any
+from tempfile import TemporaryDirectory
+from typing import IO, Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlparse
-from urllib.request import urlopen
+from urllib.parse import quote, unquote, urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 if __package__:
     from .release_artifact import DISTRIBUTIONS, SCHEMA, artifact_records, manifest_sha256
@@ -30,10 +33,14 @@ DEFAULT_INTEGRITY_TEMPLATE = (
     "https://pypi.org/integrity/{distribution}/{version}/{filename}/provenance"
 )
 Fetch = Callable[[str], dict[str, Any] | None]
+FetchBytes = Callable[[str, int], bytes]
 Sleep = Callable[[float], None]
-VerifyAttestation = Callable[[str, str, bool], None]
+VerifyAttestation = Callable[[Mapping[str, Any], Mapping[str, Any], str], None]
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _ATTESTATION_TOOL_VERSION = "0.0.30"
+_ATTESTATION_TIMEOUT_SECONDS = 180
+_ARTIFACT_HOSTS = {"files.pythonhosted.org", "test-files.pythonhosted.org"}
+_DOWNLOAD_CHUNK_SIZE = 64 * 1024
 
 
 class IncompleteIndexError(ValueError):
@@ -42,6 +49,29 @@ class IncompleteIndexError(ValueError):
 
 class CryptographicVerificationError(RuntimeError):
     """The registry artifact could not yet be cryptographically verified."""
+
+
+class RegistryTransportError(RuntimeError):
+    """The package registry could not yet return a complete response."""
+
+
+class _RejectRedirects(HTTPRedirectHandler):
+    """Keep registry artifact downloads on the already validated host."""
+
+    def redirect_request(
+        self,
+        req: Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> Request | None:
+        del req, fp, code, msg, headers, newurl
+        return None
+
+
+_ARTIFACT_OPENER = build_opener(_RejectRedirects())
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -58,12 +88,92 @@ def _fetch(url: str) -> dict[str, Any] | None:
     except HTTPError as error:
         if error.code == 404:
             return None
-        raise RuntimeError(f"release index request failed for {url}: HTTP {error.code}") from error
-    except URLError as error:
-        raise RuntimeError(f"release index request failed for {url}: {error.reason}") from error
+        raise RegistryTransportError(
+            f"release index request failed for {url}: HTTP {error.code}"
+        ) from error
+    except (HTTPException, OSError, URLError) as error:
+        reason = getattr(error, "reason", error)
+        raise RegistryTransportError(f"release index request failed for {url}: {reason}") from error
     if not isinstance(payload, dict):
         raise TypeError(f"release index response for {url} must be an object")
     return payload
+
+
+def _fetch_bytes(url: str, expected_size: int) -> bytes:
+    if isinstance(expected_size, bool) or expected_size < 0:
+        raise ValueError("release artifact size must be a non-negative integer")
+    try:
+        with _ARTIFACT_OPENER.open(
+            url,
+            timeout=30,
+        ) as response:  # noqa: S310 - validated PyPI host; redirects disabled
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    observed_length = int(content_length)
+                except ValueError as error:
+                    raise RegistryTransportError(
+                        f"release artifact response for {url} has invalid Content-Length"
+                    ) from error
+                if observed_length != expected_size:
+                    raise RegistryTransportError(
+                        f"release artifact response for {url} has unexpected Content-Length"
+                    )
+
+            content = bytearray()
+            remaining = expected_size + 1
+            while remaining:
+                chunk = response.read(min(_DOWNLOAD_CHUNK_SIZE, remaining))
+                if not chunk:
+                    break
+                content.extend(chunk)
+                remaining -= len(chunk)
+            if len(content) != expected_size:
+                raise RegistryTransportError(
+                    f"release artifact response for {url} has unexpected size"
+                )
+            return bytes(content)
+    except HTTPError as error:
+        raise RegistryTransportError(
+            f"release artifact request failed for {url}: HTTP {error.code}"
+        ) from error
+    except (HTTPException, OSError, URLError) as error:
+        reason = getattr(error, "reason", error)
+        raise RegistryTransportError(
+            f"release artifact request failed for {url}: {reason}"
+        ) from error
+
+
+def _artifact_url(
+    value: object,
+    *,
+    filename: str,
+    expected_host: str | None = None,
+) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"index artifact {filename!r} has no download URL")
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc not in _ARTIFACT_HOSTS
+        or (expected_host is not None and parsed.netloc != expected_host)
+        or parsed.username
+        or parsed.password
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or unquote(parsed.path.rsplit("/", 1)[-1]) != filename
+    ):
+        raise ValueError(f"index artifact {filename!r} has an unexpected download URL")
+    return value
+
+
+def _registry_artifact_host(value: str) -> str:
+    if value not in _ARTIFACT_HOSTS:
+        raise ValueError(
+            "registry artifact host must be files.pythonhosted.org or test-files.pythonhosted.org"
+        )
+    return value
 
 
 def _expected_by_filename(
@@ -131,6 +241,7 @@ def verify_payloads(
     *,
     require_complete: bool,
     expected_commit: str,
+    expected_artifact_host: str | None = None,
 ) -> dict[str, Any]:
     """Compare index JSON payloads with the exact release manifest."""
 
@@ -172,6 +283,11 @@ def verify_payloads(
                 raise ValueError(f"index artifact {filename!r} has the wrong package type")
             if value.get("yanked") is not False:
                 raise ValueError(f"index artifact {filename!r} must be explicitly unyanked")
+            artifact_url = _artifact_url(
+                value.get("url"),
+                filename=filename,
+                expected_host=expected_artifact_host,
+            )
             observed.add(filename)
             observed_records.append(
                 {
@@ -180,6 +296,7 @@ def verify_payloads(
                     "name": filename,
                     "sha256": record["sha256"],
                     "size_bytes": record["size_bytes"],
+                    "url": artifact_url,
                 }
             )
             count += 1
@@ -288,15 +405,28 @@ def verify_provenance(
 
 
 def verify_attestation(
-    filename: str,
+    artifact: Mapping[str, Any],
+    provenance: Mapping[str, Any],
     repository: str,
-    staging: bool,
     *,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    fetch_bytes: FetchBytes = _fetch_bytes,
 ) -> None:
     """Cryptographically verify one registry artifact with the pinned PyPI tool."""
 
     repository = _repository_url(repository)
+    filename = artifact.get("name")
+    if not isinstance(filename, str):
+        raise TypeError("cryptographic verification requires an artifact filename")
+    artifact_url = _artifact_url(artifact.get("url"), filename=filename)
+    expected_sha256 = artifact.get("sha256")
+    expected_size = artifact.get("size_bytes")
+    if (
+        not isinstance(expected_sha256, str)
+        or not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+    ):
+        raise TypeError(f"cryptographic verification metadata is incomplete for {filename!r}")
     try:
         observed_version = importlib.metadata.version("pypi-attestations")
     except importlib.metadata.PackageNotFoundError as error:
@@ -308,22 +438,56 @@ def verify_attestation(
             "release verification requires "
             f"pypi-attestations=={_ATTESTATION_TOOL_VERSION}, found {observed_version}"
         )
-    command = [
-        "pypi-attestations",
-        "verify",
-        "pypi",
-        "--repository",
-        repository,
-    ]
-    if staging:
-        command.append("--staging")
-    command.append(f"pypi:{filename}")
-    process = run(command, check=False, capture_output=True, text=True)
-    if process.returncode:
+    try:
+        distribution_bytes = fetch_bytes(artifact_url, expected_size)
+    except (HTTPException, OSError, RuntimeError, TypeError, ValueError) as error:
         raise CryptographicVerificationError(
-            f"cryptographic provenance verification failed for {filename!r}\n"
-            f"stdout:\n{process.stdout}\nstderr:\n{process.stderr}"
+            f"cryptographic verification could not fetch {filename!r}: {error}"
+        ) from error
+    if (
+        len(distribution_bytes) != expected_size
+        or hashlib.sha256(distribution_bytes).hexdigest() != expected_sha256
+    ):
+        raise CryptographicVerificationError(
+            f"cryptographic verification downloaded unexpected bytes for {filename!r}"
         )
+
+    with TemporaryDirectory(prefix="archetype-pypi-attestation-") as directory:
+        artifact_path = Path(directory, filename)
+        provenance_path = Path(directory, f"{filename}.provenance.json")
+        artifact_path.write_bytes(distribution_bytes)
+        provenance_path.write_text(
+            json.dumps(dict(provenance), separators=(",", ":")),
+            encoding="utf-8",
+        )
+        command = [
+            "pypi-attestations",
+            "verify",
+            "pypi",
+            "--repository",
+            repository,
+            "--provenance-file",
+            str(provenance_path),
+        ]
+        command.append(str(artifact_path))
+        try:
+            process = run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=_ATTESTATION_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise CryptographicVerificationError(
+                "cryptographic provenance verification timed out for "
+                f"{filename!r} after {_ATTESTATION_TIMEOUT_SECONDS} seconds"
+            ) from error
+        if process.returncode:
+            raise CryptographicVerificationError(
+                f"cryptographic provenance verification failed for {filename!r}\n"
+                f"stdout:\n{process.stdout}\nstderr:\n{process.stderr}"
+            )
 
 
 def verify_index(
@@ -335,7 +499,7 @@ def verify_index(
     integrity_template: str | None = None,
     publisher: Mapping[str, str] | None = None,
     attestation_repository: str | None = None,
-    attestation_staging: bool = False,
+    registry_artifact_host: str | None = None,
     fetch: Fetch = _fetch,
     verify_cryptographic_attestation: VerifyAttestation = verify_attestation,
     attempts: int = 1,
@@ -354,32 +518,37 @@ def verify_index(
             "integrity verification and cryptographic attestation repository "
             "must be configured together"
         )
-    if attestation_staging and attestation_repository is None:
-        raise ValueError("staging attestation verification requires a repository")
+    if (attestation_repository is None) is not (registry_artifact_host is None):
+        raise ValueError(
+            "cryptographic attestation verification requires one registry artifact host"
+        )
     if attestation_repository is not None:
         attestation_repository = _repository_url(attestation_repository)
+        assert registry_artifact_host is not None
+        registry_artifact_host = _registry_artifact_host(registry_artifact_host)
         assert publisher is not None
         if publisher.get("kind") != "GitHub" or publisher.get("repository") != urlparse(
             attestation_repository
         ).path.strip("/"):
             raise ValueError("attestation repository does not match the publisher identity")
     for attempt in range(attempts):
-        payloads = {
-            distribution: fetch(
-                _template_url(
-                    api_template,
-                    distribution=distribution,
-                    version=version,
-                )
-            )
-            for distribution in DISTRIBUTIONS
-        }
         try:
+            payloads = {
+                distribution: fetch(
+                    _template_url(
+                        api_template,
+                        distribution=distribution,
+                        version=version,
+                    )
+                )
+                for distribution in DISTRIBUTIONS
+            }
             result = verify_payloads(
                 manifest,
                 payloads,
                 require_complete=require_complete,
                 expected_commit=expected_commit,
+                expected_artifact_host=registry_artifact_host,
             )
             result["index_api_template"] = api_template
             if integrity_template is not None and publisher is not None:
@@ -402,16 +571,20 @@ def verify_index(
                 )
                 assert attestation_repository is not None
                 for artifact in result["artifacts"]:
+                    filename = str(artifact["name"])
+                    provenance = provenances[filename]
+                    assert provenance is not None
                     verify_cryptographic_attestation(
-                        str(artifact["name"]),
+                        artifact,
+                        provenance,
                         attestation_repository,
-                        attestation_staging,
                     )
                 result["cryptographic_provenance"] = {
                     "tool": "pypi-attestations",
                     "tool_version": _ATTESTATION_TOOL_VERSION,
                     "repository": attestation_repository,
-                    "staging": attestation_staging,
+                    "registry_artifact_host": registry_artifact_host,
+                    "sigstore_environment": "production",
                     "artifact_count": len(result["artifacts"]),
                     "artifacts": sorted(str(artifact["name"]) for artifact in result["artifacts"]),
                 }
@@ -421,6 +594,12 @@ def verify_index(
                 raise CryptographicVerificationError(
                     "cryptographic provenance verification exhausted "
                     f"{attempts} attempt(s)\n{error}"
+                ) from error
+            sleep(interval_seconds)
+        except RegistryTransportError as error:
+            if attempt + 1 == attempts:
+                raise RegistryTransportError(
+                    f"release registry transport exhausted {attempts} attempt(s)\n{error}"
                 ) from error
             sleep(interval_seconds)
         except IncompleteIndexError:
@@ -444,7 +623,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--publisher-workflow")
     parser.add_argument("--publisher-environment")
     parser.add_argument("--attestation-repository")
-    parser.add_argument("--attestation-staging", action="store_true")
+    parser.add_argument("--registry-artifact-host")
     parser.add_argument("--out", type=Path)
     parser.add_argument("--attempts", type=int, default=1)
     parser.add_argument("--interval-seconds", type=float, default=5)
@@ -462,6 +641,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("integrity verification requires --attestation-repository")
     if args.attestation_repository is not None and args.integrity_template is None:
         parser.error("attestation verification requires --integrity-template")
+    if (args.attestation_repository is None) is not (args.registry_artifact_host is None):
+        parser.error(
+            "attestation verification requires --attestation-repository and "
+            "--registry-artifact-host"
+        )
     publisher = (
         {
             "kind": args.publisher_kind,
@@ -480,7 +664,7 @@ def main(argv: list[str] | None = None) -> int:
         integrity_template=args.integrity_template,
         publisher=publisher,
         attestation_repository=args.attestation_repository,
-        attestation_staging=args.attestation_staging,
+        registry_artifact_host=args.registry_artifact_host,
         attempts=args.attempts,
         interval_seconds=args.interval_seconds,
     )

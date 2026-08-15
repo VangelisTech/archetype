@@ -351,7 +351,7 @@ jobs:
           --publisher-workflow release.yml
           --publisher-environment release-testpypi
           --attestation-repository https://github.com/VangelisTech/archetype
-          --attestation-staging
+          --registry-artifact-host test-files.pythonhosted.org
 
   publish-testpypi:
     name: Publish attested artifacts to TestPyPI
@@ -408,7 +408,7 @@ jobs:
           --publisher-workflow release.yml
           --publisher-environment release-testpypi
           --attestation-repository https://github.com/VangelisTech/archetype
-          --attestation-staging
+          --registry-artifact-host test-files.pythonhosted.org
           --out testpypi-index-evidence.json
           --attempts 12
           --interval-seconds 5
@@ -465,6 +465,7 @@ jobs:
           --publisher-workflow release.yml
           --publisher-environment release-pypi
           --attestation-repository https://github.com/VangelisTech/archetype
+          --registry-artifact-host files.pythonhosted.org
 
   publish:
     needs: pypi-preflight
@@ -517,6 +518,7 @@ jobs:
           --publisher-workflow release.yml
           --publisher-environment release-pypi
           --attestation-repository https://github.com/VangelisTech/archetype
+          --registry-artifact-host files.pythonhosted.org
           --out pypi-index-evidence.json
           --attempts 12
           --interval-seconds 5

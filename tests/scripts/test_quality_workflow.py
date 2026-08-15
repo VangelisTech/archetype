@@ -281,6 +281,7 @@ def test_manual_registry_verification_matches_the_hosted_release_oracles() -> No
         assert '--manifest "$(RELEASE_ARTIFACT_MANIFEST)"' in body
         assert "--integrity-template" in body
         assert "--publisher-repository VangelisTech/archetype" in body
+        assert "--registry-artifact-host" in body
     test_index = re.search(
         r"^verify-test-index:[^\n]*\n(?P<body>(?:\t.*\n)+)",
         makefile,
@@ -289,6 +290,15 @@ def test_manual_registry_verification_matches_the_hosted_release_oracles() -> No
     assert test_index is not None
     assert "https://test.pypi.org/simple" in test_index.group("body")
     assert "https://pypi.org/simple" in test_index.group("body")
+    assert "--registry-artifact-host test-files.pythonhosted.org" in test_index.group("body")
+    assert "--attestation-staging" not in test_index.group("body")
+    published = re.search(
+        r"^verify-published:[^\n]*\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+    assert published is not None
+    assert "--registry-artifact-host files.pythonhosted.org" in published.group("body")
 
 
 def test_every_release_scenario_is_installed_wheel_applicable() -> None:
@@ -427,7 +437,8 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert "scripts/verify_release_ref.py" in test_preflight
     assert "--publisher-environment release-testpypi" in test_preflight
     assert "pypi-attestations==0.0.30" in test_preflight
-    assert "--attestation-staging" in test_preflight
+    assert "--registry-artifact-host test-files.pythonhosted.org" in test_preflight
+    assert "--attestation-staging" not in test_preflight
     assert '--expected-commit "$GITHUB_SHA"' in test_preflight
     assert "needs: testpypi-preflight" in publish_test
     assert "environment: release-testpypi" in publish_test
@@ -439,13 +450,15 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert "testpypi-install-evidence.json" in test_smoke
     assert "--publisher-environment release-testpypi" in test_smoke
     assert "pypi-attestations==0.0.30" in test_smoke
-    assert "--attestation-staging" in test_smoke
+    assert "--registry-artifact-host test-files.pythonhosted.org" in test_smoke
+    assert "--attestation-staging" not in test_smoke
     assert '--expected-commit "$GITHUB_SHA"' in test_smoke
     assert "needs: testpypi-smoke" in pypi_preflight
     assert "scripts/verify_release_index.py" in pypi_preflight
     assert "scripts/verify_release_ref.py" in pypi_preflight
     assert "--publisher-environment release-pypi" in pypi_preflight
     assert "pypi-attestations==0.0.30" in pypi_preflight
+    assert "--registry-artifact-host files.pythonhosted.org" in pypi_preflight
     assert '--expected-commit "$GITHUB_SHA"' in pypi_preflight
     assert "needs: pypi-preflight" in publish
     assert "needs: publish" in registry_smoke
@@ -455,6 +468,7 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert "pypi-install-evidence.json" in registry_smoke
     assert "--publisher-environment release-pypi" in registry_smoke
     assert "pypi-attestations==0.0.30" in registry_smoke
+    assert "--registry-artifact-host files.pythonhosted.org" in registry_smoke
     assert '--expected-commit "$GITHUB_SHA"' in registry_smoke
     assert "needs: registry-smoke" in github_release
 

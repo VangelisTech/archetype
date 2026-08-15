@@ -212,6 +212,14 @@ manual uploads cannot satisfy that recovery path. The gate then uses pinned
 `pypi-attestations` tooling to verify the Sigstore signature and transparency
 evidence against the served artifact.
 
+Registry selection and Sigstore trust selection are deliberately independent.
+The verifier downloads the exact URL reported by each registry, requires
+`test-files.pythonhosted.org` for TestPyPI and `files.pythonhosted.org` for
+PyPI, checks those bytes against the release manifest, and then supplies the
+already-fetched provenance to the pinned verifier. The pinned publisher action
+signs uploads to both registries with production Sigstore trust, so TestPyPI
+verification MUST NOT select the Sigstore staging roots.
+
 Release execution is operator-only. The `Release tags — everettVT only`
 repository ruleset permits only `everettVT` to create `v*` tags; the separate
 immutable-tag ruleset continues to deny tag updates and deletion for everyone.
