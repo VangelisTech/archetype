@@ -277,9 +277,12 @@ available, and the Make target has explicitly opted into live execution with
 `ARCHETYPE_BIOME_LIVE=1`. The release-only test builds and launches the exact
 checked-in Biome and Flecs revisions in the active GUI/Metal session, waits for
 the local REST service, proves the native mining mission and durable Archetype
-evidence, and guarantees process and port cleanup. The job then starts Apple
-Container, runs its exact-wheel parity proof, and stops the service in an
-always-run cleanup step.
+evidence, and guarantees process and port cleanup. A separate-session guardian
+must acknowledge ownership before a launch wrapper starts Biome and remains
+the group's kernel-identifiable session leader; parent EOF, timeout, or
+cancellation makes that guardian reap the group and prove the loopback listener
+closed. The job then starts Apple Container, runs its exact-wheel parity proof,
+and stops the service in an always-run cleanup step.
 
 Both results travel in the existing
 `release-operational-release-apple-evidence` artifact. The aggregate

@@ -373,10 +373,11 @@ that does not change the server's bind address or add server-side
 authorization.
 
 At the pinned Biome revision the upstream repository does not declare a
-license. Archetype therefore does not vendor, modify, package, or redistribute
-Biome source or assets. The bootstrap creates a local checkout for the user.
-Obtain permission or a declared upstream license before distributing a
-derived Biome build.
+license. Archetype therefore does not vendor, package, or redistribute Biome
+source, assets, or the derived executable. The bootstrap patches only its
+disposable local checkout to register the Archetype-owned bridge and produce
+a private executable for the evidence run. Obtain permission or a declared
+upstream license before distributing that derived build or any copied asset.
 
 For a package-owned example that compiles framework prefab graphs into Agent
 Missions authoring values, continue with the
