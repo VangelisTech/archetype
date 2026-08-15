@@ -5,16 +5,19 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from typing import Self
 
 import pytest
 from daft import col
 from pydantic import (
     Field,
     ValidationError,
+    ValidationInfo,
     computed_field,
     field_serializer,
     field_validator,
     model_serializer,
+    model_validator,
 )
 
 import archetype.smol as smol
@@ -314,6 +317,111 @@ def test_partial_updates_do_not_replay_untouched_field_validators() -> None:
             "is_active": True,
             "statefulposition__position": 1,
             "statefulposition__generation": 1,
+        },
+    ]
+
+
+def test_multi_field_updates_validate_one_atomic_candidate() -> None:
+    validated: list[tuple[str, int, int | None]] = []
+
+    class Interval(Component):
+        low: int = Field(strict=True)
+        high: int = Field(strict=True)
+        generation: int
+
+        @field_validator("low", "high")
+        @classmethod
+        def record_bound(cls, value: int, info: ValidationInfo) -> int:
+            validated.append((info.field_name, value, None))
+            return value
+
+        @field_validator("generation")
+        @classmethod
+        def increment_generation(cls, value: int) -> int:
+            validated.append(("generation", value, None))
+            return value + 1
+
+        @model_validator(mode="after")
+        def require_ordered_bounds(self) -> Self:
+            validated.append(("model", self.low, self.high))
+            if self.low > self.high:
+                raise ValueError("low must not exceed high")
+            return self
+
+    class ShiftInterval(Processor):
+        components = (Interval,)
+
+        def process(self, df, *, tick):
+            del tick
+            return df.with_column("interval__low", col("interval__low") + 2).with_column(
+                "interval__high", col("interval__high") + 2
+            )
+
+    world = World(processors=[ShiftInterval()])
+    world.spawn(Interval(low=0, high=1, generation=0))
+
+    world.step()
+
+    assert validated == [
+        ("low", 0, None),
+        ("high", 1, None),
+        ("generation", 0, None),
+        ("model", 0, 1),
+        ("low", 2, None),
+        ("high", 3, None),
+        ("model", 2, 3),
+    ]
+    assert world.history(Interval).to_pylist() == [
+        {
+            "entity_id": 1,
+            "tick": 0,
+            "is_active": True,
+            "interval__low": 0,
+            "interval__high": 1,
+            "interval__generation": 1,
+        },
+        {
+            "entity_id": 1,
+            "tick": 1,
+            "is_active": True,
+            "interval__low": 2,
+            "interval__high": 3,
+            "interval__generation": 1,
+        },
+    ]
+
+
+def test_tuple_fields_survive_noop_daft_round_trips() -> None:
+    validated: list[tuple[int, int]] = []
+
+    class Bounds(Component):
+        value: tuple[int, int]
+
+        @field_validator("value")
+        @classmethod
+        def record_value(cls, value: tuple[int, int]) -> tuple[int, int]:
+            validated.append(value)
+            return value
+
+    world = World()
+    world.spawn(Bounds(value=(2, 5)))
+
+    world.step()
+
+    assert validated == [(2, 5)]
+    assert world.tick == 1
+    assert world.history(Bounds).to_pylist() == [
+        {
+            "entity_id": 1,
+            "tick": 0,
+            "is_active": True,
+            "bounds__value": {"_0": 2, "_1": 5},
+        },
+        {
+            "entity_id": 1,
+            "tick": 1,
+            "is_active": True,
+            "bounds__value": {"_0": 2, "_1": 5},
         },
     ]
 

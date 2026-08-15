@@ -6,12 +6,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from copy import deepcopy
 from dataclasses import dataclass
+from functools import cache
 from math import isnan
 from typing import Any, cast
 
 import daft
 from daft import DataFrame
+from pydantic_core import SchemaValidator, core_schema
 
 from .component import Component
 from .processor import Processor
@@ -81,20 +84,87 @@ def _same_value(left: Any, right: Any) -> bool:
     return bool(left == right)
 
 
+def _restore_daft_shape(value: Any, template: Any) -> Any:
+    """Restore Python container shapes that Arrow represents as structs."""
+
+    if isinstance(template, tuple):
+        items: list[Any] | None = None
+        if isinstance(value, dict):
+            expected_keys = {f"_{index}" for index in range(len(value))}
+            if set(value) == expected_keys:
+                items = [value[f"_{index}"] for index in range(len(value))]
+        elif isinstance(value, (list, tuple)):
+            items = list(value)
+        if items is not None:
+            return tuple(
+                _restore_daft_shape(item, template[index]) if index < len(template) else item
+                for index, item in enumerate(items)
+            )
+    if isinstance(template, list) and isinstance(value, list):
+        return [
+            _restore_daft_shape(item, template[index]) if index < len(template) else item
+            for index, item in enumerate(value)
+        ]
+    if isinstance(template, dict) and isinstance(value, dict):
+        return {
+            key: _restore_daft_shape(item, template[key]) if key in template else item
+            for key, item in value.items()
+        }
+    return value
+
+
+def _find_model_fields_schema(schema: Any, component_type: type[Component]) -> dict[str, Any]:
+    if isinstance(schema, dict):
+        if schema.get("type") == "model" and schema.get("cls") is component_type:
+            fields_schema = schema.get("schema")
+            if isinstance(fields_schema, dict) and fields_schema.get("type") == "model-fields":
+                return fields_schema
+            raise RuntimeError(f"{component_type.__name__} has an unsupported Pydantic schema")
+        for value in schema.values():
+            try:
+                return _find_model_fields_schema(value, component_type)
+            except LookupError:
+                pass
+    elif isinstance(schema, (list, tuple)):
+        for value in schema:
+            try:
+                return _find_model_fields_schema(value, component_type)
+            except LookupError:
+                pass
+    raise LookupError(component_type)
+
+
+@cache
+def _changed_fields_validator(
+    component_type: type[Component],
+    changed_fields: tuple[str, ...],
+) -> SchemaValidator:
+    schema = deepcopy(component_type.__pydantic_core_schema__)
+    try:
+        model_fields = _find_model_fields_schema(schema, component_type)
+    except LookupError as exc:
+        raise RuntimeError(f"{component_type.__name__} has an unsupported Pydantic schema") from exc
+    fields = cast(dict[str, dict[str, Any]], model_fields["fields"])
+    changed = frozenset(changed_fields)
+    for name, field_schema in fields.items():
+        if name not in changed:
+            field_schema["schema"] = core_schema.any_schema()
+    return SchemaValidator(schema)
+
+
 def _validate_changed_fields[ComponentT: Component](
     component: ComponentT,
     changed_values: dict[str, Any],
 ) -> ComponentT:
-    """Validate processor changes without replaying untouched field validators."""
+    """Validate one atomic candidate without replaying untouched fields."""
 
-    candidate = component.model_copy(deep=True)
-    validator = type(component).__pydantic_validator__
-    for name, value in changed_values.items():
-        candidate = cast(
-            ComponentT,
-            validator.validate_assignment(candidate, name, value, by_name=True),
-        )
-    return candidate
+    component_type = type(component)
+    values = {
+        name: deepcopy(changed_values.get(name, getattr(component, name)))
+        for name in component_type.model_fields
+    }
+    validator = _changed_fields_validator(component_type, tuple(sorted(changed_values)))
+    return cast(ComponentT, validator.validate_python(values, by_name=True))
 
 
 class World:
@@ -382,7 +452,13 @@ class World:
             }
             for component_type in signature:
                 prefix = component_type.prefix()
-                values = {name: row[f"{prefix}{name}"] for name in component_type.model_fields}
+                values = {
+                    name: _restore_daft_shape(
+                        row[f"{prefix}{name}"],
+                        source_row[f"{prefix}{name}"],
+                    )
+                    for name in component_type.model_fields
+                }
                 changed_values = {
                     name: value
                     for name, value in values.items()

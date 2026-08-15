@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
     "daft>=0.7.19",
     "pydantic>=2.11",
+    "pydantic-core>=2.33",
 ]
 
 [build-system]
