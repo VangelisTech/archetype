@@ -16,37 +16,32 @@ Prepare, launch, act, verify, and keep the game open:
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
-import time
 from pathlib import Path
 
 from biome_agent import (
-    BiomeAgentDecision,
     BiomeClient,
-    BiomeEpisodeState,
-    BiomeMission,
-    BiomeMissionOutcome,
     ExtractionGoal,
     FlecsRemoteError,
-    GoalDirectedDrillPolicy,
-    monitor_mission,
-    plan_mission,
+    run_durable_episode,
+    wait_until_ready,
 )
 from biome_agent.bootstrap import (
     BIOME_REVISION,
+    BIOME_URL,
     DEFAULT_CHECKOUT_ROOT,
     FLECS_REVISION,
     launch,
     prepare,
+    terminate,
 )
 
-from archetype import ArchetypeRuntime, StorageConfig
+from archetype import StorageConfig
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="http://127.0.0.1:27750")
+    parser.add_argument("--url", default=BIOME_URL)
     parser.add_argument("--resource", default="Copper")
     parser.add_argument("--amount", type=int, default=10)
     parser.add_argument("--timeout", type=float, default=15.0)
@@ -68,31 +63,6 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _wait_until_ready(client: BiomeClient, process, timeout: float = 30.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if client.is_ready():
-            return True
-        if process is not None and process.poll() is not None:
-            return False
-        time.sleep(0.1)
-    return False
-
-
-def _state_from_trace(trace) -> BiomeEpisodeState:
-    sample = trace.final_sample
-    drill = sample.drill if sample else None
-    return BiomeEpisodeState(
-        phase="succeeded" if trace.success else "failed",
-        target_entity=trace.plan.action.target_path,
-        deposit_amount=sample.deposit_amount if sample else trace.plan.target.amount,
-        extracted=trace.extracted,
-        drill_entity=trace.plan.action.drill_path,
-        powered=drill.powered if drill else False,
-        stored_amount=drill.stored_amount if drill else 0,
-    )
-
-
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     process = None
@@ -100,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.launch:
+            if args.url.rstrip("/") != BIOME_URL:
+                raise ValueError(f"--launch owns the exact local endpoint {BIOME_URL}")
             print("Preparing pinned upstream Biome and Flecs revisions...")
             print(
                 "WARNING: upstream Flecs REST binds 0.0.0.0:27750 without authentication; "
@@ -110,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
             launched_from_pins = True
 
         with BiomeClient(args.url) as client:
-            if not _wait_until_ready(client, process, timeout=30.0 if process else 0.5):
+            if not wait_until_ready(client, process, timeout=30.0 if process else 0.5):
                 message = (
                     "Biome is not listening at "
                     f"{args.url}. Run with --launch, or start the pinned game separately."
@@ -122,102 +94,40 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             goal = ExtractionGoal(resource=args.resource, amount=args.amount)
-            policy = GoalDirectedDrillPolicy()
             storage = StorageConfig(uri=args.storage_uri, namespace="biome_agent")
-
-            with ArchetypeRuntime.sync() as runtime:
-                world = runtime.world("live-biome-agent", storage=storage)
-                episode = world.spawn(
-                    BiomeMission(
-                        environment_uri=args.url,
-                        resource=goal.resource,
-                        target_amount=goal.amount,
-                        biome_revision=BIOME_REVISION
-                        if launched_from_pins
-                        else "external-unverified",
-                        flecs_revision=FLECS_REVISION
-                        if launched_from_pins
-                        else "external-unverified",
-                    ),
-                    BiomeEpisodeState(),
-                )
-                world.step()
-
-                plan = plan_mission(client, policy, goal)
-                world.update(
-                    episode,
-                    BiomeEpisodeState(
-                        phase="observed",
-                        target_entity=plan.action.target_path,
-                        deposit_amount=plan.target.amount,
-                    ),
-                )
-                world.step()
-
-                client.deploy(plan.action)
-                world.add_components(
-                    episode,
-                    BiomeAgentDecision(
-                        target_entity=plan.action.target_path,
-                        drill_x=plan.action.drill_cell.x,
-                        drill_y=plan.action.drill_cell.y,
-                        power_x=plan.action.power_cell.x,
-                        power_y=plan.action.power_cell.y,
-                    ),
-                )
-                world.update(
-                    episode,
-                    BiomeEpisodeState(
-                        phase="action_applied",
-                        target_entity=plan.action.target_path,
-                        deposit_amount=plan.target.amount,
-                        drill_entity=plan.action.drill_path,
-                    ),
-                )
-                world.step()
-
-                trace = monitor_mission(
-                    client,
-                    plan,
-                    timeout=args.timeout,
-                    poll_interval=args.poll_interval,
-                )
-                final_sample = trace.final_sample
-                elapsed = final_sample.elapsed_seconds if final_sample else 0.0
-                world.update(episode, _state_from_trace(trace))
-                world.add_components(
-                    episode,
-                    BiomeMissionOutcome(
-                        success=trace.success,
-                        extracted=trace.extracted,
-                        reason=trace.reason,
-                        elapsed_seconds=elapsed,
-                    ),
-                )
-                world.step()
-                info = world.info()
-
-                drill = final_sample.drill if final_sample else None
-                print(f"Goal: extract {goal.amount} {goal.resource}")
-                print(
-                    "Decision:",
-                    f"{plan.action.target_path} -> {plan.action.drill_path}",
-                    f"powered by {plan.action.power_path}",
-                )
-                print(
-                    "Native result:",
-                    f"extracted={trace.extracted}",
-                    f"powered={drill.powered if drill else False}",
-                    f"stored={drill.stored_amount if drill else 0}",
-                )
-                print(
-                    "Archetype evidence:",
-                    f"world_id={info.world_id}",
-                    f"run_id={info.run_id}",
-                    f"ticks={info.tick}",
-                )
-                print(trace.reason)
-                return 0 if trace.success else 1
+            result = run_durable_episode(
+                client,
+                goal,
+                storage=storage,
+                biome_revision=BIOME_REVISION if launched_from_pins else "external-unverified",
+                flecs_revision=FLECS_REVISION if launched_from_pins else "external-unverified",
+                timeout=args.timeout,
+                poll_interval=args.poll_interval,
+            )
+            trace = result.trace
+            plan = trace.plan
+            final_sample = trace.final_sample
+            drill = final_sample.drill if final_sample else None
+            print(f"Goal: extract {goal.amount} {goal.resource}")
+            print(
+                "Decision:",
+                f"{plan.action.target_path} -> {plan.action.drill_path}",
+                f"powered by {plan.action.power_path}",
+            )
+            print(
+                "Native result:",
+                f"extracted={trace.extracted}",
+                f"powered={drill.powered if drill else False}",
+                f"stored={drill.stored_amount if drill else 0}",
+            )
+            print(
+                "Archetype evidence:",
+                f"world_id={result.world_id}",
+                f"run_id={result.run_id}",
+                f"committed_tick={result.committed_tick}",
+            )
+            print(trace.reason)
+            return 0 if trace.success else 1
     except (FlecsRemoteError, LookupError, RuntimeError, ValueError) as exc:
         print(f"Biome mission failed: {exc}", file=sys.stderr)
         return 1
@@ -225,13 +135,8 @@ def main(argv: list[str] | None = None) -> int:
         if process is not None:
             if args.keep_open and process.poll() is None:
                 print(f"Biome remains open (pid={process.pid}).")
-            elif process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+            else:
+                terminate(process)
 
 
 if __name__ == "__main__":

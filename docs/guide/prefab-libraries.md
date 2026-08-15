@@ -347,7 +347,12 @@ The pinned compatibility set is:
 | Project | Revision | Reason |
 |---|---|---|
 | `SanderMertens/biome` | `d3372c2b3d7491b9260727292c27e554d12c0478` | Upstream game and prefab library used by the dogfood |
-| `SanderMertens/flecs` | `fd137d63deccded67aba4a0dd8a8a4231d24e897` on `script_await` | Public branch containing the async script task/future API used by Biome |
+| `SanderMertens/flecs` | `fd137d63deccded67aba4a0dd8a8a4231d24e897`, originally from `script_await` | Exact commit containing the async script task/future API used by Biome |
+
+Named upstream branches are provenance, not immutable inputs. The current
+`script_await` history has diverged from this compatibility commit, so the
+bootstrap fetches the exact SHA explicitly before detached checkout instead of
+assuming the pin remains reachable from the branch tip.
 
 The bootstrap passes `FETCHCONTENT_SOURCE_DIR_FLECS` to CMake because the
 checked-in Biome CMake configuration currently names Sander's local Flecs

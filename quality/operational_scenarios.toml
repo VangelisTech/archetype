@@ -368,14 +368,21 @@ kind = "example"
 owner = "missions"
 owner_paths = ["examples/biome_agent"]
 source_path = "examples/14_biome_agent.py"
-source_command = ["python", "examples/14_biome_agent.py", "--require-live"]
+source_command = ["pytest", "-q", "tests/infrastructure/test_biome_live.py::test_pinned_biome_episode"]
 required_extras = []
 tier = 6
 applicability = ["source", "wheel"]
-timeout_seconds = 900
-prerequisites = ["infrastructure:ARCHETYPE_BIOME_LIVE"]
+timeout_seconds = 1800
+prerequisites = [
+  "platform:darwin",
+  "binary:git",
+  "binary:cmake",
+  "binary:cargo",
+  "binary:pkg-config",
+  "infrastructure:ARCHETYPE_BIOME_LIVE",
+]
 missing_prerequisite = "not_run"
-semantic_oracle = { kind = "pytest", ref = "tests/examples/test_biome_agent_contract.py::test_monitor_requires_native_power_targeting_and_deposit_delta" }
+semantic_oracle = { kind = "pytest", ref = "tests/infrastructure/test_biome_live.py::test_pinned_biome_episode" }
 contracts = ["missions.environment.pinned"]
 cleanup_policy = "isolated"
 artifact_policy = "receipt"
