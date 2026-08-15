@@ -97,7 +97,8 @@ nav:
           - Core Engine: reference/python/core.md
           - Storage Backends: reference/python/storage.md
           - Compatibility: reference/python/compatibility.md
-      - REST API: reference/rest-api.md
+      - Framework REST API: reference/rest-api.md
+      - Missions REST API: reference/rest-api-missions.md
       - CLI: reference/cli.md
   - DEVELOPMENT:
       - Contributing: guide/contributing.md

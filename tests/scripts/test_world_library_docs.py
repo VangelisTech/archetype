@@ -139,6 +139,13 @@ def test_missions_reference_renders_the_primary_workflow_methods() -> None:
         assert "Release this mission workflow handle and its world reservation." in page
 
 
+def test_split_rest_references_are_navigable() -> None:
+    navigation = (ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+
+    assert "- Framework REST API: reference/rest-api.md" in navigation
+    assert "- Missions REST API: reference/rest-api-missions.md" in navigation
+
+
 def test_world_library_signature_contracts_are_in_the_reference_inventory() -> None:
     research = (ROOT / "docs/reference/python/autoresearch.md").read_text(encoding="utf-8")
     physical = (ROOT / "docs/reference/python/physical-ai.md").read_text(encoding="utf-8")
