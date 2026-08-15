@@ -6,12 +6,15 @@
 from __future__ import annotations
 
 import os
+import runpy
 import signal
 import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 from uuid import UUID
 
 import httpx
@@ -70,6 +73,116 @@ def _deposit(
         terrain="biome.terrain.Terrain",
         cell=TerrainCell(x, y),
     )
+
+
+def test_numbered_example_entrypoint_runs_the_pinned_durable_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    namespace = runpy.run_path(str(_EXAMPLES / "14_biome_agent.py"))
+    calls: dict[str, object] = {}
+
+    class Process:
+        pid = 4321
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    process = Process()
+
+    class Client:
+        def __init__(self, url: str) -> None:
+            calls["url"] = url
+
+        def __enter__(self) -> Client:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def prepare_entrypoint(checkout_root: Path, *, jobs: int | None = None) -> object:
+        calls["prepare"] = (checkout_root, jobs)
+        return object()
+
+    def launch_entrypoint(checkout: object) -> Process:
+        calls["checkout"] = checkout
+        return process
+
+    def run_entrypoint(client: Client, goal: ExtractionGoal, **kwargs: object) -> object:
+        calls["run"] = (client, goal, kwargs)
+        action = SimpleNamespace(
+            target_path="mission.iron",
+            drill_path="scene.buildings.agent_drill",
+            power_path="scene.buildings.agent_solar",
+        )
+        trace = SimpleNamespace(
+            plan=SimpleNamespace(action=action),
+            final_sample=SimpleNamespace(drill=SimpleNamespace(powered=True, stored_amount=4)),
+            extracted=4,
+            success=True,
+            reason="goal reached",
+        )
+        return SimpleNamespace(
+            trace=trace,
+            world_id="world-1",
+            run_id="run-1",
+            committed_tick=3,
+        )
+
+    namespace.update(
+        {
+            "BiomeClient": Client,
+            "prepare": prepare_entrypoint,
+            "launch": launch_entrypoint,
+            "wait_until_ready": lambda *_args, **_kwargs: True,
+            "run_durable_episode": run_entrypoint,
+            "terminate": lambda owned: calls.setdefault("terminated", owned),
+        }
+    )
+    main = namespace["main"]
+    main.__globals__.update(namespace)
+
+    returncode = main(
+        [
+            "--launch",
+            "--resource",
+            "Iron",
+            "--amount",
+            "4",
+            "--timeout",
+            "2",
+            "--poll-interval",
+            "0.1",
+            "--checkout-root",
+            str(tmp_path / "upstream"),
+            "--jobs",
+            "3",
+            "--storage-uri",
+            str(tmp_path / "store"),
+        ]
+    )
+
+    assert returncode == 0
+    assert calls["prepare"] == (tmp_path / "upstream", 3)
+    assert calls["terminated"] is process
+    _client, goal, kwargs = cast(
+        tuple[Client, ExtractionGoal, dict[str, object]],
+        calls["run"],
+    )
+    assert goal == ExtractionGoal("Iron", 4)
+    assert kwargs["biome_revision"] == BIOME_REVISION
+    assert kwargs["flecs_revision"] == FLECS_REVISION
+    assert kwargs["timeout"] == 2
+    assert kwargs["poll_interval"] == 0.1
+    storage = kwargs["storage"]
+    assert isinstance(storage, StorageConfig)
+    assert storage.uri == str(tmp_path / "store")
+    assert storage.namespace == "biome_agent"
+    output = capsys.readouterr()
+    assert "Native result: extracted=4 powered=True stored=4" in output.out
+    assert "Archetype evidence: world_id=world-1 run_id=run-1 committed_tick=3" in output.out
+    assert output.err == ""
 
 
 def test_client_reads_reflected_deposits_and_occupancy() -> None:
