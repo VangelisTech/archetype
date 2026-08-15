@@ -5,7 +5,25 @@ recommended pattern is `ArchetypeRuntime` for scripts. A small number of
 examples intentionally exercise internal services as focused implementation
 fixtures; application examples stay on the runtime.
 
+## Choose by package
+
+The owning distribution identifies the behavior being demonstrated; every
+script itself remains repository example code rather than shipped package
+content.
+
+| Package context | Examples |
+|---|---|
+| Framework — `archetype-ecs` / `archetype` | [Quickstart](#0-quickstart), [world mutations](#1-world-mutations), [counterfactual forks](#2-fork-for-counterfactuals), [time travel](#3-time-travel-queries), [messaging](#4-agent-messaging), [LLM agents](#5-llm-powered-agents), [hooks](#7-lifecycle-hooks), [cloud storage](#9-cloud-storage), [graphs](#11b-graph-relationships), [prefabs](#12-prefabs), [Biome RTS](#13-biome-inspired-rts), and [live Biome](#14-live-biome-agent) |
+| Missions — `archetype-missions` / `archetype.missions` | [Trajectory analysis](#6-mission-trajectory-analysis), [HTN resolution](#8-htn-resolution), and [coding-agent mission](#11a-coding-agent-mission) |
+| Research — `archetype-research` / `archetype.research` | [AutoResearch](#10-autoresearch) |
+| Physical AI — `archetype-physical-ai` / `archetype.physical_ai` | The hosted-episode runnable contract lives in [Physical AI](physical-ai.md); there is no numbered script. |
+| Framework + Missions composition | [Mission Factory assets](#15-mission-factory-assets) |
+
+## Example details
+
 ## 0. Quickstart
+
+**Package context:** Framework (`archetype-ecs`, import `archetype`).
 
 The smallest complete simulation defines one component and one processor,
 then runs through the public runtime surface. It stays below 30 non-comment
@@ -23,6 +41,8 @@ processor increments the counter on three subsequent ticks.
 ---
 
 ## 1. World Mutations
+
+**Package context:** Framework (`archetype-ecs`, import `archetype`).
 
 Demonstrates the trusted mutation surface: spawn entities with components,
 inject processors at runtime, fork a world, and query state/history.
@@ -68,6 +88,8 @@ untrusted-adapter permission matrix.
 
 ## 2. Fork for Counterfactuals
 
+**Package context:** Framework (`archetype-ecs`, import `archetype`).
+
 Run three logistic-map regimes on one prime timeline, fork once, perturb each
 forked value by `1e-9`, then advance both worlds and compare their append-only
 histories with one Daft join.
@@ -87,6 +109,8 @@ resource isolation is required.
 ---
 
 ## 3. Time-Travel Queries
+
+**Package context:** Framework (`archetype-ecs`, import `archetype`).
 
 Run ticks, rewind to any past tick by filtering the `tick` column, then fork
 a counterfactual branch and diff it against the source at the same tick.
@@ -119,6 +143,8 @@ apply on the following tick — the table contains `x_0, f(x_0), f^2(x_0), ...`.
 
 ## 4. Agent Messaging
 
+**Package context:** Framework (`archetype-ecs`, import `archetype`).
+
 Three agents exchange greetings through an example-local shared `Mailbox`.
 Priority-ordered processors realize pending messages on the following tick,
 then update mood and energy from each inbox.
@@ -145,6 +171,8 @@ paths.
 
 ## 5. LLM-Powered Agents
 
+**Package context:** Framework (`archetype-ecs`, import `archetype`).
+
 Three agents with different personalities, each calling an LLM every tick via `daft.functions.prompt`. The ECS handles batching automatically — all entities get LLM calls in parallel because world state is a DataFrame.
 
 ```bash
@@ -166,6 +194,9 @@ Requires an OpenAI API key (or any provider via `daft.set_provider()`).
 ---
 
 ## 6. Mission Trajectory Analysis
+
+**Package context:** Missions (`archetype-missions`, import
+`archetype.missions`).
 
 Persist normalized turn and reward rows keyed by `episode_id`, then select
 and grade one episode's evidence through `MissionWorld`. The example is
@@ -189,6 +220,8 @@ Source: [`examples/06_trajectory_analysis.py`](https://github.com/VangelisTech/a
 
 ## 7. Lifecycle Hooks
 
+**Package context:** Framework (`archetype-ecs`, import `archetype`).
+
 Record lifecycle audit events, measure tick duration, and publish per-tick metrics without putting side effects inside processors.
 
 ```bash
@@ -208,6 +241,9 @@ Source: [`examples/07_hooks.py`](https://github.com/VangelisTech/archetype/blob/
 
 ## 8. HTN Resolution
 
+**Package context:** Missions (`archetype-missions`, import
+`archetype.missions`).
+
 Resolve a hierarchical task network into a fan-out AND/OR forest.
 
 ```bash
@@ -223,6 +259,8 @@ mission-planning adapter may translate a resolved plan into task entities and
 ---
 
 ## 9. Cloud Storage
+
+**Package context:** Framework (`archetype-ecs`, import `archetype`).
 
 Configure cloud-backed storage through `StorageConfig` without changing the
 runtime workflow.
@@ -240,6 +278,9 @@ the matching host credentials.
 
 ## 10. AutoResearch
 
+**Package context:** Research (`archetype-research`, import
+`archetype.research`).
+
 Run a multi-candidate research workflow through the runtime-owned world and
 evaluation boundaries.
 
@@ -256,7 +297,10 @@ Its transient `ResearchCandidateContext` is not the persisted missions
 
 ---
 
-## 11. Coding-Agent Mission
+## 11a. Coding-Agent Mission
+
+**Package context:** Missions (`archetype-missions`, import
+`archetype.missions`).
 
 Submit a two-task repository mission: first prove a regression is red, then
 implement the fix only after that predecessor is accepted.
@@ -290,7 +334,9 @@ sequence diagram, ownership map, dogfood result, and explicit limits.
 
 ---
 
-## 11. Graph Relationships
+## 11b. Graph Relationships
+
+**Package context:** Framework (`archetype-ecs`, import `archetype`).
 
 Represent hierarchy edges as temporal ECS entities, traverse a bounded command
 tree, read it at an earlier tick, and cascade cleanup after a despawn.
@@ -306,7 +352,9 @@ unit/edge counts after cascade.
 
 ---
 
-## 12. PreFabs
+## 12. Prefabs
+
+**Package context:** Framework (`archetype-ecs`, import `archetype`).
 
 Author a prefab subtree, instantiate isolated copies with overrides and `IsA`
 lineage, then edit the template and re-instantiate without mutating prior
@@ -321,6 +369,9 @@ Source: [`examples/12_prefabs.py`](https://github.com/VangelisTech/archetype/blo
 ---
 
 ## 13. Biome-Inspired RTS
+
+**Package context:** Framework (`archetype-ecs`, import `archetype`); the
+`biome_rts` modules are example-local.
 
 Compose a prefab asset catalog into a live RTS command hierarchy with
 registered processors, minimap and fog-of-war projections, and a
@@ -338,6 +389,9 @@ runnable snippet and contract live in [Physical AI](physical-ai.md).
 ---
 
 ## 14. Live Biome Agent
+
+**Package context:** Framework (`archetype-ecs`, import `archetype`) composed
+with an external Biome/Flecs process.
 
 Run a closed-loop mission against Sander Mertens' actual Biome executable.
 The agent observes reflected deposits, selects a requested resource and a free
@@ -363,6 +417,9 @@ for the ownership boundary, upstream pins, and reproducibility notes.
 ---
 
 ## 15. Mission Factory Assets
+
+**Package context:** Framework prefab primitives plus Missions authoring
+contracts (`archetype-ecs` + `archetype-missions`).
 
 Author a software factory as an ECS prefab library, instantiate its reusable
 `BugFixLine`, and compile the copied recipe entities into the same
