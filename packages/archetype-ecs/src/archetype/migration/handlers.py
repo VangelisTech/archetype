@@ -105,7 +105,7 @@ def _archetype_version() -> str:
     try:
         return version("archetype-ecs")
     except PackageNotFoundError:  # pragma: no cover - source tree without install metadata
-        return "0.5.0"
+        return "0.6.0"
 
 
 def _artifact_plan(inventory: ArtifactInventory) -> ArtifactPlanEvidence:

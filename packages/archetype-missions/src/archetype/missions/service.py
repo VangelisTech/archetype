@@ -324,7 +324,7 @@ class MissionService:
 
         del mission, checkpoint
         raise NotImplementedError(
-            "Mission checkpoint restore is unavailable on the v0.5 Modal Activity path; "
+            "Mission checkpoint restore is unavailable on the v0.6 Modal Activity path; "
             "run() would otherwise ignore the restored filesystem"
         )
 
