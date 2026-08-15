@@ -114,6 +114,7 @@ def test_empty_file_is_skipped_by_fix(tmp_path: Path) -> None:
 
 
 def test_default_scan_includes_every_workspace_source_root(tmp_path: Path) -> None:
+    assert Path("packages/archetype-smol/src") in checker.WORKSPACE_SOURCE_ROOTS
     expected: set[Path] = set()
     for index, relative in enumerate(checker.WORKSPACE_SOURCE_ROOTS):
         path = tmp_path / relative / "archetype" / f"module_{index}.py"

@@ -30,6 +30,7 @@ members = [
     "archetype-missions",
     "archetype-physical-ai",
     "archetype-research",
+    "archetype-smol",
     "archetype-workspace",
 ]
 
@@ -371,11 +372,27 @@ requires-dist = [
 ]
 
 [[package]]
+name = "archetype-smol"
+version = "0.6.0"
+source = { editable = "packages/archetype-smol" }
+dependencies = [
+    { name = "daft" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "daft", specifier = ">=0.7.19" },
+    { name = "pydantic", specifier = ">=2.0" },
+]
+
+[[package]]
 name = "archetype-workspace"
 version = "0.6.0"
 source = { virtual = "." }
 dependencies = [
     { name = "archetype-ecs", extra = ["all", "coding-agent", "logfire", "sim"] },
+    { name = "archetype-smol" },
 ]
 
 [package.dev-dependencies]
@@ -412,7 +429,10 @@ problem-definition = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "archetype-ecs", extras = ["all", "coding-agent", "logfire", "sim"], editable = "packages/archetype-ecs" }]
+requires-dist = [
+    { name = "archetype-ecs", extras = ["all", "coding-agent", "logfire", "sim"], editable = "packages/archetype-ecs" },
+    { name = "archetype-smol", editable = "packages/archetype-smol" },
+]
 
 [package.metadata.requires-dev]
 benchmark = [

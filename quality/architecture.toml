@@ -4,6 +4,7 @@ source_roots = [
   "packages/archetype-missions/src",
   "packages/archetype-physical-ai/src",
   "packages/archetype-research/src",
+  "packages/archetype-smol/src",
 ]
 
 [concrete_services]
