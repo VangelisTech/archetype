@@ -146,6 +146,14 @@ def test_split_rest_references_are_navigable() -> None:
     assert "- Missions REST API: reference/rest-api-missions.md" in navigation
 
 
+def test_split_research_and_evaluation_references_are_navigable() -> None:
+    navigation = (ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+
+    assert "- AutoResearch: reference/python/autoresearch.md" in navigation
+    assert "- Framework Evaluation: reference/python/evaluation.md" in navigation
+    assert "AutoResearch and Evaluation" not in navigation
+
+
 def test_world_library_signature_contracts_are_in_the_reference_inventory() -> None:
     research = (ROOT / "docs/reference/python/autoresearch.md").read_text(encoding="utf-8")
     evaluation = (ROOT / "docs/reference/python/evaluation.md").read_text(encoding="utf-8")

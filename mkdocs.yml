@@ -90,7 +90,8 @@ nav:
           - Building Blocks: reference/python/building-blocks.md
           - Hooks and Identity: reference/python/hooks.md
           - Configuration: reference/python/configuration.md
-          - AutoResearch and Evaluation: reference/python/autoresearch.md
+          - AutoResearch: reference/python/autoresearch.md
+          - Framework Evaluation: reference/python/evaluation.md
           - Physical AI: reference/python/physical-ai.md
           - Physical AI Optimization: reference/python/physical-ai-optimization.md
           - Physical AI Host Configuration: reference/python/physical-ai-host.md
