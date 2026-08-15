@@ -73,6 +73,26 @@ jobs:
           path: dist/
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-archetype-ecs
+          path: dist/archetype_ecs-*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-archetype-missions
+          path: dist/archetype_missions-*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-archetype-physical-ai
+          path: dist/archetype_physical_ai-*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-archetype-research
+          path: dist/archetype_research-*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: release-evidence
@@ -348,7 +368,6 @@ jobs:
           --integrity-template
           'https://test.pypi.org/integrity/{distribution}/{version}/{filename}/provenance'
           --publisher-repository VangelisTech/archetype
-          --publisher-workflow release.yml
           --publisher-environment release-testpypi
           --attestation-repository https://github.com/VangelisTech/archetype
           --registry-artifact-host test-files.pythonhosted.org
@@ -365,7 +384,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: dist
+          name: dist-archetype-ecs
           path: dist/
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
@@ -373,9 +392,51 @@ jobs:
           skip-existing: true
           attestations: true
 
+  publish-testpypi-libraries:
+    name: Publish world libraries to TestPyPI
+    needs: testpypi-preflight
+    if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Dispatch exact TestPyPI publisher runs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/dispatch_release_publishers.py dispatch
+          --parent-run-id "$GITHUB_RUN_ID"
+          --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
+          --tag "$GITHUB_REF_NAME"
+          --expected-commit "$GITHUB_SHA"
+          --registry testpypi
+          --out publisher-dispatch-testpypi.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: publisher-dispatch-testpypi-${{ github.run_attempt }}
+          path: publisher-dispatch-testpypi.json
+          if-no-files-found: error
+      - name: Await only the allowlisted TestPyPI publisher runs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/dispatch_release_publishers.py await
+          --parent-run-id "$GITHUB_RUN_ID"
+          --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
+          --tag "$GITHUB_REF_NAME"
+          --expected-commit "$GITHUB_SHA"
+          --registry testpypi
+          --allowlist publisher-dispatch-testpypi.json
+          --out publisher-dispatch-testpypi.json
+
   testpypi-smoke:
     name: TestPyPI installed distribution matrix
-    needs: publish-testpypi
+    needs: [publish-testpypi, publish-testpypi-libraries]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -405,7 +466,6 @@ jobs:
           --integrity-template
           'https://test.pypi.org/integrity/{distribution}/{version}/{filename}/provenance'
           --publisher-repository VangelisTech/archetype
-          --publisher-workflow release.yml
           --publisher-environment release-testpypi
           --attestation-repository https://github.com/VangelisTech/archetype
           --registry-artifact-host test-files.pythonhosted.org
@@ -462,7 +522,6 @@ jobs:
           --integrity-template
           'https://pypi.org/integrity/{distribution}/{version}/{filename}/provenance'
           --publisher-repository VangelisTech/archetype
-          --publisher-workflow release.yml
           --publisher-environment release-pypi
           --attestation-repository https://github.com/VangelisTech/archetype
           --registry-artifact-host files.pythonhosted.org
@@ -478,16 +537,58 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: dist
+          name: dist-archetype-ecs
           path: dist/
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           skip-existing: true
           attestations: true
 
+  publish-libraries:
+    name: Publish world libraries to PyPI
+    needs: pypi-preflight
+    if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Dispatch exact PyPI publisher runs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/dispatch_release_publishers.py dispatch
+          --parent-run-id "$GITHUB_RUN_ID"
+          --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
+          --tag "$GITHUB_REF_NAME"
+          --expected-commit "$GITHUB_SHA"
+          --registry pypi
+          --out publisher-dispatch-pypi.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: publisher-dispatch-pypi-${{ github.run_attempt }}
+          path: publisher-dispatch-pypi.json
+          if-no-files-found: error
+      - name: Await only the allowlisted PyPI publisher runs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/dispatch_release_publishers.py await
+          --parent-run-id "$GITHUB_RUN_ID"
+          --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
+          --tag "$GITHUB_REF_NAME"
+          --expected-commit "$GITHUB_SHA"
+          --registry pypi
+          --allowlist publisher-dispatch-pypi.json
+          --out publisher-dispatch-pypi.json
+
   registry-smoke:
     name: PyPI installed distribution matrix
-    needs: publish
+    needs: [publish, publish-libraries]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -515,7 +616,6 @@ jobs:
           --integrity-template
           'https://pypi.org/integrity/{distribution}/{version}/{filename}/provenance'
           --publisher-repository VangelisTech/archetype
-          --publisher-workflow release.yml
           --publisher-environment release-pypi
           --attestation-repository https://github.com/VangelisTech/archetype
           --registry-artifact-host files.pythonhosted.org

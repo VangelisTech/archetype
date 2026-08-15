@@ -86,7 +86,8 @@ Before the first release, register pending Trusted Publishers for the three new
 project names on both PyPI and TestPyPI. Registration preconfigures OIDC; it does
 not reserve or claim a name, and each new name remains claimable until the first
 successful OIDC publication creates the project on that registry. See
-[Repository harness](repository-harness.md) for the exact OIDC identities.
+[Repository harness](repository-harness.md) for the exact, package-specific
+OIDC identities and the direct-workflow bootstrap required for new projects.
 
 For current architecture and installation contracts, continue with
 [World libraries](world-libraries.md), [Runtime](runtime.md), and

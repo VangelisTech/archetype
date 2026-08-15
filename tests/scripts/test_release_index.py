@@ -18,7 +18,7 @@ from typing import Any, cast
 import pytest
 
 from scripts import verify_release_index as release_index
-from scripts.release_artifact import DISTRIBUTIONS, SCHEMA
+from scripts.release_artifact import DISTRIBUTIONS, PUBLISHER_WORKFLOWS, SCHEMA
 from scripts.verify_release_index import (
     CryptographicVerificationError,
     IncompleteIndexError,
@@ -98,12 +98,15 @@ def _publisher(environment: str = "release-pypi") -> dict[str, str]:
     return {
         "kind": "GitHub",
         "repository": "VangelisTech/archetype",
-        "workflow": "release.yml",
         "environment": environment,
     }
 
 
 def _provenance(record: dict[str, Any], publisher: dict[str, str]) -> dict[str, Any]:
+    exact_publisher = {
+        **publisher,
+        "workflow": PUBLISHER_WORKFLOWS[record["distribution"]],
+    }
     statement = {
         "_type": "https://in-toto.io/Statement/v1",
         "subject": [
@@ -120,7 +123,7 @@ def _provenance(record: dict[str, Any], publisher: dict[str, str]) -> dict[str, 
         "version": 1,
         "attestation_bundles": [
             {
-                "publisher": dict(publisher),
+                "publisher": exact_publisher,
                 "attestations": [{"envelope": {"statement": encoded}}],
             }
         ],
@@ -323,7 +326,13 @@ def test_provenance_binds_every_file_to_exact_publisher_and_digest() -> None:
     evidence = verify_provenance(result["artifacts"], provenances, publisher=publisher)
 
     assert evidence == {
-        "publisher": publisher,
+        "publishers": {
+            distribution: {
+                **publisher,
+                "workflow": PUBLISHER_WORKFLOWS[distribution],
+            }
+            for distribution in DISTRIBUTIONS
+        },
         "artifact_count": 8,
         "artifacts": sorted(provenances),
     }

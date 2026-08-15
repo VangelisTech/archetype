@@ -190,19 +190,28 @@ result may be `not_run`. The publish job uploads the recorded eight files
 without rebuilding them.
 
 Before the first coordinated release, both registries need the complete OIDC
-publisher matrix. Configure or verify these identities for each of
-`archetype-ecs`, `archetype-missions`, `archetype-physical-ai`, and
-`archetype-research`:
+publisher matrix below. Every row uses repository `VangelisTech/archetype`.
 
-| Registry | Repository | Workflow | GitHub environment |
+| Project | Workflow | TestPyPI environment | PyPI environment |
 |---|---|---|---|
-| TestPyPI | `VangelisTech/archetype` | `release.yml` | `release-testpypi` |
-| PyPI | `VangelisTech/archetype` | `release.yml` | `release-pypi` |
+| `archetype-ecs` | `release.yml` | `release-testpypi` | `release-pypi` |
+| `archetype-missions` | `publish-archetype-missions.yml` | `release-testpypi` | `release-pypi` |
+| `archetype-physical-ai` | `publish-archetype-physical-ai.yml` | `release-testpypi` | `release-pypi` |
+| `archetype-research` | `publish-archetype-research.yml` | `release-testpypi` | `release-pypi` |
 
 Register pending Trusted Publishers to preconfigure the OIDC identities for
 project names that do not yet exist. This registration does not reserve or
 claim a name: each new name remains claimable until the first successful OIDC
 publication creates the project on that registry.
+Pending GitHub publishers are unique by repository, workflow, and environment,
+so multiple not-yet-created projects cannot all use `release.yml` with the same
+environment. PyPI also does not support reusable workflows as Trusted
+Publisher identities. The release therefore keeps the established ECS identity
+in `release.yml` and dispatches one direct, package-specific workflow for each
+new project. The parent records the exact returned child run IDs in an immutable
+allowlist; every child verifies that allowlist and the still-running authorized
+parent before it can reach a protected environment. Each child publisher job is
+checkout-free and receives only the two files for its distribution.
 Configure both GitHub environments to permit only `v*` tags, require approval
 from `everettVT`, and disable administrator bypass. The publisher action emits
 PEP 740 attestations. Index
@@ -278,9 +287,12 @@ gh workflow run release.yml \
   -f tag=v0.6.0
 ```
 
-Approve `release-apple-macos`, then `release-testpypi`, and finally
-`release-pypi` after the TestPyPI installed-distribution matrix succeeds. The
-ephemeral runner deregisters after the Apple job;
+Approve `release-apple-macos`, then every pending `release-testpypi` deployment,
+and finally every pending `release-pypi` deployment after the TestPyPI
+installed-distribution matrix succeeds. The ECS publisher remains in the parent
+run; each new distribution is a separately approved direct workflow run. The
+parent waits for the exact child run IDs and fails unless all of them succeed.
+The ephemeral runner deregisters after the Apple job;
 discard its working directory before preparing a rerun or future release.
 
 Release-lane authentication is explicit and provider-scoped:

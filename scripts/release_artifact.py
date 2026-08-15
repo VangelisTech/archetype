@@ -25,6 +25,12 @@ DISTRIBUTIONS = (
     "archetype-research",
 )
 FRAMEWORK_DISTRIBUTION = "archetype-ecs"
+PUBLISHER_WORKFLOWS = {
+    "archetype-ecs": "release.yml",
+    "archetype-missions": "publish-archetype-missions.yml",
+    "archetype-physical-ai": "publish-archetype-physical-ai.yml",
+    "archetype-research": "publish-archetype-research.yml",
+}
 _PACKAGE_PREFIXES = {
     "archetype-ecs": "archetype_ecs",
     "archetype-missions": "archetype_missions",
@@ -33,6 +39,9 @@ _PACKAGE_PREFIXES = {
 }
 _KINDS = ("wheel", "sdist")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+
+if tuple(PUBLISHER_WORKFLOWS) != DISTRIBUTIONS:  # pragma: no cover
+    raise RuntimeError("release publisher workflow matrix must match distributions exactly")
 
 
 def _sha256(path: Path) -> str:

@@ -545,7 +545,7 @@ verify-test-index:
 		--expected-commit "$$(git rev-parse HEAD)" \
 		--api-template 'https://test.pypi.org/pypi/{distribution}/{version}/json' \
 		--integrity-template 'https://test.pypi.org/integrity/{distribution}/{version}/{filename}/provenance' \
-		--publisher-repository VangelisTech/archetype --publisher-workflow release.yml \
+		--publisher-repository VangelisTech/archetype \
 		--publisher-environment release-testpypi \
 		--attestation-repository https://github.com/VangelisTech/archetype \
 		--registry-artifact-host test-files.pythonhosted.org \
@@ -561,7 +561,7 @@ verify-published:
 		complete --manifest "$(RELEASE_ARTIFACT_MANIFEST)" \
 		--expected-commit "$$(git rev-parse HEAD)" \
 		--integrity-template 'https://pypi.org/integrity/{distribution}/{version}/{filename}/provenance' \
-		--publisher-repository VangelisTech/archetype --publisher-workflow release.yml \
+		--publisher-repository VangelisTech/archetype \
 		--publisher-environment release-pypi \
 		--attestation-repository https://github.com/VangelisTech/archetype \
 		--registry-artifact-host files.pythonhosted.org \

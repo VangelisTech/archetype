@@ -1,0 +1,141 @@
+name: Publish archetype-missions
+
+on:
+  workflow_dispatch:
+    inputs:
+      parent_run_id:
+        description: "Authorizing release workflow run"
+        required: true
+        type: string
+      parent_run_attempt:
+        description: "Authorizing release workflow attempt"
+        required: true
+        type: string
+      tag:
+        description: "Exact immutable release tag"
+        required: true
+        type: string
+      expected_commit:
+        description: "Exact release commit"
+        required: true
+        type: string
+      registry:
+        description: "Destination package registry"
+        required: true
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+permissions: {}
+
+concurrency:
+  group: publisher-${{ github.workflow }}-${{ inputs.registry }}-${{ inputs.parent_run_id }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize parent release dispatch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Wait for the immutable dispatch allowlist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PARENT_RUN_ATTEMPT: ${{ inputs.parent_run_attempt }}
+          PARENT_RUN_ID: ${{ inputs.parent_run_id }}
+          REGISTRY: ${{ inputs.registry }}
+        run: |
+          set -euo pipefail
+          [[ "$PARENT_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$PARENT_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$REGISTRY" == "testpypi" || "$REGISTRY" == "pypi" ]]
+          artifact="publisher-dispatch-$REGISTRY-$PARENT_RUN_ATTEMPT"
+          for _ in $(seq 1 150); do
+            if count="$(gh api \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "/repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID/artifacts?name=$artifact&per_page=100" \
+              --jq '[.artifacts[] | select(.expired == false)] | length')" &&
+              [[ "$count" == "1" ]]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "publisher dispatch allowlist did not become available" >&2
+          exit 1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: publisher-dispatch-${{ inputs.registry }}-${{ inputs.parent_run_attempt }}
+          path: .context/publisher-dispatch/
+          run-id: ${{ inputs.parent_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify the exact parent and child run identities
+        env:
+          CHILD_RUN_ID: ${{ github.run_id }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PARENT_RUN_ATTEMPT: ${{ inputs.parent_run_attempt }}
+          PARENT_RUN_ID: ${{ inputs.parent_run_id }}
+          PUBLISHER_REGISTRY: ${{ inputs.registry }}
+          PUBLISHER_TAG: ${{ inputs.tag }}
+        run: >-
+          python scripts/verify_publisher_dispatch.py
+          --expected-workflow publish-archetype-missions.yml
+          --distribution archetype-missions
+          --child-run-id "$CHILD_RUN_ID"
+          --parent-run-id "$PARENT_RUN_ID"
+          --parent-run-attempt "$PARENT_RUN_ATTEMPT"
+          --tag "$PUBLISHER_TAG"
+          --expected-commit "$EXPECTED_COMMIT"
+          --registry "$PUBLISHER_REGISTRY"
+          --allowlist
+          ".context/publisher-dispatch/publisher-dispatch-$PUBLISHER_REGISTRY.json"
+
+  publish-testpypi:
+    name: Publish archetype-missions to TestPyPI
+    needs: authorize
+    if: inputs.registry == 'testpypi'
+    runs-on: ubuntu-latest
+    environment: release-testpypi
+    permissions:
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist-archetype-missions
+          path: dist/
+          run-id: ${{ inputs.parent_run_id }}
+          github-token: ${{ github.token }}
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+          attestations: true
+
+  publish-pypi:
+    name: Publish archetype-missions to PyPI
+    needs: authorize
+    if: inputs.registry == 'pypi'
+    runs-on: ubuntu-latest
+    environment: release-pypi
+    permissions:
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist-archetype-missions
+          path: dist/
+          run-id: ${{ inputs.parent_run_id }}
+          github-token: ${{ github.token }}
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          skip-existing: true
+          attestations: true

@@ -24,9 +24,21 @@ from urllib.parse import quote, unquote, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 if __package__:
-    from .release_artifact import DISTRIBUTIONS, SCHEMA, artifact_records, manifest_sha256
+    from .release_artifact import (
+        DISTRIBUTIONS,
+        PUBLISHER_WORKFLOWS,
+        SCHEMA,
+        artifact_records,
+        manifest_sha256,
+    )
 else:  # pragma: no cover - exercised by the command-line entry point
-    from release_artifact import DISTRIBUTIONS, SCHEMA, artifact_records, manifest_sha256
+    from release_artifact import (
+        DISTRIBUTIONS,
+        PUBLISHER_WORKFLOWS,
+        SCHEMA,
+        artifact_records,
+        manifest_sha256,
+    )
 
 DEFAULT_API_TEMPLATE = "https://pypi.org/pypi/{distribution}/{version}/json"
 DEFAULT_INTEGRITY_TEMPLATE = (
@@ -341,16 +353,28 @@ def verify_provenance(
 ) -> dict[str, Any]:
     """Verify PyPI-reported publish provenance for every observed file."""
 
-    expected_publisher = dict(publisher)
-    required_publisher_keys = {"kind", "repository", "workflow", "environment"}
-    if set(expected_publisher) != required_publisher_keys or any(
-        not isinstance(value, str) or not value for value in expected_publisher.values()
+    publisher_base = dict(publisher)
+    required_publisher_keys = {"kind", "repository", "environment"}
+    if set(publisher_base) != required_publisher_keys or any(
+        not isinstance(value, str) or not value for value in publisher_base.values()
     ):
-        raise ValueError("release provenance requires one exact publisher identity")
+        raise ValueError("release provenance requires one exact publisher identity base")
+
+    expected_publishers = {
+        distribution: {
+            **publisher_base,
+            "workflow": PUBLISHER_WORKFLOWS[distribution],
+        }
+        for distribution in DISTRIBUTIONS
+    }
 
     verified: list[str] = []
     for artifact in artifacts:
         filename = str(artifact["name"])
+        distribution = artifact.get("distribution")
+        if not isinstance(distribution, str) or distribution not in expected_publishers:
+            raise ValueError(f"release artifact {filename!r} has an unknown distribution")
+        expected_publisher = expected_publishers[distribution]
         provenance = provenances.get(filename)
         if provenance is None:
             raise IncompleteIndexError(f"release index is missing provenance for {filename!r}")
@@ -398,7 +422,7 @@ def verify_provenance(
         verified.append(filename)
 
     return {
-        "publisher": expected_publisher,
+        "publishers": expected_publishers,
         "artifact_count": len(verified),
         "artifacts": sorted(verified),
     }
@@ -620,7 +644,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--integrity-template")
     parser.add_argument("--publisher-kind", default="GitHub")
     parser.add_argument("--publisher-repository")
-    parser.add_argument("--publisher-workflow")
     parser.add_argument("--publisher-environment")
     parser.add_argument("--attestation-repository")
     parser.add_argument("--registry-artifact-host")
@@ -630,7 +653,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     publisher_values = (
         args.publisher_repository,
-        args.publisher_workflow,
         args.publisher_environment,
     )
     if args.integrity_template is None and any(publisher_values):
@@ -650,7 +672,6 @@ def main(argv: list[str] | None = None) -> int:
         {
             "kind": args.publisher_kind,
             "repository": args.publisher_repository,
-            "workflow": args.publisher_workflow,
             "environment": args.publisher_environment,
         }
         if args.integrity_template is not None
