@@ -346,3 +346,32 @@ change, and report the exact validation that ran. See
 | `src/archetype/core/aio/async_world.py` | World runtime |
 | `tests/app/test_runtime_contracts.py` | Executable runtime contracts |
 | `tests/sync/test_sync_stack_contracts.py` | Executable sync engine contracts |
+
+## Cursor Cloud specific instructions
+
+The dev environment is Python 3.12 + `uv` (installed on `PATH` at `/usr/local/bin`).
+Dependencies are refreshed automatically on startup via `uv sync --group dev`
+(same as `make sync-dev`). Run everything through `uv run` / `make` so the
+`.venv` and `PYTHONPATH=src` are used. Standard commands live in `README.md`,
+`CONTRIBUTING.md`, and the `Makefile`.
+
+Non-obvious caveats discovered during setup:
+
+- `make static` runs `lockfile-audit` (a `pip-audit` CVE scan) as its last
+  step. It currently fails because the quarantined pinned dependency versions
+  have CVEs disclosed after the lock's `exclude-newer` cutoff. This is a
+  supply-chain report, not a code defect. The code-quality gates —
+  `format-check`, `ruff` lint, `typecheck`, `lock-check`, `contract-audit`,
+  `benchmark-audit` — all pass. Run those directly (or `make lint` minus the
+  audit) when you only need the code-quality signal.
+- `make typecheck` shells out to `uvx ty@0.0.48`, which downloads the `ty`
+  binary on first use; it needs `uvx` on `PATH` and network access.
+- Storage is fail-closed under `ARCHETYPE_DATA_ROOT`: examples default to
+  writing `./archetype_data` relative to the current directory, so a
+  containment root that does not contain the cwd raises a "storage path
+  escapes ARCHETYPE_DATA_ROOT" error. Either leave `ARCHETYPE_DATA_ROOT`
+  unset, or run from a working directory inside the root.
+- The CLI (every command except `serve`) is a thin HTTP client against a
+  running `archetype serve`. Use `--role {admin,operator,player,viewer}` for
+  dev-mode bearer auth. `make operational-runtime` starts an isolated
+  loopback server and exercises the full serve+CLI lifecycle end to end.
