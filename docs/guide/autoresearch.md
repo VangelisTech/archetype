@@ -43,7 +43,7 @@ graph TB
 | Capability | Implementation |
 |---|---|
 | **Worlds as save states** | Fork / attach episode worlds; inspect any attempt afterward |
-| **Ledgered attempts** | `RUNNING` → `STOPPED` / `CRASHED` rows before and after work |
+| **Ledgered attempts** | `RUNNING` → `SUCCEEDED` / `FAILED` rows before and after work |
 | **User-defined better** | `Result` and `BranchHead` stay opaque; your eval scores |
 | **Runtime entry** | `Research(world).autoresearch(...)` — not assembling internal services |
 | **Governed admission** | Registered `AutoResearch` model through `CommandDispatcher` |
