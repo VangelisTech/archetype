@@ -119,7 +119,6 @@ def _wait_for_port_close(host: str, port: int, timeout: float) -> bool:
 def _ensure_checkout(
     path: Path,
     repository: str,
-    remote_ref: str,
     revision: str,
 ) -> None:
     if path.exists() and not (path / ".git").is_dir():
@@ -133,10 +132,8 @@ def _ensure_checkout(
     if remote not in accepted:
         raise RuntimeError(f"{path} has unexpected origin {remote!r}")
 
-    # The provenance branch is allowed to move or be rewritten. Fetch it for
-    # upstream context, then request the immutable object explicitly so a
-    # checkout never depends on the revision remaining in branch history.
-    _run(["git", "fetch", "origin", remote_ref], cwd=path)
+    # Named upstream branches are provenance labels only. Fetch the immutable
+    # object directly so branch deletion or rewriting cannot block release.
     _run(["git", "fetch", "--no-tags", "--depth=1", "origin", revision], cwd=path)
     _run(["git", "checkout", "--detach", revision], cwd=path)
     actual = _output(["git", "rev-parse", "HEAD"], cwd=path)
@@ -188,8 +185,8 @@ def prepare(
     build = biome / "build-agent"
     scene = biome / "etc" / "scenes" / "archetype_agent.flecs"
 
-    _ensure_checkout(biome, BIOME_REPOSITORY, BIOME_REF, BIOME_REVISION)
-    _ensure_checkout(flecs, FLECS_REPOSITORY, FLECS_REF, FLECS_REVISION)
+    _ensure_checkout(biome, BIOME_REPOSITORY, BIOME_REVISION)
+    _ensure_checkout(flecs, FLECS_REPOSITORY, FLECS_REVISION)
     _stage_native_bridge(biome)
     shutil.copyfile(MISSION_SCENE, scene)
 

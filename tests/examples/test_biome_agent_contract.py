@@ -340,19 +340,20 @@ def test_bootstrap_pins_the_compatible_public_flecs_branch_without_vendoring() -
     assert "agent_drill : buildings.Drill" not in scene
 
 
-def test_checkout_fetches_the_exact_revision_after_its_provenance_ref_moves(
+def test_checkout_fetches_the_exact_revision_without_a_mutable_provenance_ref(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     checkout = tmp_path / "checkout"
     (checkout / ".git").mkdir(parents=True)
     repository = "https://example.invalid/upstream.git"
-    remote_ref = "moving-feature-branch"
     revision = "1" * 40
     commands: list[list[str]] = []
 
     def record_run(command: list[str], *, cwd: Path | None = None) -> None:
         assert cwd == checkout
+        if command[:3] == ["git", "fetch", "origin"]:
+            raise AssertionError("mutable provenance refs must never be fetched")
         commands.append(command)
 
     def git_output(command: list[str], *, cwd: Path | None = None) -> str:
@@ -368,12 +369,10 @@ def test_checkout_fetches_the_exact_revision_after_its_provenance_ref_moves(
     biome_bootstrap._ensure_checkout(
         checkout,
         repository,
-        remote_ref,
         revision,
     )
 
     assert commands == [
-        ["git", "fetch", "origin", remote_ref],
         ["git", "fetch", "--no-tags", "--depth=1", "origin", revision],
         ["git", "checkout", "--detach", revision],
     ]
