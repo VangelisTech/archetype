@@ -40,6 +40,7 @@ from archetype.storage.activity_catalog import (
 )
 from archetype.storage.config import ControlCatalogConfig
 from archetype.wiring import RuntimeBootstrapConfig
+from archetype.world.projectors import RequiredProjectorFanout
 from archetype.world.registry import WorldRegistry
 
 
@@ -175,6 +176,82 @@ def _request() -> HostedEpisodeRequest:
         policy_id="scripted-reach@v1",
         config_json='{"reward_per_transition":0.25}',
     )
+
+
+@pytest.mark.asyncio
+async def test_hosted_binding_setup_failure_unwinds_and_remains_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = StorageConfig(
+        uri=str(tmp_path / "worlds"),
+        namespace="hosted-retry",
+        backend=StorageBackend.ICEBERG,
+    )
+    catalog = ControlCatalogConfig(catalog_dir=tmp_path / "catalogs")
+    registry = WorldRegistry()
+    state = _ModalState(tmp_path / "modal", registry, crash_once=False)
+    provider_attempts = 0
+
+    def provider_factory(config: ModalHostedEpisodeConfig):
+        nonlocal provider_attempts
+        provider_attempts += 1
+        if provider_attempts == 1:
+            raise RuntimeError("transient provider construction")
+        return ModalHostedEpisodeProvider(config, runtime=_ModalRuntime(state))
+
+    bind_attempts = 0
+    original_bind = RequiredProjectorFanout.bind
+
+    async def bind_then_fail_once(
+        fanout: RequiredProjectorFanout,
+        world_id: str,
+        binding: object,
+    ) -> None:
+        nonlocal bind_attempts
+        bind_attempts += 1
+        await original_bind(fanout, world_id, binding)
+        if bind_attempts == 1:
+            raise RuntimeError("transient projector binding")
+
+    monkeypatch.setattr(RequiredProjectorFanout, "bind", bind_then_fail_once)
+    monkeypatch.setattr(
+        "archetype.runtime.runtime._bootstrap_config",
+        lambda **_kwargs: RuntimeBootstrapConfig(
+            control_catalog_config=catalog,
+            world_registry=registry,
+            audit_storage_config=storage,
+            **_physical_ai_extension(provider_factory),
+        ),
+    )
+
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("hosted-retry", storage=storage)
+        state.world_id = str((await world.info()).world_id)
+        physical = PhysicalAI(world)
+        with pytest.raises(RuntimeError, match="transient provider construction"):
+            await physical.run_hosted_episode(
+                [_request()],
+                provider=_provider_config(),
+                activity_id="provider-failure",
+            )
+        with pytest.raises(RuntimeError, match="transient projector binding"):
+            await physical.run_hosted_episode(
+                [_request()],
+                provider=_provider_config(),
+                activity_id="projector-failure",
+            )
+
+        observation = await physical.run_hosted_episode(
+            [_request()],
+            provider=_provider_config(),
+            activity_id="retry-succeeds",
+        )
+
+    assert observation.activity_id == "retry-succeeds"
+    assert provider_attempts == 3
+    assert bind_attempts == 2
+    assert state.execution_count == 1
 
 
 @pytest.mark.asyncio

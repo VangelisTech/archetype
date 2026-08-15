@@ -96,8 +96,10 @@ def _install(context: WorldLibraryContext) -> InstalledWorldLibrary:
                 phase="workflow-handles",
                 closed_message="hosted Physical-AI worker is closed",
             )
+            physical_open = True
 
             async def construct() -> PhysicalHostedActivityBinding:
+                nonlocal physical_open
                 coordinator = PhysicalHostedActivityCoordinator(
                     ActivityCoordinator(physical),
                     lease_seconds=physical_config.hosted_activity_lease_seconds,
@@ -115,8 +117,11 @@ def _install(context: WorldLibraryContext) -> InstalledWorldLibrary:
                 binding: PhysicalHostedActivityBinding
 
                 async def close_binding() -> None:
+                    nonlocal physical_open
                     await required_projectors.unbind(world_id, binding)
-                    await physical.close()
+                    if physical_open:
+                        await physical.close()
+                        physical_open = False
 
                 binding = PhysicalHostedActivityBinding(
                     world_id=world_id,
@@ -136,6 +141,7 @@ def _install(context: WorldLibraryContext) -> InstalledWorldLibrary:
                     ),
                     close=close_binding,
                 )
+                reservation.bind(binding, close=close_binding)
                 await required_projectors.bind(world_id, binding)
                 routed = required_projectors.required_projector_for(world_id)
                 if worlds.required_projector(world_id) is not routed:
@@ -145,7 +151,12 @@ def _install(context: WorldLibraryContext) -> InstalledWorldLibrary:
             try:
                 binding = await reservation.construct(construct)
             except BaseException:
-                await physical.close()
+                try:
+                    await reservation.aclose()
+                finally:
+                    if physical_open:
+                        await physical.close()
+                        physical_open = False
                 raise
             hosted_bindings[world_id] = (operation.provider, binding)
             return binding

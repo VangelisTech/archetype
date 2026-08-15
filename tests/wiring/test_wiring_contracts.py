@@ -15,7 +15,7 @@ from importlib import import_module
 from importlib.util import find_spec
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 from pydantic import BaseModel
@@ -357,6 +357,44 @@ async def test_builder_returns_complete_runtime_resources(tmp_path: Path) -> Non
     finally:
         await resources.aclose()
     assert resources.close_state.value == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_world_library_installers_cannot_acquire_runtime_resources(
+    tmp_path: Path,
+) -> None:
+    from archetype.world_libraries import InstalledWorldLibrary, WorldLibraryManifest
+
+    class InstallerProbe(BaseModel):
+        operation: Literal["installer_probe"] = "installer_probe"
+
+    captured: dict[str, Any] = {}
+
+    def install(context: Any) -> InstalledWorldLibrary:
+        captured["resources"] = context.resources
+        context.resources.reserve_owner(
+            "installer:probe",
+            phase="workflow-handles",
+        )
+        raise AssertionError("reservation must fail before installer work starts")
+
+    manifest = WorldLibraryManifest(
+        name="installer-probe",
+        distribution="archetype-installer-probe",
+        version="0.6.0",
+        requires_framework=">=0.6,<0.7",
+        operation_models=(InstallerProbe,),
+        install=install,
+    )
+    wiring = _wiring()
+
+    with pytest.raises(RuntimeError, match="installer 'installer-probe' cannot reserve"):
+        wiring.build_runtime_resources(_config(wiring, tmp_path, world_libraries=(manifest,)))
+
+    resources = captured["resources"]
+    with pytest.raises(KeyError, match="installer:probe"):
+        resources.owner("installer:probe")
+    await resources.aclose()
 
 
 @pytest.mark.asyncio

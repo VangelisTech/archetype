@@ -83,15 +83,18 @@ installer runs, composition MUST reject:
 
 The installer receives a `WorldLibraryContext` containing the already composed
 framework capabilities. It may register only the operations declared by its
-manifest. It returns the installed typed-adapter surface; it does not replace
-the framework registry, dispatcher, process owner, storage authority, world
-registry, or shutdown protocol. Installation is complete before the runtime or
-API host becomes visible to callers.
+manifest. The synchronous installation transaction is declarative: it MUST NOT
+acquire external resources, reserve process owners, or start work. Handlers may
+acquire their resources lazily, under the process owner, after installation has
+committed. The installer returns the installed typed-adapter surface; it does
+not replace the framework registry, dispatcher, process owner, storage
+authority, world registry, or shutdown protocol. Installation is complete
+before the runtime or API host becomes visible to callers.
 
 World libraries are trusted process extensions. Installing one authorizes its
-Python code to construct family internals and register process-owned resources.
-The manifest is a deterministic composition contract, not a sandbox or a
-security boundary.
+Python code to register declared behavior and to construct family internals
+lazily when that behavior runs. The manifest is a deterministic composition
+contract, not a sandbox or a security boundary.
 
 ## 3. Runtime and transport adapters
 

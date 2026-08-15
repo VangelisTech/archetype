@@ -12,8 +12,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast, runtime_checkable
@@ -688,6 +688,7 @@ class RuntimeResources:
         self._world_library_manifests = tuple(world_library_manifests)
         self._world_libraries: MappingProxyType[str, Any] = MappingProxyType({})
         self._world_libraries_retained = False
+        self._installing_world_library: str | None = None
         self._owners: dict[str, _OwnerReservation] = {}
         self._close_state = RuntimeCloseState.OPEN
         self._close_lock = asyncio.Lock()
@@ -747,6 +748,18 @@ class RuntimeResources:
             )
         self._world_libraries = MappingProxyType({library.name: library for library in installed})
         self._world_libraries_retained = True
+
+    @contextmanager
+    def _world_library_installation(self, name: str) -> Iterator[None]:
+        """Keep synchronous installers declarative until composition commits."""
+
+        if self._installing_world_library is not None:
+            raise RuntimeError("world-library installation cannot be nested")
+        self._installing_world_library = name
+        try:
+            yield
+        finally:
+            self._installing_world_library = None
 
     def world_library(self, name: str) -> Any:
         """Resolve one installed library or raise a stable lookup error."""
@@ -816,6 +829,11 @@ class RuntimeResources:
     ) -> OwnerReservation:
         """Synchronously reserve ownership before a factory or task may execute."""
 
+        if self._installing_world_library is not None:
+            raise RuntimeError(
+                f"world-library installer {self._installing_world_library!r} cannot reserve "
+                "runtime resources; acquire them lazily from an async operation"
+            )
         _validate_owner(owner)
         _validate_owner_phase(phase)
         if self._close_state is not RuntimeCloseState.OPEN and not self.operation_admitted():

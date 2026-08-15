@@ -473,7 +473,9 @@ def _install_world_library(
 ) -> InstalledWorldLibrary:
     registry = cast(OperationRegistry, context.registry)
     before = registry.specs
-    installed = manifest.install(context)
+    resources = cast(RuntimeResources, context.resources)
+    with resources._world_library_installation(manifest.name):
+        installed = manifest.install(context)
     if inspect.isawaitable(installed):
         if inspect.iscoroutine(installed):
             installed.close()
