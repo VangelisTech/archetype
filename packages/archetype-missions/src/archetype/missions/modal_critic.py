@@ -439,7 +439,7 @@ class _ModalCriticResultCatalog:
             import modal
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise RuntimeError(
-                "Modal support is optional; install it with `uv sync --extra coding-agent`"
+                'Modal support is optional; install it with `uv add "archetype-missions[modal]"`'
             ) from exc
         return modal
 

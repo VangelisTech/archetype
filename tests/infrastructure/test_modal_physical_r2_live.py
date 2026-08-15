@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
+import json
 import os
-from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -21,16 +21,16 @@ from archetype.physical_ai import (
     HostedEpisodeRequest,
     ModalHostedEpisodeConfig,
     PhysicalAI,
+    PhysicalAIExtensionConfig,
 )
 from archetype.physical_ai.hosted_modal import (
     ModalHostedEpisodeProvider,
     ModalNamedHostedEpisodeRuntime,
     build_seeded_modal_hosted_episode_app,
 )
-from archetype.runtime import runtime as runtime_module
 
 modal = pytest.importorskip(
-    "modal", reason="the live provider test requires the coding-agent extra"
+    "modal", reason="the live provider test requires archetype-physical-ai[modal]"
 )
 
 ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
@@ -106,6 +106,49 @@ def _request() -> HostedEpisodeRequest:
     )
 
 
+def _release_wheels(
+    dist_dir: Path = Path("dist"),
+    manifest_path: Path = Path("release-artifact.json"),
+) -> tuple[Path, ...]:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    records = manifest.get("artifacts")
+    if not isinstance(records, list):
+        raise RuntimeError("the release manifest has no artifact inventory")
+    wheel_names = sorted(
+        record.get("name")
+        for record in records
+        if isinstance(record, dict)
+        and record.get("kind") == "wheel"
+        and isinstance(record.get("name"), str)
+    )
+    resolved_dist = dist_dir.resolve()
+    wheels = tuple(resolved_dist / name for name in wheel_names)
+    discovered = {wheel.name for wheel in resolved_dist.glob("*.whl")}
+    if (
+        not wheels
+        or len(wheels) != len(set(wheel_names))
+        or discovered != set(wheel_names)
+        or any(not wheel.is_file() for wheel in wheels)
+    ):
+        raise RuntimeError(
+            "the live Modal image requires the exact manifest wheel set; "
+            f"expected {wheel_names}, observed {sorted(discovered)}"
+        )
+    return wheels
+
+
+def _release_image() -> object:
+    image = modal.Image.debian_slim(python_version="3.12")
+    remote_dir = "/opt/archetype-release"
+    for wheel in _release_wheels():
+        image = image.add_local_file(
+            wheel,
+            f"{remote_dir}/{wheel.name}",
+            copy=True,
+        )
+    return image.run_commands(f"python -m pip install {remote_dir}/*.whl")
+
+
 async def test_modal_episode_round_trips_durable_evidence_through_r2(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -133,11 +176,7 @@ async def test_modal_episode_round_trips_durable_evidence_through_r2(
         create_if_missing=True,
         call_timeout_seconds=600,
     )
-    image = (
-        modal.Image.debian_slim(python_version="3.12")
-        .pip_install_from_pyproject("pyproject.toml")
-        .add_local_python_source("archetype", copy=True)
-    )
+    image = _release_image()
     app, function = build_seeded_modal_hosted_episode_app(
         provider_config,
         gpu="T4",
@@ -150,15 +189,11 @@ async def test_modal_episode_round_trips_durable_evidence_through_r2(
         provider_runtimes.append(provider_runtime)
         return ModalHostedEpisodeProvider(config, runtime=provider_runtime)
 
-    original_bootstrap = runtime_module._bootstrap_config
-    monkeypatch.setattr(
-        runtime_module,
-        "_bootstrap_config",
-        lambda **kwargs: replace(
-            original_bootstrap(**kwargs),
+    extension_configs = {
+        "physical-ai": PhysicalAIExtensionConfig(
             hosted_episode_provider_factory=provider_factory,
-        ),
-    )
+        )
+    }
     monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "control"))
     _configure_lancedb_r2(monkeypatch)
     filesystem = _r2_filesystem()
@@ -170,7 +205,9 @@ async def test_modal_episode_round_trips_durable_evidence_through_r2(
             name=provider_config.app_name,
             environment_name=provider_config.environment_name,
         ):
-            async with ArchetypeRuntime() as runtime:
+            async with ArchetypeRuntime(
+                world_library_configs=extension_configs,
+            ) as runtime:
                 world = runtime.world("physical-modal-r2-live", storage=storage)
                 first = await PhysicalAI(world).run_hosted_episode(
                     [_request()],
@@ -188,7 +225,9 @@ async def test_modal_episode_round_trips_durable_evidence_through_r2(
 
             # A fresh process owner must rediscover the world through its
             # durable catalog and reconstruct the committed observation from R2.
-            async with ArchetypeRuntime() as cold_runtime:
+            async with ArchetypeRuntime(
+                world_library_configs=extension_configs,
+            ) as cold_runtime:
                 resumed = await cold_runtime.resume(world_id, storage=storage)
                 rows = (await resumed.query(HostedEpisodeObservation)).to_pylist()
                 recovered = await PhysicalAI(resumed).run_hosted_episode(

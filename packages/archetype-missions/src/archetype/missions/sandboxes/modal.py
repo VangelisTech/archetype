@@ -1330,7 +1330,7 @@ class ModalSandboxSession:
             import modal
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise RuntimeError(
-                "Modal support is optional; install it with `uv sync --extra coding-agent`"
+                'Modal support is optional; install it with `uv add "archetype-missions[modal]"`'
             ) from exc
         sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
         grant_id = uuid4().hex
@@ -2086,7 +2086,7 @@ class ModalSandboxSession:
             import modal
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise RuntimeError(
-                "Modal support is optional; install it with `uv sync --extra coding-agent`"
+                'Modal support is optional; install it with `uv add "archetype-missions[modal]"`'
             ) from exc
         sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
         paths = cls.live_observation_paths()
@@ -2262,7 +2262,7 @@ class ModalSandboxBackend:
             import modal
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise RuntimeError(
-                "Modal support is optional; install it with `uv sync --extra coding-agent`"
+                'Modal support is optional; install it with `uv add "archetype-missions[modal]"`'
             ) from exc
 
         client = await self._verify_context_binding(modal, phase="sandbox create")
@@ -2280,7 +2280,7 @@ class ModalSandboxBackend:
             import modal
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise RuntimeError(
-                "Modal support is optional; install it with `uv sync --extra coding-agent`"
+                'Modal support is optional; install it with `uv add "archetype-missions[modal]"`'
             ) from exc
         client = await self._verify_context_binding(modal, phase="Codex login")
         app = await modal.App.lookup.aio(
@@ -2595,7 +2595,7 @@ class ModalSandboxBackend:
             import modal
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise RuntimeError(
-                "Modal support is optional; install it with `uv sync --extra coding-agent`"
+                'Modal support is optional; install it with `uv add "archetype-missions[modal]"`'
             ) from exc
         client = await self._verify_context_binding(modal, phase="sandbox restore")
         image = modal.Image.from_id(image_id)
@@ -3014,7 +3014,7 @@ class ModalSandboxOperationCapability:
             import modal
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise RuntimeError(
-                "Modal support is optional; install it with `uv sync --extra coding-agent`"
+                'Modal support is optional; install it with `uv add "archetype-missions[modal]"`'
             ) from exc
         return modal
 
