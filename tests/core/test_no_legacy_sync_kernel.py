@@ -64,6 +64,16 @@ def test_sync_only_protocols_and_hooks_are_absent() -> None:
     assert not hasattr(hooks, "SyncHookRegistry")
 
 
+def test_overview_does_not_teach_removed_sync_kernel_aliases() -> None:
+    overview = Path(__file__).resolve().parents[2] / "docs" / "index.md"
+    content = overview.read_text(encoding="utf-8")
+
+    for name in ("World", "System", "Processor", "QueryManager", "UpdateManager", "Store"):
+        assert f"`{name}`" not in content
+        assert f'["{name}"]' not in content
+        assert f" as {name}\n" not in content
+
+
 def test_blocking_runtime_facade_remains_supported() -> None:
     assert callable(archetype.ArchetypeRuntime.sync)
     assert archetype.SyncArchetypeRuntime is not None
