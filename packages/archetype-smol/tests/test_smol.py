@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
-from typing import Self
+from typing import Any, Self
 
 import pytest
-from daft import col
+from daft import col, lit
 from pydantic import (
     Field,
     ValidationError,
@@ -423,6 +423,64 @@ def test_tuple_fields_survive_noop_daft_round_trips() -> None:
             "is_active": True,
             "bounds__value": {"_0": 2, "_1": 5},
         },
+    ]
+
+
+def test_before_model_validator_observes_changed_candidate_once() -> None:
+    validated: list[tuple[int, int]] = []
+
+    class Pair(Component):
+        x: int
+        y: int
+
+        @model_validator(mode="before")
+        @classmethod
+        def record_pair(cls, value: Any) -> Any:
+            assert isinstance(value, dict)
+            validated.append((value["x"], value["y"]))
+            return value
+
+    class IncrementX(Processor):
+        components = (Pair,)
+
+        def process(self, df, *, tick):
+            del tick
+            return df.with_column("pair__x", col("pair__x") + 1)
+
+    world = World(processors=[IncrementX()])
+    world.spawn(Pair(x=1, y=2))
+
+    world.step()
+
+    assert validated == [(1, 2), (2, 2)]
+    assert world.tick == 1
+
+
+def test_tuple_shape_restoration_does_not_bypass_strict_validation() -> None:
+    class StrictBounds(Component):
+        value: tuple[int, int] = Field(strict=True)
+
+    class ReplaceWithList(Processor):
+        components = (StrictBounds,)
+
+        def process(self, df, *, tick):
+            del tick
+            return df.with_column("strictbounds__value", lit([3, 5]))
+
+    world = World(processors=[ReplaceWithList()])
+    world.spawn(StrictBounds(value=(2, 5)))
+
+    with pytest.raises(ValidationError):
+        world.step()
+
+    assert world.tick == 0
+    assert world.history(StrictBounds).to_pylist() == [
+        {
+            "entity_id": 1,
+            "tick": 0,
+            "is_active": True,
+            "strictbounds__value": {"_0": 2, "_1": 5},
+        }
     ]
 
 

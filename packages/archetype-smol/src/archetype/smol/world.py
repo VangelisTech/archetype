@@ -93,7 +93,7 @@ def _restore_daft_shape(value: Any, template: Any) -> Any:
             expected_keys = {f"_{index}" for index in range(len(value))}
             if set(value) == expected_keys:
                 items = [value[f"_{index}"] for index in range(len(value))]
-        elif isinstance(value, (list, tuple)):
+        elif isinstance(value, tuple):
             items = list(value)
         if items is not None:
             return tuple(
@@ -113,13 +113,33 @@ def _restore_daft_shape(value: Any, template: Any) -> Any:
     return value
 
 
+def _find_model_fields_node(schema: Any) -> dict[str, Any]:
+    if isinstance(schema, dict):
+        if schema.get("type") == "model-fields":
+            return schema
+        for value in schema.values():
+            try:
+                return _find_model_fields_node(value)
+            except LookupError:
+                pass
+    elif isinstance(schema, (list, tuple)):
+        for value in schema:
+            try:
+                return _find_model_fields_node(value)
+            except LookupError:
+                pass
+    raise LookupError("model-fields")
+
+
 def _find_model_fields_schema(schema: Any, component_type: type[Component]) -> dict[str, Any]:
     if isinstance(schema, dict):
         if schema.get("type") == "model" and schema.get("cls") is component_type:
-            fields_schema = schema.get("schema")
-            if isinstance(fields_schema, dict) and fields_schema.get("type") == "model-fields":
-                return fields_schema
-            raise RuntimeError(f"{component_type.__name__} has an unsupported Pydantic schema")
+            try:
+                return _find_model_fields_node(schema.get("schema"))
+            except LookupError as exc:
+                raise RuntimeError(
+                    f"{component_type.__name__} has an unsupported Pydantic schema"
+                ) from exc
         for value in schema.values():
             try:
                 return _find_model_fields_schema(value, component_type)
