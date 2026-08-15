@@ -27,6 +27,26 @@ production family, processors, or architecture policy. Agent Missions owns
 readiness, dispatch, execution, validation, review, repair, publication, and
 rollup. A renderer owns only presentation and interaction forwarding.
 
+## Relationship to the framework prefab contract
+
+This example applies the framework's generic prefab pattern to a real
+software-production line. Its library stores nine AI-ready visual prefab
+graphs plus a reusable `BugFixLine`. Instantiation copies the line's `ChildOf`
+subtree; a trusted compiler reads stable slot keys and explicitly interprets
+allowlisted `DependsOn` and `Guards` rule entities into the public Agent
+Missions authoring contract.
+
+The factory models are projections of committed mission facts, not transition
+owners, and the line recipe is not a second mission engine. The generic
+relation and copy-on-instantiate behavior remains owned by `archetype-ecs`;
+mission workflow meaning remains owned by `archetype-missions`.
+
+Run the example credential-free or export its full model briefs with:
+
+```bash
+uv run python examples/15_mission_factory_assets.py --briefs-json
+```
+
 ## The first production line
 
 `BugFixLine` is the smallest workflow worth manufacturing. It is a copied

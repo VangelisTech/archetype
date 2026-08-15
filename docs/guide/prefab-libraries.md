@@ -373,20 +373,6 @@ Biome source or assets. The bootstrap creates a local checkout for the user.
 Obtain permission or a declared upstream license before distributing a
 derived Biome build.
 
-## First concrete Agent Missions library
-
-The [Mission Factory Asset Bible](mission-factory-assets.md) applies this
-pattern to a real software-production line. Its example-local library stores
-nine AI-ready visual prefab graphs plus a reusable `BugFixLine`. Instantiation
-copies the line's `ChildOf` subtree; a trusted compiler reads stable slot keys
-and explicitly interprets allowlisted `DependsOn` and `Guards` rule entities
-into the public Agent Missions authoring contract.
-
-This is the intended bridge from asset library to executable workflow. The
-factory models are projections of committed mission facts, not transition
-owners, and the line recipe is not a second mission engine. Run the example
-credential-free or export its full model briefs with:
-
-```bash
-uv run python examples/15_mission_factory_assets.py --briefs-json
-```
+For a package-owned example that compiles framework prefab graphs into Agent
+Missions authoring values, continue with the
+[Mission Factory Asset Bible](mission-factory-assets.md).
