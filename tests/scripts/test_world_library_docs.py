@@ -142,14 +142,14 @@ def test_missions_reference_renders_the_primary_workflow_methods() -> None:
 def test_split_rest_references_are_navigable() -> None:
     navigation = (ROOT / "mkdocs.yml").read_text(encoding="utf-8")
 
-    assert "- Framework REST API: reference/rest-api.md" in navigation
-    assert "- Missions REST API: reference/rest-api-missions.md" in navigation
+    assert "- REST API: reference/rest-api.md" in navigation
+    assert "- REST API: reference/rest-api-missions.md" in navigation
 
 
 def test_split_research_and_evaluation_references_are_navigable() -> None:
     navigation = (ROOT / "mkdocs.yml").read_text(encoding="utf-8")
 
-    assert "- AutoResearch: reference/python/autoresearch.md" in navigation
+    assert "- Python API: reference/python/autoresearch.md" in navigation
     assert "- Framework Evaluation: reference/python/evaluation.md" in navigation
     assert "AutoResearch and Evaluation" not in navigation
 
