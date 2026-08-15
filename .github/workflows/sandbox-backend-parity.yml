@@ -2,8 +2,8 @@ name: Sandbox backend parity
 
 on:
   workflow_dispatch:
+  # Every PR base is intentional: dependent/stacked PRs need their own evidence.
   pull_request:
-    branches: [main]
     # This advisory PR substrate proof follows every package that can change
     # mission sandbox behavior. The retained release scenario is separately
     # owned by the operational manifest and runner.

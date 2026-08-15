@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+  # Every PR base is intentional: dependent/stacked PRs need their own evidence.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read

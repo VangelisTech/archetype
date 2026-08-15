@@ -11,8 +11,8 @@ on:
       # The generated Python, CLI, and REST references derive from source.
       - "packages/*/src/archetype/**"
       - ".github/workflows/docs.yml"
+  # Every PR base is intentional: dependent/stacked PRs need their own evidence.
   pull_request:
-    branches: [main]
     paths:
       - "docs/**"
       - "**/*.md"
