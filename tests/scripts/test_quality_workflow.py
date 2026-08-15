@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 QUALITY_WORKFLOW = ROOT / ".github" / "workflows" / "python-tests.yml"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 MAKEFILE = ROOT / "Makefile"
+CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 QUARANTINE = ROOT / "quality" / "quarantine" / "review-gate"
 OPERATIONAL_SCENARIOS = ROOT / "quality" / "operational_scenarios.toml"
 
@@ -86,6 +87,16 @@ def test_local_pr_profile_matches_the_two_ci_jobs() -> None:
         "package-smoke",
         "operational-wheel-existing",
     ]
+
+
+def test_contributing_ci_profile_and_publishers_match_the_harness() -> None:
+    guide = CONTRIBUTING.read_text(encoding="utf-8")
+
+    assert "| `make ci` | `make static` + `make test` + `make package-smoke` |" in guide
+    assert "| `Tests (3.12)` | `make test` + `make package-smoke` |" in guide
+    for distribution, workflow in PUBLISHER_WORKFLOWS.items():
+        assert f"| `{distribution}` | `{workflow}` |" in guide
+    assert "repository-harness.md#release-profile-and-publisher-identities" in guide
 
 
 def test_release_check_emits_the_immutable_annotated_tag_recipe() -> None:

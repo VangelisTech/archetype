@@ -110,10 +110,11 @@ Every target below is a `.PHONY` rule. Run `make help` for the quick version.
 
 | Target | Steps | Purpose |
 |--------|-------|---------|
-| `make ci` | `make static` + `make test` | **The required PR profile. Run before every push.** |
+| `make ci` | `make static` + `make test` + `make package-smoke` | **The required PR profile. Run before every push.** |
 
 `make ci` is the single command that must pass for any PR to merge. It runs
-the same two targets as the required GitHub Actions jobs.
+the same three targets as the required GitHub Actions jobs: `Static` owns the
+static target, while `Tests (3.12)` owns both tests and the distribution smoke.
 
 ### Build & Release
 
@@ -161,12 +162,12 @@ The primary CI workflow intentionally contains two required jobs:
 | Job | What it runs | Required to merge? |
 |-----|--------------|-------------------|
 | `Static` | `make static` | **Yes** |
-| `Tests (3.12)` | `make test` | **Yes** |
+| `Tests (3.12)` | `make test` + `make package-smoke` | **Yes** |
 
 Concurrency: grouped by `ci-${{ github.ref }}`, cancels in-progress runs on
 the same branch.
 
-Coverage, evals, external infrastructure, examples, packaging, docs, and
+Coverage, evals, external infrastructure, examples, docs, and
 compatibility evidence are not part of the PR merge path. They remain in the
 full and release profiles. The retired deterministic review and merge-queue
 workflows are preserved under `quality/quarantine/review-gate/`.
@@ -186,18 +187,20 @@ Apple lanes download that same matrix; Python 3.13 compatibility runs alongside 
 The operational evidence gate requires every release receipt to name all four
 world-stack wheel digests; Smol has a separate installed-wheel behavior probe.
 
-Publication then proceeds as one fail-closed chain: an unprivileged job rejects any
-conflicting TestPyPI files, then the coordinator and package-specific OIDC workflows
-upload exact distribution slices from the original `dist/` artifact. Isolated
-environments install the base, each selective library, and the full stack from
-TestPyPI. The same preflight, upload, exact-byte index verification, and six-shape
-install matrix run against PyPI. The GitHub Release is created only after PyPI serves
-all ten attested files and the registry-installed matrix passes. Exact matching
-partial uploads are resumable; an existing filename with different bytes fails before
-any publishing job receives an OIDC token. A matching pre-existing file is accepted
-only when the registry Integrity API binds its publish attestation to this repository,
-workflow, environment, filename, and digest, and the pinned `pypi-attestations`
-verifier validates the Sigstore proof for the served file.
+Publication then proceeds as one fail-closed chain. An unprivileged coordinator
+rejects conflicting TestPyPI files, dispatches the four package-specific child
+workflows, and records their exact run identities. The ECS publisher remains in
+`release.yml`; each child publishes only its own original two-file artifact. The
+coordinator waits for all five OIDC publishers before isolated environments install
+the base, each selective library, and the full stack from TestPyPI. The same preflight,
+five-publisher upload, exact-byte index verification, and six-shape install matrix run
+against PyPI. The GitHub Release is created only after PyPI serves all ten attested
+files and the registry-installed matrix passes. Exact matching partial uploads are
+resumable; an existing filename with different bytes fails before any publishing job
+receives an OIDC token. A matching pre-existing file is accepted only when the registry
+Integrity API binds its publish attestation to this repository, exact package workflow,
+environment, filename, and digest, and the pinned `pypi-attestations` verifier validates
+the Sigstore proof for the served file.
 
 Immediately before each OIDC publisher action, its checkout-free job performs one
 inline `git ls-remote` check against the literal canonical repository without
@@ -210,9 +213,8 @@ Before the first five-project release, register pending Trusted Publishers for t
 four new project names on both PyPI and TestPyPI. This preconfigures their OIDC
 identities; it does not reserve or claim the names. Each new name remains claimable
 until the first successful OIDC publication creates the project on that registry.
-All five projects on each registry must trust repository `VangelisTech/archetype`,
-the exact workflow below, and the environment for that registry: `release-pypi` or
-`release-testpypi`.
+Every row uses repository `VangelisTech/archetype` and must be registered once with
+`release-testpypi` and once with `release-pypi`:
 
 | Project | Trusted Publisher workflow |
 |---|---|
@@ -223,7 +225,9 @@ the exact workflow below, and the environment for that registry: `release-pypi` 
 | `archetype-smol` | `publish-archetype-smol.yml` |
 
 The coordinator publishes ECS directly and dispatches each other distribution's
-direct workflow with an exact-run allowlist. Protect both GitHub environments to
+direct workflow with an exact-run allowlist.
+The [repository harness](docs/guide/repository-harness.md#release-profile-and-publisher-identities)
+owns the full identity and dispatch contract. Protect both GitHub environments to
 allow only `v*` tags, require the release operator's review, and disable administrator
 bypass.
 

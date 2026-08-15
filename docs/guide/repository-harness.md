@@ -175,6 +175,8 @@ execution and receipt retention land with the owning release-gate slices. A
 declared cadence MUST NOT be reported as satisfied until its workflow invokes
 the scenario and retains the resulting receipt.
 
+### Release profile and publisher identities
+
 The operator-dispatched tag workflow builds the exact 0.6 distribution matrix
 after the source profile: one wheel and one source distribution for each of
 `archetype-ecs`, `archetype-missions`, `archetype-physical-ai`, and
