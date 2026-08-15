@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from math import isnan
 from typing import Any
 
 import daft
@@ -59,6 +60,25 @@ def _snapshot(components: tuple[Component, ...]) -> tuple[Component, ...]:
     """Detach one retained state snapshot from every caller and later tick."""
 
     return tuple(component.model_copy(deep=True) for component in components)
+
+
+def _same_value(left: Any, right: Any) -> bool:
+    """Compare a round-tripped field without conflating distinct Python types."""
+
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _same_value(left[key], right[key]) for key in left
+        )
+    if isinstance(left, (list, tuple)):
+        return len(left) == len(right) and all(
+            _same_value(left_item, right_item)
+            for left_item, right_item in zip(left, right, strict=True)
+        )
+    if isinstance(left, float) and isnan(left):
+        return isnan(right)
+    return bool(left == right)
 
 
 class World:
@@ -188,6 +208,10 @@ class World:
                     self._entity_row(entity_id, self.tick, self._entities[entity_id], signature)
                     for entity_id in entity_ids
                 ]
+                source_rows = {row["entity_id"]: row for row in rows}
+                source_components = {
+                    entity_id: self._entities[entity_id] for entity_id in entity_ids
+                }
                 frame = daft.from_pylist(rows)
                 for _index, processor in processors:
                     if set(processor.components).issubset(signature):
@@ -201,6 +225,8 @@ class World:
                         frame,
                         signature,
                         entity_ids,
+                        source_rows=source_rows,
+                        source_components=source_components,
                         expected_tick=self.tick,
                     )
                 )
@@ -304,6 +330,8 @@ class World:
         signature: _Signature,
         expected_entity_ids: list[int],
         *,
+        source_rows: dict[int, dict[str, Any]],
+        source_components: dict[int, tuple[Component, ...]],
         expected_tick: int,
     ) -> dict[int, tuple[Component, ...]]:
         expected_columns = set(cls._columns(signature))
@@ -331,9 +359,20 @@ class World:
             if type(row["tick"]) is not int or row["tick"] != expected_tick:
                 raise ValueError("processors may not change tick metadata")
             components: list[Component] = []
+            entity_id = row["entity_id"]
+            source_row = source_rows[entity_id]
+            current_by_type = {
+                type(component): component for component in source_components[entity_id]
+            }
             for component_type in signature:
                 prefix = component_type.prefix()
                 values = {name: row[f"{prefix}{name}"] for name in component_type.model_fields}
-                components.append(component_type.model_validate(values))
-            decoded[row["entity_id"]] = tuple(components)
+                source_values = {
+                    name: source_row[f"{prefix}{name}"] for name in component_type.model_fields
+                }
+                if _same_value(values, source_values):
+                    components.append(current_by_type[component_type])
+                else:
+                    components.append(component_type.model_validate(values, by_name=True))
+            decoded[entity_id] = tuple(components)
         return decoded

@@ -7,7 +7,14 @@ from pathlib import Path
 
 import pytest
 from daft import col
-from pydantic import ValidationError, computed_field, field_serializer, model_serializer
+from pydantic import (
+    Field,
+    ValidationError,
+    computed_field,
+    field_serializer,
+    field_validator,
+    model_serializer,
+)
 
 import archetype.smol as smol
 from archetype.smol import Component, Processor, World
@@ -195,12 +202,86 @@ def test_retained_component_values_cannot_rewrite_snapshots() -> None:
     world.spawn(inventory)
 
     inventory.items.append("caller mutation")
+    queried = world.query(Inventory).to_pylist()[0]
+    queried["inventory__items"].append("query mutation")
     world.step()
 
     assert [row["inventory__items"] for row in world.history(Inventory).to_pylist()] == [
         ["seed"],
         ["seed"],
     ]
+
+
+def test_aliased_fields_survive_noop_steps_and_validate_changed_rows_by_name() -> None:
+    class Aliased(Component):
+        value: int = Field(alias="wire_value")
+
+    class Preserve(Processor):
+        components = (Aliased,)
+
+        def process(self, df, *, tick):
+            del tick
+            return df
+
+    class Increment(Processor):
+        components = (Aliased,)
+
+        def process(self, df, *, tick):
+            del tick
+            return df.with_column("aliased__value", col("aliased__value") + 1)
+
+    world = World(processors=[Preserve()])
+    world.spawn(Aliased(wire_value=7))
+
+    world.step()
+    world.add_processor(Increment())
+    world.step()
+
+    assert [row["aliased__value"] for row in world.history(Aliased).to_pylist()] == [7, 7, 8]
+
+
+def test_noop_steps_do_not_replay_component_validators() -> None:
+    validated: list[int] = []
+
+    class IncrementOnValidation(Component):
+        value: int
+
+        @field_validator("value")
+        @classmethod
+        def increment(cls, value: int) -> int:
+            validated.append(value)
+            return value + 1
+
+    world = World()
+    world.spawn(IncrementOnValidation(value=0))
+
+    world.step()
+
+    assert validated == [0]
+    assert [
+        row["incrementonvalidation__value"]
+        for row in world.history(IncrementOnValidation).to_pylist()
+    ] == [1, 1]
+
+
+def test_equal_but_differently_typed_processor_values_are_revalidated() -> None:
+    class StrictCount(Component):
+        value: int = Field(strict=True)
+
+    class CastToFloat(Processor):
+        components = (StrictCount,)
+
+        def process(self, df, *, tick):
+            del tick
+            return df.with_column("strictcount__value", col("strictcount__value").cast("float64"))
+
+    world = World(processors=[CastToFloat()])
+    world.spawn(StrictCount(value=1))
+
+    with pytest.raises(ValidationError):
+        world.step()
+
+    assert world.tick == 0
 
 
 def test_computed_fields_do_not_enter_the_dataframe_schema() -> None:
