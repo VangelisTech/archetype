@@ -716,6 +716,13 @@ time.sleep(60)
             time.sleep(0.05)
         assert marker.is_file()
         assert is_port_open(BIOME_HOST, port)
+        with pytest.raises(RuntimeError, match="refusing to release a live"):
+            biome_bootstrap._release_process_lease(
+                process.pid,
+                host=BIOME_HOST,
+                port=port,
+            )
+        assert not lease_file.exists()
 
         terminate(
             process,
@@ -734,6 +741,8 @@ time.sleep(60)
                 "schema": biome_bootstrap._PROCESS_LEASE_SCHEMA,
                 "operation": "release",
                 "lease_id": f"biome:{process.pid}",
+                "group_was_alive": False,
+                "port_was_open": False,
             }
         ]
     finally:

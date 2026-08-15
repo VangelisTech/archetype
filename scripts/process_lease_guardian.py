@@ -55,6 +55,14 @@ class ProcessLease:
     birth_identity: str
 
 
+@dataclass(frozen=True)
+class ReleaseObservation:
+    """Liveness captured at the instant a release was published."""
+
+    group_was_alive: bool
+    port_was_open: bool
+
+
 def _strict_json_object(encoded: str, *, line_number: int) -> dict[str, Any]:
     def reject_constant(value: str) -> None:
         raise ValueError(f"non-standard JSON constant {value}")
@@ -109,16 +117,16 @@ def _parse_lease(payload: dict[str, Any], *, line_number: int) -> ProcessLease:
 
 def _lease_history(
     path: Path,
-) -> tuple[dict[str, ProcessLease], set[str], list[str]]:
+) -> tuple[dict[str, ProcessLease], dict[str, ReleaseObservation], list[str]]:
     leases: dict[str, ProcessLease] = {}
-    released: set[str] = set()
+    releases: dict[str, ReleaseObservation] = {}
     errors: list[str] = []
     if not path.exists():
-        return leases, released, errors
+        return leases, releases, errors
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        return leases, released, [f"could not read lease journal: {type(exc).__name__}: {exc}"]
+        return leases, releases, [f"could not read lease journal: {type(exc).__name__}: {exc}"]
 
     for line_number, encoded in enumerate(lines, start=1):
         if not encoded.strip():
@@ -139,14 +147,20 @@ def _lease_history(
                     raise TypeError(f"lease line {line_number} has an invalid lease_id")
                 if lease_id not in leases:
                     raise ValueError(f"lease line {line_number} releases an unknown lease")
-                if lease_id in released:
+                if lease_id in releases:
                     raise ValueError(f"lease line {line_number} releases a lease twice")
-                released.add(lease_id)
+                group_was_alive = payload.get("group_was_alive")
+                port_was_open = payload.get("port_was_open")
+                if not isinstance(group_was_alive, bool):
+                    raise TypeError(f"lease line {line_number} has invalid release group evidence")
+                if not isinstance(port_was_open, bool):
+                    raise TypeError(f"lease line {line_number} has invalid release port evidence")
+                releases[lease_id] = ReleaseObservation(group_was_alive, port_was_open)
             else:
                 raise ValueError(f"lease line {line_number} has an invalid operation")
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
             errors.append(f"{type(exc).__name__}: {exc}")
-    return leases, released, errors
+    return leases, releases, errors
 
 
 def _marker_path(directory: Path, lease_id: str) -> Path:
@@ -169,11 +183,11 @@ def _write_marker(path: Path, payload: dict[str, object]) -> None:
 
 
 def _acknowledge_active(lease_file: Path, ack_dir: Path) -> None:
-    leases, released, errors = _lease_history(lease_file)
+    leases, releases, errors = _lease_history(lease_file)
     if errors:
         return
     for lease_id, lease in leases.items():
-        if lease_id in released:
+        if lease_id in releases:
             continue
         marker = _marker_path(ack_dir, lease.lease_id)
         if not marker.exists():
@@ -314,7 +328,11 @@ def _wait_for_port_close(host: str, port: int, timeout: float) -> bool:
     return not _port_open(host, port)
 
 
-def _reap(lease: ProcessLease, *, released: bool) -> dict[str, object]:
+def _reap(
+    lease: ProcessLease,
+    *,
+    release: ReleaseObservation | None,
+) -> dict[str, object]:
     group_was_alive = _process_group_alive(lease.process_group)
     port_was_open = _port_open(lease.host, lease.port)
     current_birth_identity = (
@@ -333,7 +351,9 @@ def _reap(lease: ProcessLease, *, released: bool) -> dict[str, object]:
         _signal_process_group(lease.process_group, signal.SIGKILL)
         group_closed = _wait_for_group_close(lease.process_group, _KILL_GRACE_SECONDS)
     port_closed = _wait_for_port_close(lease.host, lease.port, _PORT_GRACE_SECONDS)
-    release_was_truthful = None if not released else not group_was_alive and not port_was_open
+    release_was_truthful = (
+        None if release is None else not release.group_was_alive and not release.port_was_open
+    )
     return {
         "lease_id": lease.lease_id,
         "pid": lease.pid,
@@ -342,7 +362,9 @@ def _reap(lease: ProcessLease, *, released: bool) -> dict[str, object]:
         "port": lease.port,
         "birth_identity": lease.birth_identity,
         "ownership_matches": ownership_matches,
-        "released": released,
+        "released": release is not None,
+        "release_group_was_alive": (None if release is None else release.group_was_alive),
+        "release_port_was_open": None if release is None else release.port_was_open,
         "release_was_truthful": release_was_truthful,
         "group_was_alive": group_was_alive,
         "port_was_open": port_was_open,
@@ -352,9 +374,9 @@ def _reap(lease: ProcessLease, *, released: bool) -> dict[str, object]:
 
 
 def guard(lease_file: Path, result_file: Path) -> bool:
-    history, released, errors = _lease_history(lease_file)
+    history, releases, errors = _lease_history(lease_file)
     leases = [
-        _reap(history[lease_id], released=lease_id in released) for lease_id in sorted(history)
+        _reap(history[lease_id], release=releases.get(lease_id)) for lease_id in sorted(history)
     ]
     closed = not errors and all(
         lease["group_closed"]
@@ -368,7 +390,7 @@ def guard(lease_file: Path, result_file: Path) -> bool:
         {
             "schema": RESULT_SCHEMA,
             "status": "closed" if closed else "leaked",
-            "active_lease_count": len(history) - len(released),
+            "active_lease_count": len(history) - len(releases),
             "leases": leases,
             "errors": errors,
         },

@@ -177,16 +177,30 @@ def _wait_for_port_close(host: str, port: int, timeout: float) -> bool:
     return not is_port_open(host, port)
 
 
-def _release_process_lease(process_id: int) -> bool:
+def _release_process_lease(
+    process_id: int,
+    *,
+    host: str,
+    port: int,
+) -> bool:
     """Record release only after local group and port closure were proven."""
 
     lease_path = os.environ.get(_PROCESS_LEASE_ENV)
     if lease_path is None:
         return False
+    group_was_alive = is_process_group_alive(process_id)
+    port_was_open = is_port_open(host, port)
+    if group_was_alive or port_was_open:
+        raise RuntimeError(
+            "refusing to release a live operational process lease "
+            f"(group_alive={group_was_alive}, port_open={port_was_open})"
+        )
     payload: dict[str, object] = {
         "schema": _PROCESS_LEASE_SCHEMA,
         "operation": "release",
         "lease_id": f"biome:{process_id}",
+        "group_was_alive": group_was_alive,
+        "port_was_open": port_was_open,
     }
 
     encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -453,7 +467,7 @@ def terminate(
         port_timeout=port_timeout,
     )
     try:
-        _release_process_lease(process.pid)
+        _release_process_lease(process.pid, host=host, port=port)
     except Exception as exc:
         raise RuntimeError(
             f"Biome closed, but its operational process lease could not be released: {exc}"

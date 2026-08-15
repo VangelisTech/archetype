@@ -12,7 +12,6 @@ import signal
 import socket
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -438,6 +437,8 @@ time.sleep(60)
         assert lease["ownership_matches"] is True
         assert lease["released"] is False
         assert lease["release_was_truthful"] is None
+        assert lease["release_group_was_alive"] is None
+        assert lease["release_port_was_open"] is None
         assert lease["group_was_alive"] is True
         assert lease["port_was_open"] is True
         assert lease["group_closed"] is True
@@ -615,6 +616,8 @@ terminate(
     (lease,) = cast(list[dict[str, Any]], cleanup["leases"])
     assert lease["released"] is True
     assert lease["release_was_truthful"] is True
+    assert lease["release_group_was_alive"] is False
+    assert lease["release_port_was_open"] is False
     assert lease["ownership_matches"] is True
     assert lease["group_was_alive"] is False
     assert lease["port_was_open"] is False
@@ -669,6 +672,8 @@ time.sleep(60)
             "schema": PROCESS_LEASE_SCHEMA,
             "operation": "release",
             "lease_id": lease_id,
+            "group_was_alive": True,
+            "port_was_open": True,
         }
         lease_file = tmp_path / "dishonest-leases.jsonl"
         lease_file.write_text(
@@ -676,11 +681,13 @@ time.sleep(60)
             encoding="utf-8",
         )
         result_file = tmp_path / "dishonest-result.json"
-        reaper = threading.Thread(target=process.wait, daemon=True)
-        reaper.start()
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=2)
+        with socket.socket() as probe:
+            probe.settimeout(0.2)
+            assert probe.connect_ex(("127.0.0.1", port)) != 0
 
         assert guard(lease_file, result_file) is False
-        reaper.join(timeout=2)
 
         result = json.loads(result_file.read_text(encoding="utf-8"))
         assert result["status"] == "leaked"
@@ -688,8 +695,10 @@ time.sleep(60)
         (lease,) = result["leases"]
         assert lease["released"] is True
         assert lease["release_was_truthful"] is False
-        assert lease["group_was_alive"] is True
-        assert lease["port_was_open"] is True
+        assert lease["release_group_was_alive"] is True
+        assert lease["release_port_was_open"] is True
+        assert lease["group_was_alive"] is False
+        assert lease["port_was_open"] is False
         assert lease["group_closed"] is True
         assert lease["port_closed"] is True
         with pytest.raises(ProcessLookupError):
