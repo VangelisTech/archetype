@@ -79,7 +79,6 @@ signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
 authority = "The exact committed receipt, generic Activity catalog facts, content-addressed hosted payloads, and later committed HostedEpisodeObservation remain authoritative."
 evidence = [
-  "docs/guide/activities.md",
   "docs/guide/physical-ai.md",
   "tests/physical_ai/test_hosted_episode_activities.py",
 ]

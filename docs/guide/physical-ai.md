@@ -147,6 +147,45 @@ Volume, and R2 prefix on both success and failure.
 
 Lease expiry by itself never authorizes provider replay.
 
+## Hosted-episode recovery
+
+The hosted consumer uses `kind="physical_ai.hosted_episode"`. Its committed
+`HostedEpisodeIntent` contains only a family-local Activity identity, the
+world-scoped stable provider operation identity, and the exact
+content-addressed request identity. Its later `HostedEpisodeObservation` binds
+the bounded Activity result descriptor to the request, complete trajectory,
+derived episode results, manifest, and exact completeness counts.
+
+| Crash window | Durable evidence after restart | Required behavior |
+|---|---|---|
+| After intent commit, before projection | Exact receipt and request reference | Retry required projection; admit the same immutable Activity. |
+| After provider result publication, before generic result recording | Permanent operation start plus complete provider result index | Reconcile by operation identity, publish the same family payloads, and do not execute another episode. |
+| After generic result recording, before observation staging | Bounded descriptor plus complete content-addressed payloads | Reconstruct and restage the exact marker without provider work. |
+| After staging, before observation commit | Result remains unobserved; staged mutation may be lost | Restage the same marker idempotently until a tick commits it. |
+| After observation commit, before settlement | Exact later receipt contains the complete marker | Settle against that receipt without provider work or another tick. |
+| Permanent provider start exists without a complete result | Stable operation identity but ambiguous external truth | Remain unknown. Lease expiry and deterministic seeds do not authorize replay. |
+| Provider returns a partial trajectory | No valid complete manifest can be built | Publish no Activity result; remain unknown after the permanent start. |
+
+The local provider proof uses an atomic permanent start marker and a
+provider-durable first-result index. It deliberately sacrifices liveness after
+an ambiguous start rather than assume a seeded GPU rerun is equivalent.
+
+The Modal parity adapter preserves that contract under an exact workspace,
+Environment, App, Function, named Dict, named Volume, and protocol epoch. An
+atomic Dict `put(..., skip_if_exists=True)` selects one start winner. The remote
+function commits the four canonical Arrow payloads to the Volume before it
+atomically installs the bounded first-result index in the Dict. A lost function
+response is therefore recoverable; a permanent start without that index
+remains unknown and cannot be replayed. Provider placement diagnostics never
+enter canonical payloads or Components.
+
+The local family value store and SQLite Activity catalog remain executable
+proof substrates, not claims of remote storage parity. The Modal Volume and
+Dict prove provider-side start and first-result durability only. Production
+trajectory and frame publication still belongs in Iceberg or the artifact
+substrate, while a remote control-catalog implementation is its own parity
+slice.
+
 ## Canonical episode contract
 
 One request row identifies one trial and seed. A batch has one stable provider
@@ -178,7 +217,8 @@ identity.
 | `archetype.physical_ai.hosted_workflow` | Intent tick, out-of-lock worker call, and observation tick |
 | `archetype.physical_ai.hosted_modal` | Modal namespace, atomic start, Volume-first publication, and reconciliation |
 | `archetype.world.projectors` | Deterministic multi-family required-projector fan-out |
-| `wiring.py` / `RuntimeResources` | Concrete construction, process ownership, operation registration, and teardown |
+| `archetype.physical_ai._extension` | Exact operation registration, hosted-binding construction, and binding into the framework process owner |
+| `RuntimeResources` | Retained process ownership, admission/drain, and ordered teardown |
 
 The generic `activities` family knows admissions, attempts, fences, result
 references, and settlement receipts. It does not know whether a Modal episode

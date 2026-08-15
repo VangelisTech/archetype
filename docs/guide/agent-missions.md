@@ -837,7 +837,7 @@ field. It may reference a task, dispatch, execution, validator, path, or commit
 so later analysis can group failure modes across sessions.
 
 Large outputs use content-addressed artifact references: digest, media type,
-size, and a storage hint. The mission application service may compose the
+size, and a storage hint. A Missions-owned family workflow may compose the
 Artifacts family to persist or ingest them; the sandbox protocol does not
 become a storage system.
 
@@ -1039,6 +1039,13 @@ admit another mission or touch a sibling world. This whole-operation barrier
 was introduced in v0.5 to resolve the admission race tracked in issue #627 and
 remains part of the v0.6 contract.
 
+### Mission Activity recovery
+
+Missions owns the semantic recovery contract layered over generic Activity
+delivery. See [Mission Activity recovery](../missions/recovery.md) for the
+author and critic identities, crash matrix, reconciliation rules, and
+completeness evidence.
+
 ## 8. File and responsibility map
 
 The implementation follows this layout:
@@ -1061,7 +1068,10 @@ The implementation follows this layout:
 | `archetype/missions/sandboxes/apple_container.py` | macOS sandbox-capability backend (rejected for end-to-end admission) and atomic root-filesystem archive restore. |
 | `archetype/missions/sandboxes/docker.py` | Linux/CI sandbox-capability backend (rejected for end-to-end admission) and immutable image restore. |
 | `archetype/missions/sandboxes/modal.py` | Supported end-to-end remote backend, device login, snapshots, and direct live monitor. |
+| `archetype/missions/transcript_service.py` | Redact-before-durability transcript ingestion over framework artifact and storage capabilities. |
+| `archetype/missions/trajectory_service.py` | Durable trajectory queries and composition with the evaluation grader runner. |
 | `archetype/missions/service.py` | Graph materialization, tick/I/O composition, family workflow, and projections. |
+| `packages/archetype-missions/src/archetype/missions/_extension.py` | Private manifest adapter, exact operation registration, family-internal construction, and binding into `RuntimeResources`. |
 | `packages/archetype-missions/src/archetype/missions/runtime.py` | `Missions` and `MissionWorld` typed adapters and workflow-handle lifecycle. |
 | `examples/11_coding_agent_mission.py` | Real typed dogfood script. |
 | `tests/missions/` | Family contract, transition, sandbox, harness, and provider oracles. |
@@ -1077,8 +1087,10 @@ provider SDK to run the built-in workflow.
 
 Agent Missions establishes the repository convention: reusable state, pure
 behavior, capability-scoped resources, and family-owned workflows live in the
-named family. Concrete cross-family composition remains in
-`archetype.wiring`.
+named family. `archetype.wiring` composes the domain-free framework and runs the
+enclosing manifest-installation transaction; the private
+`archetype.missions._extension` adapter constructs Missions internals and
+registers only its declared operations over the bounded framework context.
 
 ```text
 archetype.missions
@@ -1128,6 +1140,10 @@ The credential-free contract lane must prove:
 - expected-nonzero validator derivation;
 - agent-authored and publisher-authored commit preservation;
 - validators running after a nonzero agent exit when repository evidence exists;
+- exact Git recovery returning the originally published canonical observation
+  without rerunning nondeterministic validators;
+- local and Modal executors satisfying the same Mission author Activity
+  contract;
 - tracked, untracked, and `.context` filesystem state across checkpoint/restore;
 - sandbox/agent/task lifecycle separation;
 - terminal cleanup; and

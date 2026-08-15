@@ -24,6 +24,8 @@ CANONICAL_SURFACES = (
     ROOT / "docs/guide/storage-migration.md",
     ROOT / "docs/guide/trajectories.md",
     ROOT / "docs/guide/world-libraries.md",
+    ROOT / "docs/missions/recovery.md",
+    ROOT / "docs/missions/transcripts.md",
     ROOT / "examples/06_trajectory_analysis.py",
     ROOT / "examples/10_autoresearch.py",
     *sorted((ROOT / "experiments").glob("*.py")),
@@ -65,6 +67,23 @@ def test_agent_missions_guide_uses_the_0_6_adapter_and_contract() -> None:
     assert "packages/archetype-missions/src/archetype/missions/runtime.py" in guide
     assert "v0.5 Mission workflow" not in guide
     assert "normative for v0.5" not in guide
+
+
+def test_missions_contract_pages_are_the_single_normative_owners() -> None:
+    agent_guide = (ROOT / "docs/guide/agent-missions.md").read_text(encoding="utf-8")
+    recovery = (ROOT / "docs/missions/recovery.md").read_text(encoding="utf-8")
+    trajectories = (ROOT / "docs/guide/trajectories.md").read_text(encoding="utf-8")
+    transcripts = (ROOT / "docs/missions/transcripts.md").read_text(encoding="utf-8")
+    contracts = (ROOT / "quality/contracts.toml").read_text(encoding="utf-8")
+
+    assert "| Crash window | Durable evidence after restart |" not in agent_guide
+    assert "[Mission Activity recovery](../missions/recovery.md)" in agent_guide
+    assert "| Crash window | Durable evidence after restart |" in recovery
+    assert "`TranscriptIngestionService` preserves this exact order:" not in trajectories
+    assert "[Transcript ingestion contract](../missions/transcripts.md)" in trajectories
+    assert "`TranscriptIngestionService` preserves this exact order:" in transcripts
+    assert 'source = "docs/missions/recovery.md"' in contracts
+    assert contracts.count('source = "docs/missions/transcripts.md"') == 3
 
 
 def test_clean_break_release_note_is_reader_visible() -> None:

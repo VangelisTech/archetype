@@ -179,7 +179,8 @@ Reads may not depend on registration state held by the writer process. Given
 the same storage configuration and durable world record, a fresh application
 graph must resolve each existing named table through `daft.Catalog` and return
 only its current world/run rows. This cold-read rule applies equally to the
-common artifact index, typed media extensions, and normalized transcript rows.
+common artifact index, typed media extensions, and family-owned typed tables
+composed over the same storage substrate.
 
 ## 6. Typed media indexes
 
@@ -249,37 +250,7 @@ No claim or recovery state surrounds this pipeline. Callers retry by making a
 new occurrence. If the content copy already completed, the retry reuses the
 verified object.
 
-## 8. Transcript ingestion
-
-Coding-agent transcripts are a mission workflow, not an artifact backend.
-`TranscriptIngestionService` preserves this exact order:
-
-1. `RedactionService` validates metadata and snapshots a sanitized file before
-   durability
-2. the missions parser reads only that sanitized copy
-3. the workflow redacts normalized session and turn rows
-4. it computes the sanitized file digest
-5. the artifact-family handler publishes the immutable object, typed indexes,
-   and common artifact row
-6. it verifies that the returned artifact SHA-256 equals the sanitized digest
-7. `StorageService` appends normalized rows to
-   `coding_agent_transcript_rows`
-
-Every normalized row carries `source_artifact_id`, so queries can join the
-narrative data to the common file index without persisting a duplicate asset
-component. `MissionWorld(world).transcript_rows()` returns the current run's
-normalized session and turn rows. The original source digest may identify the
-input, while the artifact SHA-256 always describes the sanitized bytes actually
-stored.
-
-Quarantine, parse, and row-redaction failures occur before artifact
-publication and publish nothing. A digest mismatch occurs after the honest
-artifact boundary and therefore leaves the sanitized artifact visible but
-fails before any transcript row append. Re-ingesting a valid transcript
-records another artifact occurrence and another normalized row set scoped to
-that occurrence.
-
-## 9. Evaluation results
+## 8. Evaluation results
 
 Evaluation pins the world's visible component snapshot from explicit storage
 coordinates, runs the requested grader, and appends one row to
@@ -310,13 +281,13 @@ already-appended result before running the grader again. This coordination is
 evaluation-specific and does not add claims or publication state to artifact
 ingestion.
 
-## 10. Security boundary
+## 9. Security boundary
 
 Generic artifact ingestion stores the bytes the caller submits. Workflows that
-handle potentially secret-bearing content must sanitize before calling it.
-Transcript ingestion does this by construction: unsafe metadata, symlinks,
-unsupported containers, and unrewritable secret-bearing inputs are quarantined
-before any object or catalog row becomes durable.
+handle potentially secret-bearing content must sanitize before calling it. The
+Missions-owned [transcript ingestion contract](../missions/transcripts.md)
+is one concrete implementation; its quarantine, parsing, and normalized-row
+semantics do not belong to the generic artifact family.
 
 The common rule is simple: specialized workflows own pre-durability safety;
 the artifacts family owns exact file persistence and indexing; operation
@@ -324,7 +295,7 @@ models carry explicit durable coordinates; and `StorageService` owns the
 world/run envelope, append choice, Catalog, and terminal Daft execution
 authority.
 
-## 11. Task-anchored artifact context
+## 10. Task-anchored artifact context
 
 `ArtifactContext` names one task-scoped interpretation of an artifact set. Its
 UUIDv7 `context_id` identifies the interpretation; artifact UUIDs continue to
@@ -391,7 +362,7 @@ real Cloudflare stack:
 
 ```text
 Hugging Face Markdown + MP3 + MP4 + PDF
-local Markdown + Python + git patch + PNG + sanitized Claude transcript
+local Markdown + Python + git patch + PNG
   -> content-addressed R2 objects
   -> Daft Catalog / Iceberg tables whose metadata and data live on R2
   -> fresh catalog + fresh application graph
@@ -409,7 +380,6 @@ The cold query result is deliberately reviewable as one small table:
 | `artifact_pdf` | 1 | `artifact_id` |
 | `artifact_text` | 5 | `artifact_id` |
 | `artifact_diff` | 1 | `artifact_id` |
-| `coding_agent_transcript_rows` | 3 | `source_artifact_id` |
 
 The test checks metadata and logical-path attribution after the restart, UUIDv7
 identity-derived timestamps, both content hashes, and Daft's unmodified MIME
@@ -421,6 +391,12 @@ scans use the staged object. Live model calls remain an explicit
 credential-bearing external check; the deterministic contract tests validate
 the task anchoring and source attribution without pretending that a mocked
 provider is model evidence.
+
+The same protected full-stack proof composes Missions transcript ingestion over
+this framework boundary. Its normalized-row and redaction assertions are
+documented by the
+[Mission transcript contract](../missions/transcripts.md),
+not by the generic artifact schema.
 
 ## Whole-storage relocation preserves occurrences
 
@@ -443,7 +419,7 @@ Local v1 supports local Artifact roots only. See
 [Storage Migration](storage-migration.md) for destination ordering, failure,
 and receipt requirements.
 
-## 12. Migration from the 0.4 artifact surface
+## 11. Migration from the 0.4 artifact surface
 
 This refactor is an intentional breaking change from the artifact API shipped
 in `0.4.1`. The first release containing it must be `0.5.0` or later; it must
@@ -462,7 +438,6 @@ occurrence identity and content durability while removing that orchestration:
 | `world.reconcile_artifact_bundles(...)` | removed; retry creates a new occurrence and reuses verified content |
 | generic `world.ingest_files(...)` / `world.write_artifacts(...)` | `world.ingest_artifacts(...)` for files, or an owning family workflow over `StorageService` for typed rows |
 | `world.publish(...)` for external component rows | `world.spawn(...)` for world state, or an owning application workflow for durable tabular data |
-| `TranscriptIngestionReceipt` | `TranscriptIngestionResult` linked to the sanitized `ArtifactRef` |
 
 `ArtifactStoreConfig` retains its name but now configures only the object root,
 file-ingestion I/O, and upload concurrency. Callers must construct the new model
