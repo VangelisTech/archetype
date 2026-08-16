@@ -2,12 +2,12 @@
 
 **Document type:** Normative accepted-target contract.
 
-**Status:** The boundary and migration order are ratified. The generic local
-catalog, canonical hosted Physical-AI data contract, opt-in Mission
-author/critic integrations, and family-owned local hosted Activity
-choreography are implemented. Remote hosted-provider parity and final
-topology consolidation remain separate slices. Each implementation slice
-must land its executable oracle with the behavior it enables.
+**Status:** The generic boundary, local catalog, and migration order are
+ratified and implemented. Each consuming family owns its semantic schemas,
+provider recovery meaning, crash matrix, and executable oracles. See
+[Agent Missions](../missions/recovery.md) and
+[Physical AI](physical-ai.md#hosted-episode-recovery) for the two implemented
+first-party consumers.
 
 **Scope:** Durable work admitted after one committed tick and observed by a
 later committed tick. This specification refines the required-projector rule
@@ -170,7 +170,8 @@ ordering, and settlement boundaries.
 | `archetype.activities` | Generic contracts, coordinator port/service, logical identity, immutable admission, claims, attempts, leases, fences, bounded provider retry-guard and result references/digests, and observation settlement |
 | `archetype.storage.activity_catalog` | Flattened physical records, structural catalog port, and local SQLite implementation; a future remote implementation is a separate parity slice |
 | Owning top-level family | Semantic intent and observation schemas, provider protocol and reconciliation facts, intent-to-Activity projection, worker choreography, observation staging, and declared lower-family composition |
-| `RuntimeResources` and `archetype.wiring` | Process-lifetime worker ownership, admission/drain, construction, and executor binding |
+| `RuntimeResources` | Retained process-lifetime ownership, owner admission/drain, and ordered teardown for installed Activity bindings |
+| Owning world library's private `_extension.py` | Concrete family binding and executor construction over the bounded `WorldLibraryContext`, including exact operation registration |
 | Iceberg or `archetype.artifacts` | Large or unbounded result payloads published before their bounded Activity reference |
 
 `archetype.activities` owns mechanics, not a universal recovery policy. A Git
@@ -198,14 +199,12 @@ meaning; neither requires an `archetype.app` mirror.
 
 ## 5. Identity and bounded durability
 
-The generic control key is `(world_id, kind, activity_id)`. Mission
-`dispatch_id` is currently only world-local because it is derived as
-`sha256(entity_id:sequence)`, and unrelated Activity kinds may produce the same
-family-local identifier in one world. Source `run_id`, committed tick, and
-visibility token are immutable bindings on that key. Provider operation
-identity must namespace the same family/kind and `world_id` with the
-family-local identifier; a bare `dispatch_id` or `world_id:dispatch_id` is not
-globally sufficient.
+The generic control key is `(world_id, kind, activity_id)`. An `activity_id`
+may be only family-local: two worlds or two Activity kinds can legitimately
+produce the same value. Source `run_id`, committed tick, and visibility token
+are immutable bindings on that key. Provider operation identity must namespace
+the same family/kind and `world_id` with the family-local identifier; the bare
+identifier or `world_id:activity_id` is not globally sufficient.
 
 The generic control record must preserve enough immutable identity to reject a
 different operation masquerading as a retry:
@@ -261,162 +260,11 @@ the missing observation. A pre-owned cleanup lease stays sticky. Public-close
 reopen authority also survives a required-projector failure, because its retry
 may be the operation that first durably admits the Activity.
 
-## 6. Mission-author crash matrix
+Package-specific crash matrices and completeness evidence live with their
+owners: [Agent Missions](../missions/recovery.md) and
+[Physical AI](physical-ai.md#hosted-episode-recovery).
 
-The first executable consumer is one Agent Mission author dispatch. Its
-logical `activity_id` is the processor-created `dispatch_id`. This table
-derives the required catalog behavior; it does not prescribe a public status
-enum.
-
-| Crash window | Durable evidence after restart | Required behavior |
-|---|---|---|
-| Before the `TaskDispatch` tick commits | No visible dispatch and no Activity | Do nothing. The failed tick remains governed by ordinary tick retry. |
-| After dispatch commit, before required projection | Exact committed receipt and dispatch exist | Retry projection from that receipt without rerunning the tick. |
-| After Activity admission, before projector acknowledgement | Same immutable request and digest exist | Duplicate admission is a no-op; a different digest fails closed. |
-| After claim, before provider binding or external effect | Fenced attempt exists with no provider operation identity and the adapter has performed no effect | After the old lease loses authority, a new fenced attempt may bind its stable provider operation identity and execute. |
-| The adapter cannot bind stable provider operation identity | Unbound attempt exists and no provider effect is permitted | Fail closed. Do not invoke the provider. |
-| After stable provider identity is bound, before or during author execution | Provider-bound attempt exists; a provider-returned handle may or may not exist | Under the live fence, record a recovered result, or record confirmed absence plus provider retry-guard evidence before a fresh attempt. Without that guard, retain unknown work; the stale claimant may still start after the absence check. |
-| After Git publication, before result recording | Exact target branch/base, provider identity, and atomically published canonical bounded/redacted observation exist; remote head may have advanced | Recover the originally published observation byte-for-byte. Do not rerun validators or synthesize a replacement result; keep author and validator execution counts at one. |
-| After result payload publication, before catalog reference | Content-addressed payload may exist without a control reference | Reuse the exact payload by digest or leave it unreferenced; never publish a conflicting result under the same identity. |
-| After result recording, before ECS staging | Result reference and digest exist | Reconstruct the service and restage the same observations idempotently. |
-| After ECS staging, before the observation tick commits | Result remains durable; staged mutations are not yet visible | Restage or retry the tick through normal mutation semantics; do not re-execute the provider. |
-| After observation commit, before Activity settlement | Exact later receipt contains a family completeness binding to the recorded Activity result reference/digest | Reconcile that complete binding and settle idempotently without another tick or provider call. A dispatch ID or partial fact set cannot settle the Activity. |
-| An expired worker returns after a new fence exists | Old attempt may have performed an effect | Reject stale recording and settlement; the live claimant still reconciles provider truth before acting. |
-| Duplicate result or settlement delivery | Existing immutable result or observation receipt exists | Accept exact duplicates and reject conflicting digests or receipts. |
-| Two worlds derive the same `dispatch_id` | Distinct world IDs and source receipts exist | Keep independent control records and provider operation identities; no claim, result, or settlement crosses worlds. |
-| Two Activity kinds derive the same family-local ID in one world | Distinct kind-qualified logical identities exist | Keep independent control records and provider operation identities; `kind` is part of the generic key. |
-| Fork or destroy while an Activity is unsettled | Exact-world lifecycle lock, reconciled required projection, and world-scoped unsettled-work evidence | Refuse the lifecycle operation. V1 neither transfers nor abandons the Activity. |
-
-The local restart oracle must destroy and reconstruct the service and catalog,
-not merely retry in one process. In particular, a crash after Git publication
-but before result recording must recover the published head and its original
-canonical observation, stage the same digest-bound facts, and run neither the
-author nor its validators again.
-
-For the Mission author slice:
-
-- `MissionAuthorActivityProjector` receives the exact committed receipt, reads
-  the matching post-commit snapshot, content-addresses the request, and admits
-  `(world_id, kind="missions.author", activity_id=dispatch_id)`;
-- a family-owned author-observation completion record binds that identity to the
-  exact Activity result reference/digest and complete result-derived facts;
-  the projector settles only when that binding appears in the committed
-  receipt;
-- the Mission author worker MUST bind a stable `provider_operation_id` before
-  external effect or fail closed;
-- an unbound no-effect attempt may be reclaimed under a new fence, while every
-  provider-bound reclaimed attempt reconciles;
-- completed-but-unobserved results are repeatedly restaged through an
-  idempotent family-owned stager; and
-- Mission readiness, candidate creation, repair, acceptance, and rollup remain
-  processor decisions.
-
-The supported Modal Mission author path installs this binding after lazy world
-activation and before the first tick. Its provider adapter binds the exact
-workspace, Environment, App, protocol epoch, and logical operation before
-sandbox start. A named Modal Dict retains the first canonical redacted result;
-a permanent start marker without that result remains unknown and cannot be
-replayed. The 2026-07-26 paid proof published one exact Git head, settled its
-Activity on a later tick, and recovered the same result from a separate cold
-process without a second sandbox start.
-
-The v2 Mission author observation is one all-or-none mixed-signature mutation
-batch. It contains one `Sandbox`, optional sandbox `PartOfMission`, one
-`AgentExecution` with `Executes` and `RunsIn`, every validation/commit/friction
-fact with one `ProducedBy` edge, and exactly one `Candidate` plus
-`CandidateFor`/`AuthoredBy` and optional `Supersedes` only for authored-green
-evidence. Non-green evidence contains zero candidates. The
-`CompleteAuthorActivityObservation` marker is staged last and digests every
-fact value, provenance edge, and entity identity. It is a separately named
-schema-v2 Component: the schema and table identity of the A3a
-`AuthorActivityObservation` marker remain unchanged, so already-durable v1
-rows remain resolvable.
-
-Atomicity here covers the world's mutation cache: cancellation or a failing
-`OnSpawn` handler restores the entity sequence and every staged mutation before
-the error escapes, so processors cannot consume a prefix on a later tick. A
-handler that already ran may have an advisory process-local side effect and
-cannot be undone; therefore `OnSpawn` hooks must not own Mission correctness.
-Durable atomic visibility remains the ordinary manifest-last tick commit.
-
-### Mission critic Activity
-
-The critic consumer uses
-`(world_id, kind="missions.critic", activity_id=review_id)`.
-`review_id` binds the exact candidate, critic-policy digest, and Mission domain
-review attempt. Generic claim attempts and fences are delivery mechanics and
-do not consume that domain budget. Only a `CriticExecution` visible in a later
-committed tick advances the next domain review attempt.
-
-The admitted request contains exact base/head, diff and validator-bundle
-digests, policy, validation evidence, author sandbox identity, and a bounded
-subject policy. It contains no diff bytes and no provider subject path. The
-provider recomputes the exact binary diff, places it in a provider-owned file
-or stdin, verifies its digest and total byte budget, and removes temporary
-subject storage on every unwind path. Provider operation identity is stable
-across generic retries. A replacement worker retrieves the exact published
-result, proves guarded absence before a safe retry, or remains unknown and
-fails closed.
-
-One critic result is staged as an all-or-none mixed-signature batch:
-
-- one fresh critic `Sandbox` distinct from the author sandbox;
-- one `CriticExecution`, with exact `Reviews` and `RunsIn` relations;
-- every `CriticFinding` and its `ProducedBy` relation;
-- an optional existing-v1 `CriticReceipt` and its `ProducedBy` relation; and
-- one `CompleteCriticActivityObservation` staged last.
-
-The separately named completion marker preserves the existing
-`TaskCriticPolicy` and `CriticReceipt` table identities. It binds the durable
-result reference/digest, every result-derived fact and relation identity, the
-author/critic sandbox separation, and the complete exact-subject binding when
-a receipt exists. A marker with missing or conflicting facts cannot settle.
-After restart, an exact committed bundle makes result redelivery a no-op; the
-projector settles only against the exact receipt of the tick that committed
-that bundle. Processors alone decide acceptance, repair, failure, or another
-review.
-
-## 7. Hosted Physical-AI crash matrix
-
-The hosted Physical-AI consumer uses
-`kind="physical_ai.hosted_episode"`. Its committed `HostedEpisodeIntent`
-contains only a family-local Activity identity, the world-scoped stable
-provider operation identity, and the exact content-addressed request identity.
-Its later `HostedEpisodeObservation` binds the bounded Activity result
-descriptor to the request, complete trajectory, derived episode results,
-manifest, and exact completeness counts.
-
-| Crash window | Durable evidence after restart | Required behavior |
-|---|---|---|
-| After intent commit, before projection | Exact receipt and request reference | Retry required projection; admit the same immutable Activity. |
-| After provider result publication, before generic result recording | Permanent operation start plus complete provider result index | Reconcile by operation identity, publish the same family payloads, and do not execute another episode. |
-| After generic result recording, before observation staging | Bounded descriptor plus complete content-addressed payloads | Reconstruct and restage the exact marker without provider work. |
-| After staging, before observation commit | Result remains unobserved; staged mutation may be lost | Restage the same marker idempotently until a tick commits it. |
-| After observation commit, before settlement | Exact later receipt contains the complete marker | Settle against that receipt without provider work or another tick. |
-| Permanent provider start exists without a complete result | Stable operation identity but ambiguous external truth | Remain unknown. Lease expiry and deterministic seeds do not authorize replay. |
-| Provider returns a partial trajectory | No valid complete manifest can be built | Publish no Activity result; remain unknown after the permanent start. |
-
-The local provider proof uses an atomic permanent start marker and a
-provider-durable first-result index. It deliberately sacrifices liveness after
-an ambiguous start rather than assume a seeded GPU rerun is equivalent.
-
-The Modal parity adapter preserves that contract under an exact workspace,
-Environment, App, Function, named Dict, named Volume, and protocol epoch. An
-atomic Dict `put(..., skip_if_exists=True)` selects one start winner. The remote
-function commits the four canonical Arrow payloads to the Volume before it
-atomically installs the bounded first-result index in the Dict. A lost function
-response is therefore recoverable; a permanent start without that index
-remains unknown and cannot be replayed. Provider placement diagnostics never
-enter canonical payloads or Components.
-
-The local family value store and SQLite Activity catalog remain executable
-proof substrates, not claims of remote storage parity. The Modal Volume and
-Dict prove provider-side start and first-result durability only. Production
-trajectory and frame publication still belongs in Iceberg or the artifact
-substrate, while a remote control-catalog implementation is its own parity
-slice.
-
-## 8. Resource-spike disposition
+## 6. Resource-spike disposition
 
 The `AsyncResources`/WorldHost prototype is retained as architecture evidence
 and is frozen. It is not the implementation path for Agent Missions or
@@ -433,7 +281,7 @@ handled as read-only, reconstructible, safely idempotent access or as an
 Activity. Evidence from the frozen spike should inform that proposal rather
 than silently entering the current refactor.
 
-## 9. Verification gates
+## 7. Verification gates
 
 The Activity migration is conforming only when focused contracts prove:
 
@@ -446,8 +294,6 @@ The Activity migration is conforming only when focused contracts prove:
 - only the live fenced attempt can bind provider work or record its result,
   while only the exact later receipt with complete family evidence can settle;
 - provider-bound recovery reconciles instead of blindly replaying;
-- exact Git recovery reads the originally published canonical observation and
-  does not rerun nondeterministic validators;
 - recovered-result, confirmed-absence, and unknown reconciliation paths are
   fenced; only recorded confirmed absence plus a provider retry guard permits
   a fresh execution-authorized attempt;
@@ -462,9 +308,8 @@ The Activity migration is conforming only when focused contracts prove:
   and provider operation identity;
 - equal family-local Activity IDs from two kinds in one world remain isolated;
 - family processors remain the only semantic transition authority;
-- local and Modal executors satisfy the same Mission author contract; and
-- large hosted Physical-AI outputs use bounded catalog references to durable
-  Arrow or artifact payloads.
+- large or unbounded outputs use bounded catalog references to payloads made
+  durable before the Activity result is recorded.
 
 The implementation sequence and release cut lines are tracked in
 [Activity-boundary refactor](../planning/activity-boundary-refactor.md).

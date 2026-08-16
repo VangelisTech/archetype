@@ -98,6 +98,9 @@ outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
 authority = "Persisted mission/task state, stable author-base and dispatch intent, execution and validator observations, repository commits, immutable candidates, critic executions, findings, receipts, checkpoints, and sandbox lifecycle state remain authoritative."
 evidence = [
   "docs/guide/agent-missions.md",
+  "docs/guide/trajectories.md",
+  "docs/missions/recovery.md",
+  "docs/missions/transcripts.md",
   "tests/missions/test_mission_author_activities.py",
   "tests/missions/test_mission_critic_activities.py",
   "tests/missions/test_mission_critic_world_integration.py",

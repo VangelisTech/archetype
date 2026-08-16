@@ -11,8 +11,10 @@ Normative dependency rules live in
 
 ## Process composition and lifetime
 
-`build_runtime_resources(RuntimeBootstrapConfig)` is the sole concrete
-cross-family composition transaction. It returns one `RuntimeResources`:
+`build_runtime_resources(RuntimeBootstrapConfig)` is the sole enclosing
+process-composition transaction. It constructs the domain-free framework,
+resolves installed world-library manifests, and invokes each private installer
+with one bounded `WorldLibraryContext` before returning `RuntimeResources`:
 
 ```text
 RuntimeResources
@@ -46,16 +48,24 @@ archetype.wiring
   +-> CommandScheduler -> world.handlers.materialize_locked
   +-> AuditLog -> StorageService + scheduler outbox callbacks
   +-> artifact handlers and views -> StorageService
-  +-> TranscriptIngestionService -> artifacts/redaction/storage
   +-> evaluation handlers -> storage + world.query
-  +-> research handler + shared admissions -> storage/world ports
-  +-> physical_ai handlers -> storage/world ports + provider-lifetime registrar
+  +-> resolved manifests -> bounded WorldLibraryContext
+
+archetype.missions._extension
+  +-> transcript + trajectory services -> declared framework families
+  +-> exact Mission handlers -> reservation-owned MissionService
+archetype.research._extension
+  +-> AutoResearch handler + per-runtime admissions -> storage/world ports
+archetype.physical_ai._extension
+  +-> hosted-episode handler -> per-world Activity binding + storage/world ports
 ```
 
-Wiring injects `CommandScheduler.materialize` when lifecycle constructs
+Framework wiring injects `CommandScheduler.materialize` when lifecycle constructs
 each managed `AsyncWorld`. Core owns only the callable shape; it never imports
-the commands family. Wiring also connects the scheduler's transactional
-outbox to `AuditLog`'s analytical projection.
+the commands family. It also connects the scheduler's transactional outbox to
+`AuditLog`'s analytical projection. The framework never imports a world library
+by package name; each library's private adapter constructs only that library's
+internals during the enclosing installation transaction.
 
 ## Storage family
 
@@ -117,7 +127,7 @@ that substrate directly for their typed rows. There is no general ingestion or
 application artifact facade and no artifact claim, lease, receipt, or
 reconciliation state machine. See [Artifacts](artifacts.md).
 
-## Evaluation, research, and physical-AI families
+## Evaluation and installed world-library families
 
 The top-level evaluation family pins persisted world state through storage and
 world-query authority, executes caller-provided graders, validates typed
@@ -126,34 +136,37 @@ outcomes, and appends one durable evaluation result directly through
 free family handlers; no application evaluation facade or live-registry
 fallback participates.
 
-The top-level research family owns the multi-iteration rollout workflow and
-its durable research ledger. Its free handler depends on world
-registry/lifecycle and storage ports and calls world simulation functions.
-Wiring injects exact world cleanup and one process-shared keyed-admission
-instance. Ledgered calls for the same experiment serialize; ledgerless calls
-bypass that map and use invocation-unique rollout names. The dispatcher awaits
-the handler inside its existing admission, so shutdown drains it without a
-second owner reservation or detached task. Scoring remains an explicit
-callback contract.
+The three domain world libraries are separately installed distributions. The
+framework supplies their private installers with an already composed context;
+it does not construct their services, handlers, provider adapters, or family
+state itself.
 
-The top-level physical-AI family owns canonical provider protocols in
-`interfaces.py`, operation models in `models.py`, storage-backed views, and
-free evaluation/sweep handlers. The handlers compose world
-registry/lifecycle and storage ports and call world mutation, simulation, and
-durable query functions. They materialize the bounded terminal projection from
-which they build a typed report; the report is not a second state authority.
+`archetype-research` owns the multi-iteration rollout workflow and durable
+research ledger. Its private `archetype.research._extension` installer creates
+one `AutoResearchAdmissions` map per runtime graph, closes the free handler over
+that map plus the world/storage capabilities, and registers the exact
+`autoresearch` operation. Ledgered calls for the same experiment serialize;
+ledgerless calls bypass that map and use invocation-unique rollout names. The
+dispatcher awaits the handler inside its existing admission, so shutdown drains
+it without a second owner reservation or detached task. Scoring remains an
+explicit callback contract.
 
-The exact physical operations are trusted-only, direct, and non-durable.
-Before their first effect, a wiring-injected registrar transfers every unique
-provider identity to `RuntimeResources` and acquires an identity-ordered lease
-for the complete workflow. Concurrent operations sharing any provider
-serialize; operations with disjoint providers may proceed concurrently.
-Providers expose `async aclose()`; runtime shutdown deduplicates identities,
-retains ownership across operation cancellation, and retries failed closes
-without repeating successful ones. Raw-client processors are internal so
-generic processor installation cannot bypass that ownership boundary. Before
-releasing the lease, each handler retires its live writer; returned world/run
-coordinates remain durably readable but cannot execute provider work.
+`archetype-physical-ai` owns physical state, canonical provider protocols,
+hosted-episode values, provider recovery, and the whole-episode Activity
+workflow. Its private `archetype.physical_ai._extension` installer registers the
+single `run_hosted_episode` operation. On first use for a world it constructs
+and retains that world's provider-backed Activity binding through
+`RuntimeResources`, registers the required projector, and rejects a later
+attempt to change the world's provider namespace. Remote provider work never
+runs inside a retryable tick.
+
+`archetype-missions` owns mission state, sandboxes, coding-agent sessions,
+transcripts, and trajectory evidence. Its private
+`archetype.missions._extension` installer constructs transcript and trajectory
+services, registers every manifest-declared operation, and leaves each
+`MissionService` to be constructed inside its pre-reserved workflow owner when
+a Mission operation is admitted. These library internals do not move into the
+framework composition root.
 
 ## Commands family
 
@@ -176,18 +189,22 @@ See [Audit Log](audit-log.md).
 
 ## Trusted runtime entry
 
-`ArchetypeRuntime` and its handles construct exact family models and enter
-trusted `CommandDispatcher.apply` or `defer` methods. They do not own policy,
-queue state, or durable state.
+`ArchetypeRuntime` and its handles construct exact framework operation models
+and enter trusted `CommandDispatcher.apply` or `defer` methods. An installed
+world library's typed adapter constructs its own family models over those
+generic handles; the framework runtime does not import that library by package
+name. Neither surface owns policy, queue state, or durable state.
 
 No `ActorCtx` is invented for local scripting.
 
 ## Actor-aware API entry
 
-FastAPI authenticates `ActorCtx`, constructs exact family models, and enters
-`CommandDispatcher.apply_as` or `defer_as`. The commands-owned `Policy` and
-dispatcher perform RBAC, quota, admission, and bounded access evidence. The
-transport does not own those mechanisms or persistence.
+Base FastAPI routes authenticate `ActorCtx`, construct exact framework models,
+and enter `CommandDispatcher.apply_as` or `defer_as`. Optional library routes
+arrive through manifest-declared router factories and construct only that
+library's models over the same actor-aware boundary. The commands-owned
+`Policy` and dispatcher perform RBAC, quota, admission, and bounded access
+evidence. The transport does not own those mechanisms or persistence.
 
 The CLI remains an HTTP client.
 
@@ -202,6 +219,8 @@ The CLI remains an HTTP client.
 - physical storage family: `packages/archetype-ecs/src/archetype/storage/`
 - artifact values, pipeline, scanners, views, and handlers: `packages/archetype-ecs/src/archetype/artifacts/`
 - evaluation values, grading, pinned views, handlers, and receipt schema: `packages/archetype-ecs/src/archetype/evaluation/`
+- world-library manifest, discovery, and context contracts: `packages/archetype-ecs/src/archetype/world_libraries/`
+- missions state, workflows, evidence, and private adapter: `packages/archetype-missions/src/archetype/missions/`
 - research values, ledger, views, admission, and handler: `packages/archetype-research/src/archetype/research/`
 - physical-AI models, state, views, and handlers: `packages/archetype-physical-ai/src/archetype/physical_ai/`
 - command/access audit projection: `packages/archetype-ecs/src/archetype/commands/audit.py`

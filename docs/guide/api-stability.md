@@ -108,7 +108,7 @@ missing or stale entries.
 The file-artifact consolidation is the recorded `0.4.1` to `0.5` migration.
 Its removed bundle, claim, receipt, and reconciliation contracts must not ship
 in another `0.4.x` release. The replacement surface and direct call mapping are
-documented in [Artifacts and ingestion](artifacts.md#12-migration-from-the-04-artifact-surface).
+documented in [Artifacts and ingestion](artifacts.md#11-migration-from-the-04-artifact-surface).
 
 The authoritative boundary and dependency rules are in
 [Application Architecture](application-architecture.md).

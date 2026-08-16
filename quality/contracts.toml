@@ -373,6 +373,24 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "missions.activity.recovery"
+source = "docs/missions/recovery.md"
+section = "Mission Activity recovery"
+owner = "missions"
+risk = "high"
+pytest = [
+  "tests/missions/test_mission_author_activities.py",
+  "tests/missions/test_mission_author_world_integration.py",
+  "tests/missions/test_mission_critic_activities.py",
+  "tests/missions/test_mission_critic_world_integration.py",
+  "tests/missions/test_modal_activity_executors.py",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "world.lifecycle.idempotent"
 source = "docs/guide/world-lifecycle.md"
 section = "2. World lifecycle operations"
@@ -541,7 +559,7 @@ profiles = ["pr", "main", "release"]
 [[contract]]
 id = "artifacts.context.task_anchored"
 source = "docs/guide/artifacts.md"
-section = "11. Task-anchored artifact context"
+section = "10. Task-anchored artifact context"
 owner = "artifacts"
 risk = "medium"
 pytest = ["tests/artifacts/test_context_analysis.py"]
@@ -553,7 +571,7 @@ profiles = ["pr", "main", "release"]
 [[contract]]
 id = "evaluation.result.snapshot_pinned"
 source = "docs/guide/artifacts.md"
-section = "9. Evaluation results"
+section = "8. Evaluation results"
 owner = "evaluation"
 risk = "high"
 pytest = [
@@ -567,8 +585,8 @@ profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "missions.transcripts.redacted_ingestion"
-source = "docs/guide/artifacts.md"
-section = "8. Transcript ingestion"
+source = "docs/missions/transcripts.md"
+section = "Transcript ingestion contract"
 owner = "missions"
 risk = "high"
 pytest = [
@@ -582,8 +600,8 @@ profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "missions.transcripts.fail_closed"
-source = "docs/guide/artifacts.md"
-section = "8. Transcript ingestion"
+source = "docs/missions/transcripts.md"
+section = "Transcript ingestion contract"
 owner = "missions"
 risk = "high"
 pytest = ["tests/missions/test_transcript_ingestion.py"]
@@ -594,8 +612,8 @@ profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "missions.transcripts.occurrence_identity"
-source = "docs/guide/artifacts.md"
-section = "8. Transcript ingestion"
+source = "docs/missions/transcripts.md"
+section = "Transcript ingestion contract"
 owner = "missions"
 risk = "medium"
 pytest = ["tests/missions/test_transcript_ingestion.py"]
@@ -657,6 +675,21 @@ pytest = [
   "tests/physical_ai/test_hosted_modal_activity.py",
   "tests/integration/test_hosted_physical_runtime.py",
   "tests/world/test_required_projector_fanout.py",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "physical_ai.activity.recovery"
+source = "docs/guide/physical-ai.md"
+section = "Hosted-episode recovery"
+owner = "physical_ai"
+risk = "high"
+pytest = [
+  "tests/physical_ai/test_hosted_episode_activities.py",
+  "tests/physical_ai/test_hosted_modal_activity.py",
 ]
 static = []
 evals = []
@@ -894,7 +927,7 @@ profiles = ["pr", "main", "release"]
 [[contract]]
 id = "security.redaction.pre_durability"
 source = "docs/guide/artifacts.md"
-section = "10. Security boundary"
+section = "9. Security boundary"
 owner = "redaction"
 risk = "high"
 pytest = [

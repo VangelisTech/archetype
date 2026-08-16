@@ -16,10 +16,10 @@ advances.
 Archetype provides separate typed schemas for turns, commands, observations,
 actions, and rewards; it does not hide evidence in one JSON document. Small,
 already-safe evidence may be authored as Component rows. Raw coding-agent
-transcripts use the artifact boundary described below: only a sanitized file
-enters the common artifact index, while normalized narrative lives in a typed
-ingestion table. Transcript ingestion does not silently add entities to the
-mission graph.
+transcripts use the separate [transcript ingestion contract](../missions/transcripts.md):
+only a sanitized file enters the common artifact index, while normalized
+narrative lives in a typed ingestion table. Transcript ingestion does not
+silently add entities to the mission graph.
 
 ## Ownership
 
@@ -35,9 +35,10 @@ mission graph.
 | `MissionWorld.grade_trajectory()` | Recommended query-then-grade path. |
 | `MissionWorld.ingest_claude_transcript()` | Recommended source-to-artifact workflow. |
 
-The app service owns no evidence truth. Query storage remains authoritative
-for rows, evaluation remains authoritative for grader execution and receipts,
-and mission processors remain authoritative for task transitions.
+The family-owned query and transcript services own no evidence truth. Persisted
+storage remains authoritative for rows, evaluation remains authoritative for
+grader execution and receipts, and mission processors remain authoritative for
+task transitions.
 
 ## Persistent evidence rows
 
@@ -109,10 +110,10 @@ rewards = await evidence.query_trajectory(
 )
 ```
 
-The result is a lazy Daft DataFrame. The application service asks the query
-service for persisted rows, then applies selection as DataFrame expressions;
-it does not collect the frame. A filter against a Component that does not
-store `episode_id` fails with a precise error.
+The result is a lazy Daft DataFrame. `TrajectoryService` asks
+`archetype.world.query` for persisted rows, then applies selection as DataFrame
+expressions; it does not collect the frame. A filter against a Component that
+does not store `episode_id` fails with a precise error.
 
 ## Derive one trajectory
 
@@ -167,45 +168,10 @@ This keeps reusable evidence construction below the application layer while
 allowing application models that satisfy the structural contracts to pass
 through without translation objects.
 
-## Transcript boundary
+## Transcript ingestion
 
-Raw coding-agent transcripts, tool inputs and outputs, frames, and other large
-or secret-bearing content are artifacts. They require pre-durability redaction,
-content identity, and typed ingestion.
-
-```python
-from pathlib import Path
-
-from archetype.missions import MissionWorld
-from archetype.missions.trajectories import ClaudeTranscriptSource
-
-result = await MissionWorld(world).ingest_claude_transcript(
-    ClaudeTranscriptSource(
-        path=Path("session.jsonl"),
-        mission_id="mission-42",
-    )
-)
-```
-
-The missions family parses already-sanitized text into immutable `LoadedSession`
-and `Turn` values. It neither opens the source path nor exposes a method that
-turns the session into spawnable entities. The mission-owned application
-workflow performs the stable snapshot, quarantine/redaction, complete parse,
-sanitized artifact ingestion, and typed Iceberg append.
-
-One ingested Claude session is one bounded execution; its stable
-`episode_id` is the canonical `claude-session://` source URI
-(`ClaudeTranscriptSource.episode_id`).
-
-The common artifact index stores the sanitized file occurrence and its
-content-addressed object URI. The `coding_agent_transcript_rows` table stores
-one session row plus ordered turn rows linked by the same canonical
-`episode_id` and `source_artifact_id`. The submitted local path is absent
-from both durable tables. `TranscriptIngestionResult` returns the portable
-`ArtifactRef`, linkage, row count, and redaction outcome;
-`MissionWorld(world).transcript_rows()` reads the normalized rows for analysis.
-
-`TrajectoryTurn` remains the one class identity for deliberate safe authoring;
-transcript ingestion does not write it. See
-[Transcript ingestion](artifacts.md#8-transcript-ingestion)
-for ordering, redaction, occurrence identity, and failure semantics.
+Raw coding-agent transcripts use a separate Missions-owned workflow for
+pre-durability redaction, artifact publication, and normalized row storage.
+See the normative [Transcript ingestion contract](../missions/transcripts.md).
+Transcript ingestion remains distinct from deliberate `TrajectoryTurn`
+authoring and never silently adds entities to the mission graph.

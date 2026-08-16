@@ -19,12 +19,17 @@ Choose the owning package before adding a type or behavior:
 | Missions, Physical AI, or Research domain behavior | The owning distribution under `packages/archetype-<library>/src/archetype/<family>/` |
 | One library's trusted framework composition adapter | Its private `archetype.<family>._extension` module only |
 
-Top-level families may import `archetype.core`, themselves, third-party
-libraries, and only lower top-level family contracts declared in
+Ordinary modules in top-level families may import `archetype.core`, themselves,
+third-party libraries, and only lower top-level family contracts declared in
 `quality/architecture.toml` and the family fragments under
 `quality/architecture.d/`. They never import `app`, `runtime`,
 `runtime_resources`, `wiring`, `api`, or `cli`; application families may
-consume their contracts in the other direction. Use
+consume their contracts in the other direction. Exact world-library adapters
+classified by module and role in `quality/architecture.toml` are the only
+exception: `runtime.py` and optional `api.py` may consume only their
+corresponding framework host surface, while the private `_extension.py` may
+consume only bounded framework composition contracts. Adapter classification
+never permits one world library to import another. Use
 `components.py`, `processors.py`, `contracts.py`,
 `transitions.py`, `interfaces.py`, and `service.py` according to those semantic
 roles. Every first-party top-level package or module must be classified as

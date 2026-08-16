@@ -224,11 +224,13 @@ head." Contract tests:
 
 ### Admission, locks, and process lifetime
 
-Wiring constructs one process-shared `AutoResearchAdmissions` and closes the
-registered handler over it. With `record_to_ledger=True`, the handler holds the
-family key `autoresearch:{experiment_id}` across identity validation and all
-iterations. Calls for the same experiment therefore serialize in one process;
-unrelated experiment IDs remain independent. With
+The Research library's private `archetype.research._extension` installer
+constructs one `AutoResearchAdmissions` for each runtime graph and closes the
+registered handler over it during the framework's enclosing installation
+transaction. With `record_to_ledger=True`, the handler holds the family key
+`autoresearch:{experiment_id}` across identity validation and all iterations.
+Calls for the same experiment therefore serialize in one process; unrelated
+experiment IDs remain independent. With
 `record_to_ledger=False`, no shared experiment ledger exists, so the workflow
 bypasses that keyed admission and includes an invocation-unique token in every
 rollout name. Concurrent ledgerless calls cannot collide merely because they
