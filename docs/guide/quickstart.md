@@ -5,9 +5,10 @@
 Use `ArchetypeRuntime` for a Python script. It owns one process resource graph,
 then gives you a lazy handle for each world.
 
-This page gets you from install to a running world. It uses the same core
-primitives as the [Overview](../index.md): components, processors, world,
-query, update, store.
+This page gets you from install to a running world. It uses the framework's
+core primitives: components, processors, worlds, queries, updates, and
+storage. See the [Framework overview](../framework/index.md) for the package
+map.
 
 For a copy-and-run script, see
 [`examples/00_quickstart.py`](https://github.com/VangelisTech/archetype/blob/main/examples/00_quickstart.py).
@@ -15,9 +16,21 @@ For the fuller workflow, see [Building simulations](building-simulations.md).
 
 ## Install
 
-```bash
-pip install archetype-ecs
-```
+<!-- markdownlint-disable MD046 -->
+
+=== "uv"
+
+    ```bash
+    uv add archetype-ecs
+    ```
+
+=== "pip"
+
+    ```bash
+    pip install archetype-ecs
+    ```
+
+<!-- markdownlint-enable MD046 -->
 
 From a checkout, run `make sync-dev` instead.
 

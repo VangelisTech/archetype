@@ -1,252 +1,113 @@
-# Overview
+# Archetype
 
-## Purpose and Scope
+Archetype is a DataFrame-first ECS framework with separately installed world
+libraries for coding-agent missions, physical-AI episodes, and AutoResearch.
+Choose the smallest distribution that owns the behavior you need, then compose
+libraries through their typed adapters.
 
-Archetype is a dataframe-first Entity-Component-System (ECS) simulation
-engine. Components hold typed state. Processors transform matching entities as
-Daft DataFrames. A world runs ticks and appends each result to columnar
-storage, so history, forks, and audit come from the same write path as the
-simulation.
+## Choose a package
 
-This page is the map of the **core primitives**. Everything else in the
-project — `ArchetypeRuntime`, the HTTP service, command gate, agent missions,
-prefabs, graphs — sits on top of this model. Learn the core first; the product
-layers are easier once the boxes below are solid.
+| Package | Import | Use it for |
+|---|---|---|
+| [Framework](framework/index.md) | `archetype-ecs` / `archetype` | Worlds, ticks, storage, commands, Activities, artifacts, evaluation, API, and CLI hosting |
+| [Smol](smol/index.md) | `archetype-smol` / `archetype.smol` | A tiny synchronous, in-memory DataFrame ECS for education and experimentation |
+| [Missions](missions/index.md) | `archetype-missions` / `archetype.missions` | Coding-agent missions, sandboxes, sessions, transcripts, and trajectory evidence |
+| [Physical AI](physical-ai/index.md) | `archetype-physical-ai` / `archetype.physical_ai` | Physical state, policies, hosted episodes, and provider recovery |
+| [Research](research/index.md) | `archetype-research` / `archetype.research` | Generic AutoResearch candidates, evaluators, experiments, and ledger state |
 
-[Start the quickstart](guide/quickstart.md) ·
-[Choose world libraries](guide/world-libraries.md) ·
-[Browse examples](guide/examples.md)
-
-For installation and a first run, see [Quickstart](guide/quickstart.md).
-For the normative application contracts, see
-[Architecture Overview](guide/architecture.md).
-
-## Key Capabilities
-
-| Capability | What it means |
-|---|---|
-| **Columnar ECS** | Entities that share a component set live in one archetype table |
-| **Lazy DataFrames** | Processors are Daft transforms over populations, not per-entity loops |
-| **Append-only history** | Each tick writes new rows; past state is a query, not a replay hack |
-| **Read/write split** | `AsyncQueryManager` reads; `AsyncUpdateManager` appends; the world orchestrates |
-| **Pluggable storage** | `AsyncStore` sits under the same query/update facades (LanceDB by default) |
-
-## Where to go
-
-| Goal | Guide |
-|---|---|
-| Run your first world | [Quickstart](guide/quickstart.md) |
-| Build a simulation | [Building simulations](guide/building-simulations.md) |
-| Model state | [Components](guide/components.md) |
-| Write behavior | [Processors](guide/processors.md) |
-| Spawn, query, and fork | [Working with worlds](guide/working-with-worlds.md) |
-| Inspect past state | [History and forks](guide/history-and-forks.md) |
-| Install Missions, Physical AI, or Research | [World libraries](guide/world-libraries.md) |
-| Run a coding-agent software factory | [Agent Missions](guide/agent-missions.md) |
-| Upgrade to the clean 0.6 split | [Archetype 0.6](guide/release-0.6.md) |
-| Run a service over HTTP | [Service hosting](guide/app-overview.md) |
-| Find an exact method or endpoint | [Reference](reference/python-api.md) |
-
-## System Architecture
-
-### High-level component relationships
+The three world libraries depend on `archetype-ecs`, never on one another. An
+application may compose any combination through their public adapters. Smol is
+independent of that graph and does not load world libraries.
 
 ```mermaid
-graph TB
-    App["Application / ArchetypeRuntime"]
-    World["AsyncWorld"]
-    System["AsyncSystem"]
-    QM["AsyncQueryManager"]
-    UM["AsyncUpdateManager"]
-    Store["AsyncStore"]
-
-    subgraph "Storage backends"
-        Lance["LanceDB"]
-        Other["Other stores"]
-    end
-
-    subgraph "Data processing"
-        Daft["Daft DataFrames"]
-        Arrow["PyArrow"]
-    end
-
-    App --> World
-    World --> System
-    World --> QM
-    World --> UM
-    QM --> Store
-    UM --> Store
-    System --> QM
-
-    Store --> Daft
-    Daft --> Arrow
-    Daft --> Lance
-    Daft --> Other
+graph BT
+    App["Your application"] --> Smol["archetype-smol"]
+    App --> ECS["archetype-ecs"]
+    Missions["archetype-missions"] --> ECS["archetype-ecs"]
+    Physical["archetype-physical-ai"] --> ECS
+    Research["archetype-research"] --> ECS
+    App --> Missions
+    App --> Physical
+    App --> Research
 ```
 
-The world is the orchestrator. It does not touch tables directly: reads go
-through `AsyncQueryManager`, writes through `AsyncUpdateManager`, and behavior
-through `AsyncSystem` + processors.
+## Install
 
-## Core ECS Components
+<!-- markdownlint-disable MD046 -->
 
-### Code entity mapping
+=== "uv"
 
-```mermaid
-graph LR
-    subgraph "World management"
-        Runtime["ArchetypeRuntime"]
-        World["AsyncWorld"]
-    end
+    ```bash
+    # Framework only
+    uv add archetype-ecs
 
-    subgraph "ECS processing"
-        System["AsyncSystem"]
-        Processor["AsyncProcessor"]
-    end
+    # Small educational engine instead of the production framework
+    uv add archetype-smol
 
-    subgraph "Data management"
-        QM["AsyncQueryManager"]
-        UM["AsyncUpdateManager"]
-        Store["AsyncStore"]
-    end
+    # One world library; it installs a compatible framework
+    uv add archetype-missions
+    uv add archetype-physical-ai
+    uv add archetype-research
 
-    subgraph "Base types"
-        Component["Component"]
-        Archetype["Archetype / signature"]
-    end
+    # Complete world-library stack
+    uv add "archetype-ecs[all]"
+    ```
 
-    Runtime --> World
-    World --> System
-    World --> QM
-    World --> UM
-    QM --> Store
-    UM --> Store
-    System --> Processor
-    Processor --> Component
-    Component --> Archetype
-    Store --> Archetype
+=== "pip"
+
+    ```bash
+    # Framework only
+    pip install archetype-ecs
+
+    # Small educational engine instead of the production framework
+    pip install archetype-smol
+
+    # One world library; it installs a compatible framework
+    pip install archetype-missions
+    pip install archetype-physical-ai
+    pip install archetype-research
+
+    # Complete world-library stack
+    pip install "archetype-ecs[all]"
+    ```
+
+<!-- markdownlint-enable MD046 -->
+
+For selective extras, trust boundaries, and composition behavior, see
+[World libraries](guide/world-libraries.md).
+
+## Start here
+
+- New to Archetype: follow the [Framework quickstart](guide/quickstart.md).
+- Choosing distributions: read [World libraries](guide/world-libraries.md).
+- Upgrading across the clean break: read [Archetype 0.6](guide/release-0.6.md).
+- Looking for runnable code: browse [Examples](guide/examples.md).
+- Contributing or reviewing contracts: enter the [Maintainers](maintainers/index.md)
+  section.
+
+## One runtime, explicit domain adapters
+
+The framework owns process and world lifetime:
+
+```python
+import asyncio
+
+from archetype import ArchetypeRuntime
+from archetype.research import Research
+
+
+async def main() -> None:
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("experiment")
+        research = Research(world)
+
+
+asyncio.run(main())
 ```
 
-| Primitive | Role |
-|---|---|
-| `Component` | Typed fields on an entity (`Position`, `Velocity`, …) |
-| `AsyncProcessor` | Declares required components; transforms their DataFrame |
-| `AsyncSystem` | Runs eligible processors in priority order for an archetype |
-| `AsyncWorld` | Spawns entities, steps/runs ticks, owns the live simulation |
-| `AsyncQueryManager` | Read facade over the store |
-| `AsyncUpdateManager` | Append facade over the store |
-| `AsyncStore` | Physical tables keyed by archetype signature |
-| `Archetype` | The component-set → table schema grouping |
+Installed libraries add typed adapters without adding domain methods to the
+generic runtime or world.
 
-`ArchetypeRuntime` is the usual script entry point: it owns process lifetime
-and returns lazy world handles. The boxes above are still what a tick
-actually moves through.
-
-## Processing Pipeline
-
-### One simulation step
-
-```mermaid
-sequenceDiagram
-    participant App as Application
-    participant World as AsyncWorld
-    participant System as AsyncSystem
-    participant QM as AsyncQueryManager
-    participant UM as AsyncUpdateManager
-    participant Store as AsyncStore
-
-    App->>World: step() / run(steps=N)
-    World->>System: execute per active archetype
-    loop For each eligible processor
-        System->>QM: query required components
-        QM->>Store: load archetype DataFrame(s)
-        Store-->>QM: Dict[signature, DataFrame]
-        System->>System: processor.process(df, ...)
-    end
-    System-->>World: transformed archetype data
-    World->>UM: update(archetype data)
-    UM->>Store: append rows for this tick
-    World->>World: advance tick
-```
-
-Teaching model: query → transform → append → advance. The async world fans
-this out per active archetype table; the read/write split stays the same.
-
-## Entity-Component-System Pattern
-
-```mermaid
-graph LR
-    subgraph "Components"
-        Position["Position<br/>x: float"]
-        Velocity["Velocity<br/>dx: float"]
-    end
-
-    subgraph "Entities"
-        E1["Entity 1<br/>Position + Velocity"]
-        E2["Entity 2<br/>Position + Velocity"]
-    end
-
-    subgraph "Processors"
-        Move["Move<br/>components = (Position, Velocity)"]
-    end
-
-    subgraph "Processing"
-        DF["Daft DataFrame<br/>one archetype table"]
-        Transform["df.with_columns(...)<br/>position__x += velocity__dx"]
-    end
-
-    Position --> E1
-    Velocity --> E1
-    Position --> E2
-    Velocity --> E2
-    E1 --> DF
-    E2 --> DF
-    Move --> Transform
-    DF --> Transform
-```
-
-Entities are IDs. Components are data. Processors are bulk transforms over
-every entity that has the declared component set.
-
-## Archetypes
-
-Entities that share the same component types share an **archetype** — and
-therefore one table schema.
-
-```mermaid
-flowchart LR
-    E["Entity with components"] --> Sig["Signature<br/>(Position, Velocity)"]
-    Sig --> Table["Archetype table<br/>one schema, many rows"]
-    Table --> Tick["Rows keyed by<br/>world / run / tick"]
-```
-
-Different component sets → different signatures → different tables. That is
-why processors can assume their columns exist: the system only runs a
-processor when its components are a subset of the archetype signature.
-
-## Above the core
-
-The rest of Archetype layers product semantics on this engine:
-
-```mermaid
-graph TB
-    Product["Runtime, REST, CLI, missions, prefabs, graphs"]
-    Core["AsyncWorld · AsyncSystem · AsyncProcessor · AsyncQueryManager · AsyncUpdateManager · AsyncStore"]
-    Data["Daft DataFrames · columnar tables"]
-
-    Product --> Core
-    Core --> Data
-```
-
-When docs talk about command gates, forks, or agent missions, they are
-describing what sits on the top box — not a different storage model.
-
-## Next Steps
-
-- [Quickstart](guide/quickstart.md) — install and run your first world
-- [Core architecture](guide/core-architecture.md) — drill into each engine box
-- [Building simulations](guide/building-simulations.md) — components, processors, worlds in practice
-- [Application layer](guide/app-overview.md) — runtime, gateway, and product families
-- [Agent Missions](guide/agent-missions.md) — software-factory workflow on the same core
-- [Examples](guide/examples.md) — copy-and-run scripts
-- [History and forks](guide/history-and-forks.md) — query past ticks and branch a run
+Installing a world library authorizes its trusted Python extension code to run
+during process composition. The framework remains useful with no world library
+installed.
