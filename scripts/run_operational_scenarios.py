@@ -29,6 +29,30 @@ from typing import Any, NoReturn, cast
 from packaging.utils import canonicalize_name, parse_wheel_filename
 
 if __package__:
+    from scripts.process_lease_guardian import (
+        ACK_DIR_ENV as PROCESS_LEASE_ACK_DIR_ENV,
+    )
+    from scripts.process_lease_guardian import (
+        CLOSED_ENV as PROCESS_LEASE_CLOSED_ENV,
+    )
+    from scripts.process_lease_guardian import (
+        LEASE_ENV as PROCESS_LEASE_ENV,
+    )
+    from scripts.process_lease_guardian import (
+        READY_ENV as PROCESS_LEASE_READY_ENV,
+    )
+    from scripts.process_lease_guardian import (
+        RESULT_SCHEMA as PROCESS_LEASE_RESULT_SCHEMA,
+    )
+    from scripts.process_lease_guardian import (
+        TARGET_STATUS_DIR_ENV as PROCESS_TARGET_STATUS_DIR_ENV,
+    )
+    from scripts.process_lease_guardian import (
+        WRAPPER_ENV as PROCESS_LEASE_WRAPPER_ENV,
+    )
+    from scripts.process_lease_guardian import (
+        guard as reap_process_leases,
+    )
     from scripts.run_example_receipt import CAPTURED_RECEIPT_ENV, RECEIPT_PREFIX
     from scripts.validate_operational_scenarios import (
         REGISTRY,
@@ -40,6 +64,30 @@ else:
     # ``python scripts/run_operational_scenarios.py`` places only ``scripts/``
     # on sys.path. Keep the CLI executable without adding the repository root
     # (and therefore its source tree) to installed-wheel scenario imports.
+    from process_lease_guardian import (
+        ACK_DIR_ENV as PROCESS_LEASE_ACK_DIR_ENV,
+    )
+    from process_lease_guardian import (
+        CLOSED_ENV as PROCESS_LEASE_CLOSED_ENV,
+    )
+    from process_lease_guardian import (
+        LEASE_ENV as PROCESS_LEASE_ENV,
+    )
+    from process_lease_guardian import (
+        READY_ENV as PROCESS_LEASE_READY_ENV,
+    )
+    from process_lease_guardian import (
+        RESULT_SCHEMA as PROCESS_LEASE_RESULT_SCHEMA,
+    )
+    from process_lease_guardian import (
+        TARGET_STATUS_DIR_ENV as PROCESS_TARGET_STATUS_DIR_ENV,
+    )
+    from process_lease_guardian import (
+        WRAPPER_ENV as PROCESS_LEASE_WRAPPER_ENV,
+    )
+    from process_lease_guardian import (
+        guard as reap_process_leases,
+    )
     from run_example_receipt import CAPTURED_RECEIPT_ENV, RECEIPT_PREFIX
     from validate_operational_scenarios import (
         REGISTRY,
@@ -61,6 +109,9 @@ WORKSPACE_DISTRIBUTIONS: tuple[tuple[str, str, str], ...] = (
 )
 _PROCESS_TERM_GRACE_SECONDS = 2.0
 _PROCESS_KILL_GRACE_SECONDS = 2.0
+_PROCESS_LEASE_GUARDIAN_ENV = "ARCHETYPE_OPERATIONAL_PROCESS_LEASE_GUARDIAN"
+_PROCESS_LEASE_GUARDIAN_TIMEOUT_SECONDS = 20.0
+_PROCESS_LEASE_READY_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -327,6 +378,8 @@ def _scenario_environment(
         env["ARCHETYPE_APPLE_CONTAINER_SANDBOX_PARITY"] = "1"
     if row.get("id") == "dogfood.agent_mission.modal_live":
         env["ARCHETYPE_MODAL_AGENT_MISSION_LIVE"] = "1"
+    if row.get("id") == "example.14_biome_agent":
+        env[_PROCESS_LEASE_GUARDIAN_ENV] = "1"
     return env
 
 
@@ -389,6 +442,41 @@ def _stop_timed_out_process(process: subprocess.Popen[bytes]) -> tuple[int | Non
             returncode = process.poll()
     group_closed = _terminate_process_group(process.pid)
     return returncode, group_closed
+
+
+def _wait_for_guardian_ready(
+    guardian: subprocess.Popen[bytes],
+    ready_file: Path,
+) -> bool:
+    deadline = time.monotonic() + _PROCESS_LEASE_READY_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if ready_file.is_file():
+            return guardian.poll() is None
+        if guardian.poll() is not None:
+            return False
+        time.sleep(0.02)
+    return ready_file.is_file() and guardian.poll() is None
+
+
+def _wait_for_guarded_process(
+    process: subprocess.Popen[bytes],
+    *,
+    timeout_seconds: int,
+    guardian: subprocess.Popen[bytes] | None,
+) -> int:
+    """Wait while proving an enabled nested-process guardian remains live."""
+
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        if guardian is not None and guardian.poll() is not None:
+            raise RuntimeError("process lease guardian exited while the scenario was running")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout_seconds)
+        try:
+            return process.wait(timeout=min(remaining, 0.25))
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def _process_group_snapshot(process_group: int) -> str:
@@ -491,37 +579,160 @@ def _run_process(
 ) -> dict[str, object]:
     started = time.perf_counter()
     with tempfile.TemporaryDirectory(prefix="archetype-operational-capture-") as capture:
-        stdout_path = Path(capture) / "stdout"
-        stderr_path = Path(capture) / "stderr"
+        capture_root = Path(capture)
+        stdout_path = capture_root / "stdout"
+        stderr_path = capture_root / "stderr"
+        lease_file = capture_root / "process-leases.jsonl"
+        lease_ack_dir = capture_root / "process-lease-acks"
+        target_status_dir = capture_root / "process-target-status"
+        lease_ready_file = capture_root / "process-lease-ready.json"
+        lease_closed_file = capture_root / "process-lease-closed.json"
+        lease_result_file = capture_root / "process-lease-cleanup.json"
         launch_error: str | None = None
         process: subprocess.Popen[bytes] | None = None
+        guardian: subprocess.Popen[bytes] | None = None
+        process_lease_cleanup: dict[str, object] | None = None
         timed_out = False
         process_group_leaked = False
+        process_env = env.copy()
+        lease_guardian_required = process_env.get(_PROCESS_LEASE_GUARDIAN_ENV) == "1"
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
-            try:
-                process = subprocess.Popen(
-                    command,
-                    cwd=cwd,
-                    env=env,
-                    stdout=stdout,
-                    stderr=stderr,
-                    start_new_session=True,
-                )
-            except OSError as exc:
-                returncode = None
-                launch_error = f"{type(exc).__name__}: {exc}"
-            else:
+            if lease_guardian_required:
                 try:
-                    returncode = process.wait(timeout=timeout_seconds)
-                except subprocess.TimeoutExpired:
-                    timed_out = True
-                    # Photograph the group BEFORE killing it: a scenario that
-                    # hangs silently for its whole budget (#678's 600s R2
-                    # stall) otherwise leaves a receipt naming nothing. The
-                    # snapshot names the processes that were still running.
-                    timeout_snapshot = _process_group_snapshot(process.pid)
-                    returncode, group_closed = _stop_timed_out_process(process)
-                    process_group_leaked = not group_closed
+                    guardian = subprocess.Popen(
+                        [
+                            sys.executable,
+                            str(Path(__file__).with_name("process_lease_guardian.py").resolve()),
+                            "serve",
+                            "--lease-file",
+                            str(lease_file),
+                            "--ack-dir",
+                            str(lease_ack_dir),
+                            "--ready-file",
+                            str(lease_ready_file),
+                            "--closed-file",
+                            str(lease_closed_file),
+                            "--result-file",
+                            str(lease_result_file),
+                        ],
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.DEVNULL,
+                        stderr=stderr,
+                        start_new_session=True,
+                    )
+                except OSError as exc:
+                    launch_error = f"process lease guardian failed to launch: {exc}"
+                else:
+                    if not _wait_for_guardian_ready(guardian, lease_ready_file):
+                        launch_error = "process lease guardian did not become ready"
+                    else:
+                        process_env[PROCESS_LEASE_ENV] = str(lease_file)
+                        process_env[PROCESS_LEASE_ACK_DIR_ENV] = str(lease_ack_dir)
+                        process_env[PROCESS_LEASE_READY_ENV] = str(lease_ready_file)
+                        process_env[PROCESS_LEASE_CLOSED_ENV] = str(lease_closed_file)
+                        process_env[PROCESS_TARGET_STATUS_DIR_ENV] = str(target_status_dir)
+                        process_env[PROCESS_LEASE_WRAPPER_ENV] = str(
+                            Path(__file__).with_name("process_lease_guardian.py").resolve()
+                        )
+
+            returncode: int | None = None
+            try:
+                if launch_error is None:
+                    try:
+                        process = subprocess.Popen(
+                            command,
+                            cwd=cwd,
+                            env=process_env,
+                            stdout=stdout,
+                            stderr=stderr,
+                            start_new_session=True,
+                        )
+                    except OSError as exc:
+                        launch_error = f"{type(exc).__name__}: {exc}"
+                    else:
+                        try:
+                            returncode = _wait_for_guarded_process(
+                                process,
+                                timeout_seconds=timeout_seconds,
+                                guardian=guardian,
+                            )
+                        except subprocess.TimeoutExpired:
+                            timed_out = True
+                            # Photograph the group BEFORE killing it: a scenario that
+                            # hangs silently for its whole budget (#678's 600s R2
+                            # stall) otherwise leaves a receipt naming nothing. The
+                            # snapshot names the processes that were still running.
+                            timeout_snapshot = _process_group_snapshot(process.pid)
+                            returncode, group_closed = _stop_timed_out_process(process)
+                            process_group_leaked = not group_closed
+                        except RuntimeError as exc:
+                            launch_error = str(exc)
+                            returncode, group_closed = _stop_timed_out_process(process)
+                            process_group_leaked = not group_closed
+            except BaseException:
+                if process is not None and process.poll() is None:
+                    _stop_timed_out_process(process)
+                raise
+            finally:
+                if guardian is not None:
+                    assert guardian.stdin is not None
+                    try:
+                        guardian.stdin.close()
+                    except BrokenPipeError:
+                        pass
+                    try:
+                        guardian_returncode = guardian.wait(
+                            timeout=_PROCESS_LEASE_GUARDIAN_TIMEOUT_SECONDS
+                        )
+                    except subprocess.TimeoutExpired:
+                        _stop_timed_out_process(guardian)
+                        guardian_returncode = guardian.poll()
+                        launch_error = "process lease guardian timed out during cleanup"
+                        process_group_leaked = True
+                    if not lease_result_file.is_file():
+                        try:
+                            fallback_closed = reap_process_leases(lease_file, lease_result_file)
+                        except Exception as exc:
+                            launch_error = (
+                                "process lease fallback cleanup failed: "
+                                f"{type(exc).__name__}: {exc}"
+                            )
+                            process_group_leaked = True
+                        else:
+                            guardian_returncode = 0 if fallback_closed else 1
+                    if lease_result_file.is_file():
+                        try:
+                            process_lease_cleanup = _strict_json_object(
+                                lease_result_file.read_text(encoding="utf-8"),
+                                label="process lease cleanup result",
+                            )
+                        except (OSError, TypeError, ValueError) as exc:
+                            launch_error = (
+                                f"invalid process lease cleanup result: {type(exc).__name__}: {exc}"
+                            )
+                            process_group_leaked = True
+                    else:
+                        launch_error = "process lease guardian emitted no cleanup result"
+                        process_group_leaked = True
+                    if process_lease_cleanup is not None:
+                        lease_status = process_lease_cleanup.get("status")
+                        lease_schema = process_lease_cleanup.get("schema")
+                        active_count = process_lease_cleanup.get("active_lease_count")
+                        if (
+                            guardian_returncode != 0
+                            or lease_schema != PROCESS_LEASE_RESULT_SCHEMA
+                            or lease_status != "closed"
+                            or not isinstance(active_count, int)
+                            or isinstance(active_count, bool)
+                            or active_count < 0
+                        ):
+                            launch_error = "process lease guardian could not prove cleanup"
+                            process_group_leaked = True
+                        elif active_count and not timed_out:
+                            # A normal process exit must release its own leases.
+                            # The guardian recovered the host, but the scenario
+                            # still violated its cleanup contract.
+                            process_group_leaked = True
 
         stdout_raw = stdout_path.read_bytes()
         stderr_raw = stderr_path.read_bytes()
@@ -547,8 +758,8 @@ def _run_process(
                     launch_error = "process group survived SIGTERM and SIGKILL"
 
     failed = timed_out or launch_error is not None or returncode != 0
-    secret_values = _secret_environment_values(env)
-    return {
+    secret_values = _secret_environment_values(process_env)
+    result: dict[str, object] = {
         "command": command,
         "returncode": returncode,
         "timed_out": timed_out,
@@ -571,6 +782,9 @@ def _run_process(
         "stdout_text": stdout_raw.decode("utf-8", errors="replace"),
         "process_group_leaked": process_group_leaked,
     }
+    if process_lease_cleanup is not None:
+        result["process_leases"] = process_lease_cleanup
+    return result
 
 
 def _base_environment(

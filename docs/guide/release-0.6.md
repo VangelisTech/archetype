@@ -114,7 +114,10 @@ Mac used for Apple Container evidence. It fail-closes on the Darwin, build-tool,
 and explicit-live prerequisites; builds and launches the checked-in Biome and
 Flecs revisions in an active WindowServer/Metal session; waits for REST
 readiness; proves the native mission plus durable Archetype evidence; and
-closes the process and port. Biome runs before Apple Container under the single
+closes the process and port. Before the native executable can start, a
+runner-owned guardian acknowledges its isolated process group; parent EOF,
+timeout, or cancellation then triggers independent TERM/KILL and loopback-port
+closure proof. Biome runs before Apple Container under the single
 `release-apple-macos` approval. Its
 `operational-release-biome-results.json` receipt is an explicit input to the
 exact-wheel evidence gate, so TestPyPI approval cannot follow a missing,
