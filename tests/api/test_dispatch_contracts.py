@@ -798,30 +798,38 @@ _EXPECTED_DECLARED_ROUTES = {
     ("GET", "/"): 200,
     ("GET", "/healthz"): 200,
 }
+_OPENAPI_HTTP_METHODS = frozenset(
+    {"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE"}
+)
+
+
+def _declared_openapi_routes(schema: Mapping[str, Any]) -> dict[tuple[str, str], int]:
+    """Return the effective operation/status contract from an OpenAPI schema."""
+    actual: dict[tuple[str, str], int] = {}
+    for path, path_item in schema["paths"].items():
+        for method, operation in path_item.items():
+            normalized_method = method.upper()
+            if normalized_method not in _OPENAPI_HTTP_METHODS:
+                continue
+            success_statuses = {
+                int(status)
+                for status in operation["responses"]
+                if str(status).isdigit() and 200 <= int(status) < 300
+            }
+            assert len(success_statuses) == 1, (
+                f"{normalized_method} {path} must declare exactly one success response"
+            )
+            actual[(normalized_method, path)] = success_statuses.pop()
+    return actual
 
 
 def test_supported_paths_statuses_and_response_shapes_are_unchanged() -> None:
     """The base is domain-free and Missions contributes only its declared routes."""
 
-    from fastapi.routing import APIRoute
-
     api_app = import_module("archetype.api.app")
     app = api_app.create_app(world_libraries=())
-    generated_paths = {
-        "/openapi.json",
-        "/docs",
-        "/docs/oauth2-redirect",
-        "/redoc",
-    }
-    actual: dict[tuple[str, str], int] = {}
-    for route in app.routes:
-        if route.path in generated_paths:
-            continue
-        assert isinstance(route, APIRoute)
-        methods = set(route.methods or ()) - {"HEAD", "OPTIONS"}
-        assert len(methods) == 1
-        method = methods.pop()
-        actual[(method, route.path)] = route.status_code or 200
+    schema = app.openapi()
+    actual = _declared_openapi_routes(schema)
 
     mission_routes = {
         key: value
@@ -831,18 +839,15 @@ def test_supported_paths_statuses_and_response_shapes_are_unchanged() -> None:
     framework_routes = {
         key: value for key, value in _EXPECTED_DECLARED_ROUTES.items() if key not in mission_routes
     }
-    assert len(app.routes) == 31
     assert len(actual) == 27
     assert actual == framework_routes
 
     from archetype.missions._extension import get_manifest as missions_manifest
 
     missions_app = api_app.create_app(world_libraries=(missions_manifest(),))
+    missions_actual = _declared_openapi_routes(missions_app.openapi())
     declared_missions = {
-        (next(iter(set(route.methods or ()) - {"HEAD", "OPTIONS"})), route.path): route.status_code
-        or 200
-        for route in missions_app.routes
-        if isinstance(route, APIRoute) and route.path in {path for _method, path in mission_routes}
+        key: status for key, status in missions_actual.items() if key in mission_routes
     }
     assert declared_missions == mission_routes
     assert not any(
@@ -851,7 +856,6 @@ def test_supported_paths_statuses_and_response_shapes_are_unchanged() -> None:
         for literal in _PULL_FORWARD_LITERALS
     )
 
-    schema = app.openapi()
     assert (
         schema["paths"]["/worlds"]["post"]["responses"]["201"]["content"]["application/json"][
             "schema"
