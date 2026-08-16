@@ -1,6 +1,6 @@
 [project]
 name = "archetype-smol"
-version = "0.6.0"
+version = "0.6.1"
 description = "A tiny synchronous, in-memory DataFrame ECS for learning Archetype's core model."
 readme = "README.md"
 requires-python = ">=3.12"

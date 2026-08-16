@@ -623,6 +623,7 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
         assert "--min-tier 0 --max-tier 6" in make_target.group("body")
     assert "tests/infrastructure/test_r2_idempotency.py" in external
     assert "scripts/verify_release_evidence.py" in gate
+    assert "uvx --with packaging==26.1 python" in gate
     assert "operational-release-biome-results.json" in gate
     assert "operational-release-apple-results.json" in gate
     assert "operational-release-modal-results.json" in gate
@@ -790,7 +791,7 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
         "softprops/action-gh-release@"
     )
     assert 'version: "latest"' not in workflow
-    assert workflow.count('version: "0.9.28"') == 8
+    assert workflow.count('version: "0.9.28"') == 9
     assert workflow.count("persist-credentials: false") == 12
 
 
