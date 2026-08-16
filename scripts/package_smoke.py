@@ -216,6 +216,7 @@ def _rebuild_sdists(
 def _run_matrix(
     *,
     matrix: str,
+    version: str,
     dist_dir: Path,
     wheels: dict[str, Path],
     uv: str,
@@ -286,15 +287,16 @@ from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
 
 expected = {expected_libraries!r}
 imports = {_LIBRARY_IMPORTS!r}
-assert archetype.__version__ == "0.6.0"
-assert version("archetype-ecs") == "0.6.0"
+release_version = {version!r}
+assert archetype.__version__ == release_version
+assert version("archetype-ecs") == release_version
 package_root = Path(archetype.__file__).resolve()
 assert "site-packages" in package_root.parts, package_root
 assert not any("/packages/" in value and "/src" in value for value in sys.path), sys.path
 for name, module in imports.items():
     assert (importlib.util.find_spec(module) is not None) is (name in expected), (name, expected)
     if name in expected:
-        assert version("archetype-" + name) == "0.6.0"
+        assert version("archetype-" + name) == release_version
 assert importlib.util.find_spec("archetype.episodes") is None
 resources = build_runtime_resources(RuntimeBootstrapConfig.from_env())
 try:
@@ -337,6 +339,7 @@ def smoke(dist_dir: Path) -> list[dict[str, Any]]:
     }
     if len(set(versions.values())) != 1:
         raise RuntimeError(f"distribution wheel versions do not converge: {versions}")
+    version = next(iter(versions.values()))
     uv = shutil.which("uv")
     if uv is None:
         raise RuntimeError("package smoke requires uv")
@@ -345,6 +348,7 @@ def smoke(dist_dir: Path) -> list[dict[str, Any]]:
         results = [
             _run_matrix(
                 matrix=matrix,
+                version=version,
                 dist_dir=dist_dir,
                 wheels=wheels,
                 uv=uv,
@@ -363,6 +367,7 @@ def smoke(dist_dir: Path) -> list[dict[str, Any]]:
         sdist_probe_root.mkdir()
         rebuilt_result = _run_matrix(
             matrix="all",
+            version=version,
             dist_dir=next(iter(rebuilt_wheels.values())).parent,
             wheels=rebuilt_wheels,
             uv=uv,

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing immutable release tag (for example, v0.5.0)"
+        description: "Existing immutable release tag (for example, v0.6.0)"
         required: true
         type: string
 
@@ -53,12 +53,13 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
         with:
-          version: "latest"
+          version: "0.9.28"
       - run: uv sync --all-packages --all-extras --group dev --group docs
       - name: Verify tag and package version agree
         run: |
@@ -70,6 +71,26 @@ jobs:
         with:
           name: dist
           path: dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-archetype-ecs
+          path: dist/archetype_ecs-*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-archetype-missions
+          path: dist/archetype_missions-*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-archetype-physical-ai
+          path: dist/archetype_physical_ai-*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-archetype-research
+          path: dist/archetype_research-*
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -133,12 +154,14 @@ jobs:
       CODING_AGENT_GITHUB_SECRET: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_GITHUB_SECRET || '' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
         with:
-          version: "latest"
+          version: "0.9.28"
       - run: uv sync --all-packages --all-extras --group dev
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -200,9 +223,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
         with:
-          version: "latest"
+          version: "0.9.28"
       - name: Provision Python 3.12 with uv
         run: |
           uv sync --python "3.12" --all-packages --all-extras --group dev
@@ -250,12 +275,14 @@ jobs:
       UV_PYTHON: "3.13"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
         with:
-          version: "latest"
+          version: "0.9.28"
       - run: uv sync --python "3.13" --all-packages --all-extras --group dev
       - name: Verify Python 3.13 interpreter
         run: >-
@@ -272,6 +299,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
@@ -302,8 +331,204 @@ jobs:
           path: release-evidence-summary.json
           if-no-files-found: error
 
-  publish:
+  testpypi-preflight:
+    name: TestPyPI exact-byte preflight
     needs: [release-evidence-gate, python-compatibility]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Reauthorize the immutable release ref
+        run: >-
+          python scripts/verify_release_ref.py
+          --tag "$GITHUB_REF_NAME"
+          --expected-commit "$GITHUB_SHA"
+          --repository "$GITHUB_REPOSITORY"
+          --actor "$GITHUB_ACTOR"
+          --triggering-actor "$GITHUB_TRIGGERING_ACTOR"
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+        with:
+          version: "0.9.28"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-evidence
+          path: evidence/
+      - name: Reject conflicting TestPyPI files
+        run: >-
+          uvx --from pypi-attestations==0.0.30 --with packaging==26.1 python
+          scripts/verify_release_index.py
+          preflight
+          --manifest evidence/release-artifact.json
+          --expected-commit "$GITHUB_SHA"
+          --api-template
+          'https://test.pypi.org/pypi/{distribution}/{version}/json'
+          --integrity-template
+          'https://test.pypi.org/integrity/{distribution}/{version}/{filename}/provenance'
+          --publisher-repository VangelisTech/archetype
+          --publisher-environment release-testpypi
+          --attestation-repository https://github.com/VangelisTech/archetype
+          --registry-artifact-host test-files.pythonhosted.org
+
+  publish-testpypi:
+    name: Publish attested artifacts to TestPyPI
+    needs: testpypi-preflight
+    if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
+    runs-on: ubuntu-latest
+    environment: release-testpypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist-archetype-ecs
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+          attestations: true
+
+  publish-testpypi-libraries:
+    name: Publish world libraries to TestPyPI
+    needs: testpypi-preflight
+    if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Dispatch exact TestPyPI publisher runs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/dispatch_release_publishers.py dispatch
+          --parent-run-id "$GITHUB_RUN_ID"
+          --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
+          --tag "$GITHUB_REF_NAME"
+          --expected-commit "$GITHUB_SHA"
+          --registry testpypi
+          --out publisher-dispatch-testpypi.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: publisher-dispatch-testpypi-${{ github.run_attempt }}
+          path: publisher-dispatch-testpypi.json
+          if-no-files-found: error
+      - name: Await only the allowlisted TestPyPI publisher runs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/dispatch_release_publishers.py await
+          --parent-run-id "$GITHUB_RUN_ID"
+          --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
+          --tag "$GITHUB_REF_NAME"
+          --expected-commit "$GITHUB_SHA"
+          --registry testpypi
+          --allowlist publisher-dispatch-testpypi.json
+          --out publisher-dispatch-testpypi.json
+
+  testpypi-smoke:
+    name: TestPyPI installed distribution matrix
+    needs: [publish-testpypi, publish-testpypi-libraries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+        with:
+          version: "0.9.28"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-evidence
+          path: evidence/
+      - name: Verify TestPyPI serves all eight attested files
+        run: >-
+          uvx --from pypi-attestations==0.0.30 --with packaging==26.1 python
+          scripts/verify_release_index.py
+          complete
+          --manifest evidence/release-artifact.json
+          --expected-commit "$GITHUB_SHA"
+          --api-template
+          'https://test.pypi.org/pypi/{distribution}/{version}/json'
+          --integrity-template
+          'https://test.pypi.org/integrity/{distribution}/{version}/{filename}/provenance'
+          --publisher-repository VangelisTech/archetype
+          --publisher-environment release-testpypi
+          --attestation-repository https://github.com/VangelisTech/archetype
+          --registry-artifact-host test-files.pythonhosted.org
+          --out testpypi-index-evidence.json
+          --attempts 12
+          --interval-seconds 5
+      - name: Install base, selective, and full stacks from TestPyPI
+        run: >-
+          uv run --no-project --with packaging==26.1 python scripts/registry_smoke.py
+          --manifest evidence/release-artifact.json
+          --index-url https://test.pypi.org/simple
+          --extra-index-url https://pypi.org/simple
+          --out testpypi-install-evidence.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: testpypi-index-evidence
+          path: |
+            testpypi-index-evidence.json
+            testpypi-install-evidence.json
+          if-no-files-found: error
+
+  pypi-preflight:
+    name: PyPI exact-byte preflight
+    needs: testpypi-smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Reauthorize the immutable release ref
+        run: >-
+          python scripts/verify_release_ref.py
+          --tag "$GITHUB_REF_NAME"
+          --expected-commit "$GITHUB_SHA"
+          --repository "$GITHUB_REPOSITORY"
+          --actor "$GITHUB_ACTOR"
+          --triggering-actor "$GITHUB_TRIGGERING_ACTOR"
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+        with:
+          version: "0.9.28"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-evidence
+          path: evidence/
+      - name: Reject conflicting PyPI files
+        run: >-
+          uvx --from pypi-attestations==0.0.30 --with packaging==26.1 python
+          scripts/verify_release_index.py
+          preflight
+          --manifest evidence/release-artifact.json
+          --expected-commit "$GITHUB_SHA"
+          --integrity-template
+          'https://pypi.org/integrity/{distribution}/{version}/{filename}/provenance'
+          --publisher-repository VangelisTech/archetype
+          --publisher-environment release-pypi
+          --attestation-repository https://github.com/VangelisTech/archetype
+          --registry-artifact-host files.pythonhosted.org
+
+  publish:
+    needs: pypi-preflight
+    if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
     runs-on: ubuntu-latest
     environment: release-pypi
     permissions:
@@ -312,17 +537,114 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: dist
+          name: dist-archetype-ecs
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.13.0
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          skip-existing: true
+          attestations: true
+
+  publish-libraries:
+    name: Publish world libraries to PyPI
+    needs: pypi-preflight
+    if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Dispatch exact PyPI publisher runs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/dispatch_release_publishers.py dispatch
+          --parent-run-id "$GITHUB_RUN_ID"
+          --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
+          --tag "$GITHUB_REF_NAME"
+          --expected-commit "$GITHUB_SHA"
+          --registry pypi
+          --out publisher-dispatch-pypi.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: publisher-dispatch-pypi-${{ github.run_attempt }}
+          path: publisher-dispatch-pypi.json
+          if-no-files-found: error
+      - name: Await only the allowlisted PyPI publisher runs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/dispatch_release_publishers.py await
+          --parent-run-id "$GITHUB_RUN_ID"
+          --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
+          --tag "$GITHUB_REF_NAME"
+          --expected-commit "$GITHUB_SHA"
+          --registry pypi
+          --allowlist publisher-dispatch-pypi.json
+          --out publisher-dispatch-pypi.json
+
+  registry-smoke:
+    name: PyPI installed distribution matrix
+    needs: [publish, publish-libraries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+        with:
+          version: "0.9.28"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-evidence
+          path: evidence/
+      - name: Verify PyPI serves all eight attested files
+        run: >-
+          uvx --from pypi-attestations==0.0.30 --with packaging==26.1 python
+          scripts/verify_release_index.py
+          complete
+          --manifest evidence/release-artifact.json
+          --expected-commit "$GITHUB_SHA"
+          --integrity-template
+          'https://pypi.org/integrity/{distribution}/{version}/{filename}/provenance'
+          --publisher-repository VangelisTech/archetype
+          --publisher-environment release-pypi
+          --attestation-repository https://github.com/VangelisTech/archetype
+          --registry-artifact-host files.pythonhosted.org
+          --out pypi-index-evidence.json
+          --attempts 12
+          --interval-seconds 5
+      - name: Install base, selective, and full stacks from PyPI
+        run: >-
+          uv run --no-project --with packaging==26.1 python scripts/registry_smoke.py
+          --manifest evidence/release-artifact.json
+          --out pypi-install-evidence.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pypi-index-evidence
+          path: |
+            pypi-index-evidence.json
+            pypi-install-evidence.json
+          if-no-files-found: error
 
   github-release:
-    needs: publish
+    needs: registry-smoke
+    if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist

@@ -76,6 +76,33 @@ def test_clean_break_release_note_is_reader_visible() -> None:
     assert "guide/release-0.6.md" in navigation
 
 
+def test_pending_trusted_publishers_do_not_claim_new_project_names() -> None:
+    release_docs = (
+        ROOT / "CONTRIBUTING.md",
+        ROOT / "docs/guide/release-0.6.md",
+        ROOT / "docs/guide/repository-harness.md",
+    )
+
+    for path in release_docs:
+        content = " ".join(path.read_text(encoding="utf-8").lower().split())
+        assert "register pending trusted publishers" in content
+        assert "preconfigur" in content
+        assert "does not reserve or claim" in content
+        assert "remains claimable until the first successful oidc publication" in content
+
+
+def test_contributing_names_each_trusted_publisher_workflow() -> None:
+    contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+    for workflow in (
+        "release.yml",
+        "publish-archetype-missions.yml",
+        "publish-archetype-physical-ai.yml",
+        "publish-archetype-research.yml",
+    ):
+        assert f"`{workflow}`" in contributing
+
+
 def test_missions_reference_renders_the_primary_workflow_methods() -> None:
     runtime = (ROOT / "packages/archetype-missions/src/archetype/missions/runtime.py").read_text(
         encoding="utf-8"

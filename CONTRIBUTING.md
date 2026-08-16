@@ -122,17 +122,20 @@ the same two targets as the required GitHub Actions jobs.
 | `make version` | reads `packages/archetype-ecs/pyproject.toml` | Print current release-line version |
 | `make lock-check` | `uv lock --check` | Verify lockfile is in sync |
 | `make build` | `uv build --all-packages --no-sources` | Build all four sdists and wheels into `dist/` |
-| `make release-artifact` | build + package smoke + immutable manifest | Record the exact four-wheel/four-sdist matrix |
+| `make release-artifact` | build + wheel/sdist smoke + immutable manifest | Record the exact four-wheel/four-sdist matrix |
 | `make verify-release-artifact` | verify `dist/` against `release-artifact.json` | Reject changed, missing, or extra release artifacts |
 | `make verify-release` | full source profile + installed release-artifact evidence | Run the release verification profile |
 | `make release-check` | sync development dependencies + `verify-release` | Prepare and verify a manual release candidate |
-| `make publish-test` | verify manifest + upload its eight named files | Publish the existing recorded bytes to TestPyPI |
-| `make publish` | verify manifest + upload its eight named files | Publish the existing recorded bytes to PyPI |
+| `make verify-test-index` | exact-byte query + five isolated TestPyPI installs | Verify a TestPyPI rehearsal |
+| `make verify-published` | exact-byte query + five isolated PyPI installs | Verify the published release |
 
-The publish targets deliberately have no build dependency. They refuse a dirty-build
-manifest, a different checkout commit, an incomplete distribution matrix, or any byte
-whose size or digest differs from `release-artifact.json`. Run `make release-check`
-first; never rebuild between attestation and publication.
+Publication is intentionally available only through the hosted release workflow. Its
+environment-scoped OIDC identities produce the provenance required by the same
+workflow's registry preflight and post-publish verification. Local token uploads are
+not a supported release path: even matching bytes would lack the required publisher
+identity and make a partial release impossible to resume. Run `make release-check`,
+then tag and dispatch the hosted workflow; never rebuild between attestation and
+publication.
 
 ### Docs
 
@@ -175,15 +178,49 @@ Release workflow with the same tag as its input. The workflow authorizes the rel
 operator, requires the tag commit to be on `main`, and verifies that the tag agrees
 with the package version.
 
-The release profile builds the four wheels and four sdists once, package-smokes them,
-records every digest, and runs installed-artifact evidence. The external-provider and
+The release profile builds four wheels and four sdists once, package-smokes the wheels,
+rebuilds every sdist and probes their combined stack, records every digest, and runs
+installed-artifact evidence.
+The external-provider and
 Apple lanes download that same matrix; Python 3.13 compatibility runs alongside them.
-The evidence gate requires every release receipt to name all four wheel digests before
-the trusted-publishing job uploads the original `dist/` artifact to PyPI. Only then is
-the GitHub Release created with those same eight files and generated release notes.
+The evidence gate requires every release receipt to name all four wheel digests.
 
-TestPyPI is an explicit manual rehearsal through `make publish-test`; it is not a stage
-in the hosted production workflow.
+Publication then proceeds as one fail-closed chain: an unprivileged job rejects any
+conflicting TestPyPI files, then the coordinator and package-specific OIDC workflows
+upload exact distribution slices from the original `dist/` artifact. Isolated
+environments install the base, each selective library, and the full stack from
+TestPyPI. The same preflight, upload, exact-byte index verification, and five-shape
+install matrix run against PyPI. The GitHub Release is created only after PyPI serves
+all eight attested files and the registry-installed matrix passes. Exact matching
+partial uploads are resumable; an existing filename with different bytes fails before
+either publishing job receives an OIDC token. A matching pre-existing file is accepted
+only when the registry Integrity API binds its publish attestation to this repository,
+workflow, environment, filename, and digest, and the pinned `pypi-attestations`
+verifier validates the Sigstore proof for the served file.
+
+Before the first four-project release, register pending Trusted Publishers for the
+three new project names on both PyPI and TestPyPI. This preconfigures their OIDC
+identities; it does not reserve or claim the names. Each new name remains claimable
+until the first successful OIDC publication creates the project on that registry.
+All four projects on each registry must trust repository `VangelisTech/archetype`,
+the exact workflow below, and the environment for that registry: `release-pypi` or
+`release-testpypi`.
+
+| Project | Trusted Publisher workflow |
+|---|---|
+| `archetype-ecs` | `release.yml` |
+| `archetype-missions` | `publish-archetype-missions.yml` |
+| `archetype-physical-ai` | `publish-archetype-physical-ai.yml` |
+| `archetype-research` | `publish-archetype-research.yml` |
+
+The coordinator publishes ECS directly and dispatches each other distribution's
+direct workflow with an exact-run allowlist. Protect both GitHub environments to
+allow only `v*` tags, require the release operator's review, and disable administrator
+bypass.
+
+The hosted OIDC chain is the sole publishing authority. The read-only
+`make verify-test-index` and `make verify-published` targets are available for operator
+diagnosis without creating an alternate upload path.
 
 ### `claude.yml` (Claude Code) — on issue/PR comments
 

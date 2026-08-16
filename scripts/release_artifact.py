@@ -2,7 +2,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Record, verify, and publish the immutable distribution matrix used by releases."""
+"""Record and verify the immutable distribution matrix used by releases."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import hashlib
 import json
 import re
 import subprocess
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +25,12 @@ DISTRIBUTIONS = (
     "archetype-research",
 )
 FRAMEWORK_DISTRIBUTION = "archetype-ecs"
+PUBLISHER_WORKFLOWS = {
+    "archetype-ecs": "release.yml",
+    "archetype-missions": "publish-archetype-missions.yml",
+    "archetype-physical-ai": "publish-archetype-physical-ai.yml",
+    "archetype-research": "publish-archetype-research.yml",
+}
 _PACKAGE_PREFIXES = {
     "archetype-ecs": "archetype_ecs",
     "archetype-missions": "archetype_missions",
@@ -34,7 +39,9 @@ _PACKAGE_PREFIXES = {
 }
 _KINDS = ("wheel", "sdist")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
-Run = Callable[..., subprocess.CompletedProcess[str]]
+
+if tuple(PUBLISHER_WORKFLOWS) != DISTRIBUTIONS:  # pragma: no cover
+    raise RuntimeError("release publisher workflow matrix must match distributions exactly")
 
 
 def _sha256(path: Path) -> str:
@@ -43,6 +50,13 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def manifest_sha256(manifest: dict[str, Any]) -> str:
+    """Return the canonical digest of one release artifact manifest."""
+
+    encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -225,31 +239,6 @@ def verify(
     return manifest
 
 
-def publish_verified(
-    manifest: dict[str, Any],
-    dist: Path,
-    *,
-    expected_commit: str,
-    publish_url: str | None = None,
-    run: Run = subprocess.run,
-) -> dict[str, Any]:
-    """Verify and upload only the eight immutable files named by the manifest."""
-
-    verified = verify(manifest, dist, expected_commit=expected_commit)
-    records = artifact_records(verified)
-    paths = [
-        (dist / str(records[(distribution, kind)]["name"])).resolve()
-        for distribution in DISTRIBUTIONS
-        for kind in _KINDS
-    ]
-    command = ["uv", "publish"]
-    if publish_url is not None:
-        command.extend(("--publish-url", publish_url))
-    command.extend(str(path) for path in paths)
-    run(command, check=True)
-    return verified
-
-
 def _load(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -259,11 +248,10 @@ def _load(path: Path) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("record", "verify", "publish"))
+    parser.add_argument("command", choices=("record", "verify"))
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--dist", type=Path, default=Path("dist"))
     parser.add_argument("--manifest", type=Path, default=Path("release-artifact.json"))
-    parser.add_argument("--publish-url")
     args = parser.parse_args(argv)
     root = args.root.resolve()
     dist = args.dist.resolve()
@@ -274,18 +262,11 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(value, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    elif args.command == "verify":
+    else:
         value = verify(
             _load(manifest_path),
             dist,
             expected_commit=_git(root, "rev-parse", "HEAD"),
-        )
-    else:
-        value = publish_verified(
-            _load(manifest_path),
-            dist,
-            expected_commit=_git(root, "rev-parse", "HEAD"),
-            publish_url=args.publish_url,
         )
     framework_wheel = artifact_records(value)[(FRAMEWORK_DISTRIBUTION, "wheel")]
     print(f"Release framework wheel sha256:{framework_wheel['sha256']}")

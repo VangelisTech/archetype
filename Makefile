@@ -79,8 +79,8 @@ help:
 	@echo "  make verify-full    Main-branch profile"
 	@echo "  make verify-release Source profile plus exact installed-artifact release evidence"
 	@echo "  make release-check  Full pre-release validation"
-	@echo "  make publish-test   Verify and publish the recorded artifacts to TestPyPI"
-	@echo "  make publish        Verify and publish the recorded artifacts to PyPI"
+	@echo "  make verify-test-index Verify exact TestPyPI bytes and install matrix"
+	@echo "  make verify-published Verify exact PyPI bytes and install matrix"
 	@echo "  make version        Show current version"
 	@echo ""
 	@echo "Docs:"
@@ -438,6 +438,10 @@ operational-wheel:
 		fi; \
 		exit "$$runner_status"
 
+.PHONY: operational-wheel-existing
+operational-wheel-existing:
+	@$(MAKE) --no-print-directory operational-wheel OPERATIONAL_BUILD_COMMAND=true
+
 .PHONY: operational-mission
 operational-mission:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
@@ -509,15 +513,19 @@ operational-release-physical-modal-r2: verify-release-artifact
 verify-pr: static test package-smoke
 	@echo "PR verification profile passed"
 
+.PHONY: verify-full-source
+verify-full-source: static test-cov eval-conformance eval-capability examples-smoke operational-runtime operational-commands docs test-process eval-reliability
+	@echo "Full source verification profile passed"
+
 .PHONY: verify-full
-verify-full: static test-cov eval-conformance eval-capability package-smoke examples-smoke operational-runtime operational-commands operational-wheel docs test-process eval-reliability
+verify-full: verify-full-source package-smoke operational-wheel-existing
 	@echo "Full verification profile passed"
 
 .PHONY: verify-release
-verify-release: verify-full operational-release
+verify-release: verify-full-source operational-release
 	@echo "Release verification profile passed"
 
-.NOTPARALLEL: verify-release
+.NOTPARALLEL: verify-full verify-release
 
 .PHONY: release-check
 release-check: sync-dev verify-release
@@ -527,21 +535,39 @@ release-check: sync-dev verify-release
 	@echo "Next steps:"
 	@echo "  1. git tag v$(VERSION)"
 	@echo "  2. git push origin v$(VERSION)"
-	@echo "  3. Dispatch the Release workflow for v$(VERSION) (preferred)"
-	@echo "     or run make publish to upload these exact recorded artifacts"
+	@echo "  3. Dispatch the Release workflow for v$(VERSION)"
 
-.PHONY: publish-test
-publish-test:
-	@echo "Verifying and publishing the recorded artifacts to TestPyPI..."
-	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/release_artifact.py publish \
-		--dist "$(OPERATIONAL_DIST_DIR)" --manifest "$(RELEASE_ARTIFACT_MANIFEST)" \
-		--publish-url https://test.pypi.org/legacy/
+.PHONY: verify-test-index
+verify-test-index:
+	@uvx --from pypi-attestations==0.0.30 --with packaging==26.1 \
+		python scripts/verify_release_index.py \
+		complete --manifest "$(RELEASE_ARTIFACT_MANIFEST)" \
+		--expected-commit "$$(git rev-parse HEAD)" \
+		--api-template 'https://test.pypi.org/pypi/{distribution}/{version}/json' \
+		--integrity-template 'https://test.pypi.org/integrity/{distribution}/{version}/{filename}/provenance' \
+		--publisher-repository VangelisTech/archetype \
+		--publisher-environment release-testpypi \
+		--attestation-repository https://github.com/VangelisTech/archetype \
+		--registry-artifact-host test-files.pythonhosted.org \
+		--attempts 12 --interval-seconds 5
+	@uv run --no-project --with packaging==26.1 python scripts/registry_smoke.py \
+		--manifest "$(RELEASE_ARTIFACT_MANIFEST)" --index-url https://test.pypi.org/simple \
+		--extra-index-url https://pypi.org/simple
 
-.PHONY: publish
-publish:
-	@echo "Verifying and publishing the recorded artifacts to PyPI..."
-	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/release_artifact.py publish \
-		--dist "$(OPERATIONAL_DIST_DIR)" --manifest "$(RELEASE_ARTIFACT_MANIFEST)"
+.PHONY: verify-published
+verify-published:
+	@uvx --from pypi-attestations==0.0.30 --with packaging==26.1 \
+		python scripts/verify_release_index.py \
+		complete --manifest "$(RELEASE_ARTIFACT_MANIFEST)" \
+		--expected-commit "$$(git rev-parse HEAD)" \
+		--integrity-template 'https://pypi.org/integrity/{distribution}/{version}/{filename}/provenance' \
+		--publisher-repository VangelisTech/archetype \
+		--publisher-environment release-pypi \
+		--attestation-repository https://github.com/VangelisTech/archetype \
+		--registry-artifact-host files.pythonhosted.org \
+		--attempts 12 --interval-seconds 5
+	@uv run --no-project --with packaging==26.1 python scripts/registry_smoke.py \
+		--manifest "$(RELEASE_ARTIFACT_MANIFEST)"
 
 # ------------------------------------------------------------------------------
 # Docs (Material for MkDocs)
