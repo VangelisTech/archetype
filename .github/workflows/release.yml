@@ -244,7 +244,7 @@ jobs:
           if-no-files-found: error
 
   apple-evidence:
-    name: Release evidence (Apple Container)
+    name: Release evidence (Biome + Apple Container)
     needs: release-profile
     env:
       # actions/setup-python's macOS distributions are non-relocatable and
@@ -259,7 +259,7 @@ jobs:
         - ARM64
         - archetype-apple-container-macos-26
     environment: release-apple-macos
-    timeout-minutes: 35
+    timeout-minutes: 75
     permissions:
       contents: read
     steps:
@@ -283,6 +283,8 @@ jobs:
           path: .context/downloaded-release-evidence/
       - name: Restore exact artifact manifest
         run: cp .context/downloaded-release-evidence/release-artifact.json release-artifact.json
+      - name: Run pinned Biome exact installed-artifact scenario
+        run: make operational-release-biome
       - name: Start Apple Container service
         run: |
           test "$(uname -m)" = "arm64"
@@ -290,13 +292,14 @@ jobs:
           command -v container
           container system start
           container system status
-      - name: Run exact installed-artifact scenario
+      - name: Run Apple Container exact installed-artifact scenario
         run: make operational-release-apple
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: release-operational-release-apple-evidence
           path: |
+            operational-release-biome-results.json
             operational-release-apple-results.json
             operational-release-*-results.d/
           if-no-files-found: error
@@ -363,6 +366,7 @@ jobs:
           evidence/operational-release-openai-results.json
           evidence/operational-release-docker-results.json
           evidence/operational-release-r2-results.json
+          evidence/operational-release-biome-results.json
           evidence/operational-release-apple-results.json
           evidence/operational-release-modal-results.json
           evidence/operational-release-physical-modal-r2-results.json

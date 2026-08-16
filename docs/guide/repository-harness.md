@@ -185,11 +185,12 @@ It validates all five wheels, package-smokes the four-package world stack and
 Smol independently, rebuilds all five source distributions through isolated
 PEP 517, and repeats both probes against the rebuilt wheels. Credential-free
 release scenarios run against an isolated install of the exact four-wheel
-world stack; OpenAI, Docker, R2, Apple Container, and Modal scenario lanes use
-that same stack. Publication is gated by an aggregate receipt check: every
-release-required scenario must have passed, every receipt must name the release
-commit and all four world-stack wheel digests, and no result may be `not_run`.
-The publish job uploads the recorded ten files without rebuilding them.
+world stack; OpenAI, Docker, R2, live Biome, Apple Container, and Modal scenario
+lanes use that same stack. Publication is gated by an aggregate receipt check:
+every release-required scenario must have passed, every receipt must name the
+release commit and all four world-stack wheel digests, and no result may be
+`not_run`. The publish job uploads the recorded ten files without rebuilding
+them.
 
 Before the first coordinated release, both registries need the complete OIDC
 publisher matrix below. Every row uses repository `VangelisTech/archetype`.
@@ -247,20 +248,47 @@ The workflow requires both `github.actor` and `github.triggering_actor` to be
 tag push does not start release work: the operator dispatches `release.yml` at
 the existing tag and supplies the same tag as its confirmation input.
 
-The Apple lane has a second, infrastructure-level boundary. Organization runner
-group `archetype-release-macos` allows only this repository and an exact
-tag-qualified `.github/workflows/release.yml`; the job must request that group,
-not merely a guessable label. Environment `release-apple-macos` permits only
-`v*` tags and requires approval from `everettVT` before the job reaches the Mac.
+The shared Biome and Apple Container lane has a second, infrastructure-level
+boundary. Release job `apple-evidence`, displayed as
+`Release evidence (Biome + Apple Container)`, requests organization runner
+group `archetype-release-macos` plus the `self-hosted`, `macOS`, `ARM64`, and
+`archetype-apple-container-macos-26` labels. The group allows only this
+repository and an exact tag-qualified `.github/workflows/release.yml`; the job
+must request that group, not merely a guessable label. Environment
+`release-apple-macos` permits only `v*` tags and requires approval from
+`everettVT` before the job reaches the Mac.
+
 The runner MUST be ephemeral, MUST be registered only after the group is pinned
-to the exact release tag, and MUST run from a disposable directory. A separate
-macOS login is not required: the runner may use the operator's current account,
-but it inherits that account's host permissions while the one authorized job is
-active. Never install this runner as a persistent service. The Apple job uses
-`uv` to provision Python in that account's cache; it does not use
-`actions/setup-python` or create GitHub's `/Users/runner/hostedtoolcache` path.
-These controls are required because GitHub does not treat a self-hosted runner
-for a public repository as an isolated trusted machine.
+to the exact release tag, and MUST run from a disposable directory. It also
+MUST be a logged-in Apple Silicon host with an active WindowServer and
+Metal-capable display session. A separate macOS login is not required: the
+runner may use the operator's current account, but it inherits that account's
+host permissions while the one authorized job is active. Never install this
+runner as a persistent service. The job uses `uv` to provision Python in that
+account's cache; it does not use `actions/setup-python` or create GitHub's
+`/Users/runner/hostedtoolcache` path. These controls are required because
+GitHub does not treat a self-hosted runner for a public repository as an
+isolated trusted machine.
+
+One environment approval admits one bounded 75-minute Mac job. The Biome proof
+runs first, before the job starts Apple Container. Its registry row fail-closes
+unless the host is Darwin, `git`, `cmake`, `cargo`, and `pkg-config` are
+available, and the Make target has explicitly opted into live execution with
+`ARCHETYPE_BIOME_LIVE=1`. The release-only test builds and launches the exact
+checked-in Biome and Flecs revisions in the active GUI/Metal session, waits for
+the local REST service, proves the native mining mission and durable Archetype
+evidence, and guarantees process and port cleanup. The job then starts Apple
+Container, runs its exact-wheel parity proof, and stops the service in an
+always-run cleanup step.
+
+Both results travel in the existing
+`release-operational-release-apple-evidence` artifact. The aggregate
+`release-evidence-gate` names `operational-release-biome-results.json` and
+`operational-release-apple-results.json` as explicit inputs to
+`scripts/verify_release_evidence.py`; artifact presence alone is insufficient.
+Each receipt must be passing installed-wheel evidence bound to the clean
+release commit and exact four-wheel artifact matrix, with closed cleanup and no
+failed or `not_run` result.
 
 For each release, use this order:
 
@@ -297,13 +325,15 @@ gh workflow run release.yml \
   -f tag=v0.6.0
 ```
 
-Approve `release-apple-macos`, then every pending `release-testpypi` deployment,
-and finally every pending `release-pypi` deployment after the TestPyPI
+Approve `release-apple-macos` once; the admitted job runs Biome evidence and
+then Apple Container evidence in that order. After the exact-evidence gate
+succeeds, approve every pending `release-testpypi` deployment. Approve every
+pending `release-pypi` deployment only after the TestPyPI
 installed-distribution matrix succeeds. The ECS publisher remains in the parent
 run; each new distribution is a separately approved direct workflow run. The
 parent waits for the exact child run IDs and fails unless all of them succeed.
-The ephemeral runner deregisters after the Apple job;
-discard its working directory before preparing a rerun or future release.
+The ephemeral runner deregisters after the shared Mac job; discard its working
+directory before preparing a rerun or future release.
 
 Release-lane authentication is explicit and provider-scoped:
 
@@ -313,6 +343,7 @@ Release-lane authentication is explicit and provider-scoped:
 | Docker | The runner's local Docker context and daemon authorize the parity operation; the lane does not perform registry login. |
 | Cloudflare R2 | `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` authenticate the account, while `R2_API_ENDPOINT` and `R2_BUCKET` select the exact substrate. |
 | Physical AI (Modal + R2) | The same scoped Modal and R2 credentials run one T4-backed seeded episode. Modal owns provider execution and immutable result blobs; the Archetype World commits intent and observation evidence to a unique R2 prefix, then a fresh runtime cold-resumes and reconciles the same digest without replay. |
+| Biome | No cloud credential is accepted. The explicitly enabled release target builds and launches the pinned upstream Biome/Flecs sources on the logged-in Mac, and the live test proves the active GUI/Metal process, loopback REST readiness, native mission result, durable Archetype evidence, and cleanup. |
 | Apple Container | A one-job ephemeral, bare-metal Apple Silicon runner in the exact-workflow-restricted `archetype-release-macos` group supplies the local host authority. It may run under the operator's current macOS account and bears `self-hosted`, `macOS`, `ARM64`, and `archetype-apple-container-macos-26`. The job provisions Python 3.12 through `uv`, verifies macOS 26, and starts the local `container` service; it creates no macOS login or `/Users/runner` tool cache, and accepts no Apple cloud token. GitHub-hosted arm64 macOS runners are not substitutes because they do not expose the Virtualization.framework VM support required by Apple Container. |
 | Modal Agent Mission | `MODAL_TOKEN_ID` plus `MODAL_TOKEN_SECRET` authenticate the Modal control plane. Actions repository variable `CODING_AGENT_MODAL_PROFILE` becomes the SDK selector `MODAL_PROFILE`; `CODING_AGENT_MODAL_ENVIRONMENT` becomes both the Archetype selector and SDK selector `MODAL_ENVIRONMENT`, while the workspace and remaining Environment-scoped variables bind all named objects. `CODEX_AUTH_VOLUME` supplies the separately device-authenticated Codex `auth.json`. `CODING_AGENT_GITHUB_SECRET` names the Modal Secret resolved for the isolated publisher, but the paid live lane deliberately pushes to a provider-local bare remote and never attaches that secret or mutates GitHub. Deterministic broker contracts separately prove that only the exact GitHub push process can receive `GITHUB_TOKEN`. Modal Connect Tokens authenticate the two transient viewport URLs. |
 

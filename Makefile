@@ -70,6 +70,7 @@ help:
 	@echo "  make operational-mission  Run the credential-free exact-head mission scenario"
 	@echo "  make operational-external  Require selected Tier-5/6 provider evidence"
 	@echo "  make operational-release  Run credential-free release evidence against the wheel matrix"
+	@echo "  make operational-release-biome  Run the pinned live Biome wheel evidence"
 	@echo "  make operational-release-modal  Run the paid live Modal/Codex wheel evidence"
 	@echo "  make test-infra     Run external-infrastructure tests (requires configured service)"
 	@echo ""
@@ -505,6 +506,10 @@ operational-release-r2: verify-release-artifact
 .PHONY: operational-release-apple
 operational-release-apple: verify-release-artifact
 	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.sandbox.apple_container --out operational-release-apple-results.json)
+
+.PHONY: operational-release-biome
+operational-release-biome: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario example.14_biome_agent --out operational-release-biome-results.json,ARCHETYPE_BIOME_LIVE=1)
 
 .PHONY: operational-release-modal
 operational-release-modal: verify-release-artifact

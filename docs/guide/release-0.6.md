@@ -108,6 +108,18 @@ successful OIDC publication creates the project on that registry. See
 [Repository harness](repository-harness.md) for the exact, package-specific
 OIDC identities and the direct-workflow bootstrap required for new projects.
 
+Release publication also requires the live, pinned Biome scenario. The
+release-only proof runs on the same approved, one-job ephemeral Apple Silicon
+Mac used for Apple Container evidence. It fail-closes on the Darwin, build-tool,
+and explicit-live prerequisites; builds and launches the checked-in Biome and
+Flecs revisions in an active WindowServer/Metal session; waits for REST
+readiness; proves the native mission plus durable Archetype evidence; and
+closes the process and port. Biome runs before Apple Container under the single
+`release-apple-macos` approval. Its
+`operational-release-biome-results.json` receipt is an explicit input to the
+exact-wheel evidence gate, so TestPyPI approval cannot follow a missing,
+`not_run`, dirty-revision, wrong-wheel, failed, or unclosed Biome result.
+
 For current architecture and installation contracts, continue with
 [World libraries](world-libraries.md), [Runtime](runtime.md), and
 [API stability](api-stability.md).

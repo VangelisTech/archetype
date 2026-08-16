@@ -21,6 +21,7 @@ from .contracts import (
     PlaceExtractorAction,
     TerrainCell,
 )
+from .episode import DurableBiomeEpisodeResult, run_durable_episode, wait_until_ready
 from .mission import monitor_mission, plan_mission, run_mission
 from .policy import GoalDirectedDrillPolicy
 
@@ -33,6 +34,7 @@ __all__ = [
     "BiomeObservation",
     "DepositObservation",
     "DrillObservation",
+    "DurableBiomeEpisodeResult",
     "ExtractionGoal",
     "FlecsRemoteError",
     "GoalDirectedDrillPolicy",
@@ -43,5 +45,7 @@ __all__ = [
     "TerrainCell",
     "monitor_mission",
     "plan_mission",
+    "run_durable_episode",
     "run_mission",
+    "wait_until_ready",
 ]
