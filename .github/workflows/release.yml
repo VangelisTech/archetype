@@ -129,6 +129,11 @@ jobs:
           path: dist/archetype_research-*
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-archetype-smol
+          path: dist/archetype_smol-*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: release-evidence
@@ -476,7 +481,7 @@ jobs:
           attestations: true
 
   publish-testpypi-libraries:
-    name: Publish world libraries to TestPyPI
+    name: Publish independently attested distributions to TestPyPI
     needs: [authorize-release, testpypi-preflight]
     if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
     runs-on: ubuntu-latest
@@ -539,7 +544,7 @@ jobs:
         with:
           name: release-evidence
           path: evidence/
-      - name: Verify TestPyPI serves all eight attested files
+      - name: Verify TestPyPI serves all ten attested files
         run: >-
           uvx --from pypi-attestations==0.0.30 --with packaging==26.1 python
           scripts/verify_release_index.py
@@ -557,7 +562,7 @@ jobs:
           --out testpypi-index-evidence.json
           --attempts 12
           --interval-seconds 5
-      - name: Install base, selective, and full stacks from TestPyPI
+      - name: Install base, selective, full-stack, and isolated Smol packages from TestPyPI
         run: >-
           uv run --no-project --with packaging==26.1 python scripts/registry_smoke.py
           --manifest evidence/release-artifact.json
@@ -677,7 +682,7 @@ jobs:
           attestations: true
 
   publish-libraries:
-    name: Publish world libraries to PyPI
+    name: Publish independently attested distributions to PyPI
     needs: [authorize-release, pypi-preflight]
     if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
     runs-on: ubuntu-latest
@@ -740,7 +745,7 @@ jobs:
         with:
           name: release-evidence
           path: evidence/
-      - name: Verify PyPI serves all eight attested files
+      - name: Verify PyPI serves all ten attested files
         run: >-
           uvx --from pypi-attestations==0.0.30 --with packaging==26.1 python
           scripts/verify_release_index.py
@@ -756,7 +761,7 @@ jobs:
           --out pypi-index-evidence.json
           --attempts 12
           --interval-seconds 5
-      - name: Install base, selective, and full stacks from PyPI
+      - name: Install base, selective, full-stack, and isolated Smol packages from PyPI
         run: >-
           uv run --no-project --with packaging==26.1 python scripts/registry_smoke.py
           --manifest evidence/release-artifact.json

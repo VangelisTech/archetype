@@ -6,8 +6,8 @@ SHELL := /bin/bash
 # Archetype dev workflow (uv + ruff + pre-commit)
 # ==============================================================================
 
-SOURCE_ROOTS := packages/archetype-ecs/src packages/archetype-missions/src packages/archetype-physical-ai/src packages/archetype-research/src
-PYTHONPATH ?= packages/archetype-ecs/src:packages/archetype-missions/src:packages/archetype-physical-ai/src:packages/archetype-research/src
+SOURCE_ROOTS := packages/archetype-ecs/src packages/archetype-missions/src packages/archetype-physical-ai/src packages/archetype-research/src packages/archetype-smol/src
+PYTHONPATH ?= packages/archetype-ecs/src:packages/archetype-missions/src:packages/archetype-physical-ai/src:packages/archetype-research/src:packages/archetype-smol/src
 VERSION := $(shell grep -m1 'version = ' packages/archetype-ecs/pyproject.toml | cut -d'"' -f2)
 RUFF_PATHS := packages tests evals bench scripts quality experiments examples
 SYNC_FLAGS := --all-packages --all-extras
@@ -74,7 +74,7 @@ help:
 	@echo "  make test-infra     Run external-infrastructure tests (requires configured service)"
 	@echo ""
 	@echo "Build & Release:"
-	@echo "  make build          Build all four sdists and wheels"
+	@echo "  make build          Build all five sdists and wheels"
 	@echo "  make package-smoke  Install and probe the built distribution matrix outside the checkout"
 	@echo "  make verify-pr      Complete pull-request profile"
 	@echo "  make verify-full    Main-branch profile"
@@ -461,7 +461,7 @@ operational-external:
 		--out operational-external-results.json
 
 # The release workflow builds once after the source profile, package-smokes
-# those exact eight artifacts, records every digest, and never rebuilds before
+# those exact ten artifacts, records every digest, and never rebuilds before
 # upload.
 .PHONY: release-artifact
 release-artifact:

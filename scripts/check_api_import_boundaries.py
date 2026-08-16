@@ -37,6 +37,7 @@ WORKSPACE_SOURCE_ROOTS = (
     Path("packages/archetype-missions/src"),
     Path("packages/archetype-physical-ai/src"),
     Path("packages/archetype-research/src"),
+    Path("packages/archetype-smol/src"),
 )
 LEGACY_SOURCE_ROOT = Path("src")
 
@@ -327,7 +328,7 @@ def _expand_targets(root: Path, patterns: tuple[str, ...], coordinate: str) -> l
 def _source_module(path: Path, root: Path) -> tuple[str, bool]:
     """Resolve a source target against the workspace or legacy fixture root.
 
-    Production modules are distributed across four package-local ``src``
+    Production modules are distributed across five package-local ``src``
     trees. Tests and downstream policy fixtures retain the historical
     repository-local ``src`` layout, so the fallback stays deliberate rather
     than making module identity depend on whichever ancestor happens to be

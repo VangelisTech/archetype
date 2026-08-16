@@ -511,6 +511,13 @@ method = "write_iceberg"
 reason = "Iceberg storage sink: explicit IO configuration requires the native Daft write at the store-owned append boundary."
 
 [[entries]]
+path = "packages/archetype-smol/src/archetype/smol/world.py"
+symbol = "World._decode_frame"
+expr = "frame.to_pylist"
+method = "to_pylist"
+reason = "Atomic in-memory publication boundary: each finite archetype table must become typed Component values so Smol can validate exact entity identity and metadata preservation before publishing the staged tick; this is the teaching engine's documented executor boundary."
+
+[[entries]]
 path = "packages/archetype-ecs/src/archetype/evaluation/views.py"
 symbol = "read_result"
 expr = "(await storage.materialize(matched)).to_pydict"

@@ -1,10 +1,11 @@
 [project]
 name = "archetype-workspace"
 version = "0.6.0"
-description = "Development workspace for the Archetype framework and first-party world libraries."
+description = "Development workspace for the Archetype framework, first-party world libraries, and independent Smol teaching engine."
 requires-python = ">=3.12"
 dependencies = [
     "archetype-ecs[all,coding-agent,logfire,sim]==0.6.0",
+    "archetype-smol==0.6.0",
 ]
 
 [tool.pytest.ini_options]
@@ -15,6 +16,7 @@ testpaths = [
     "packages/archetype-missions/tests",
     "packages/archetype-physical-ai/tests",
     "packages/archetype-research/tests",
+    "packages/archetype-smol/tests",
 ]
 python_files = ["test_*.py"]
 pythonpath = [
@@ -22,6 +24,7 @@ pythonpath = [
     "packages/archetype-missions/src",
     "packages/archetype-physical-ai/src",
     "packages/archetype-research/src",
+    "packages/archetype-smol/src",
     ".",
 ]
 asyncio_default_fixture_loop_scope = "function"
@@ -162,6 +165,7 @@ archetype-ecs = { workspace = true }
 archetype-missions = { workspace = true }
 archetype-physical-ai = { workspace = true }
 archetype-research = { workspace = true }
+archetype-smol = { workspace = true }
 
 [tool.ruff]
 target-version = "py312"
@@ -203,6 +207,7 @@ include = [
     "packages/archetype-missions/src",
     "packages/archetype-physical-ai/src",
     "packages/archetype-research/src",
+    "packages/archetype-smol/src",
 ]
 respect-ignore-files = true
 

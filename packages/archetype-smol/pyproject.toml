@@ -1,0 +1,39 @@
+[project]
+name = "archetype-smol"
+version = "0.6.0"
+description = "A tiny synchronous, in-memory DataFrame ECS for learning Archetype's core model."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Vangelis Technologies Inc.", email = "everett@vangelis.tech" },
+]
+keywords = ["simulation", "ecs", "education", "daft", "dataframe"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dependencies = [
+    "daft>=0.7.19",
+    "pydantic>=2.11",
+    "pydantic-core>=2.33",
+]
+
+[build-system]
+requires = ["setuptools>=83.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["archetype.smol*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"archetype.smol" = ["py.typed"]

@@ -1317,7 +1317,8 @@ graph needs an explicit boundary.
 - The recommended script boundary is `async with ArchetypeRuntime()` or
   `with ArchetypeRuntime.sync()`, not implicit per-call global setup/teardown.
 - The removed core-sync `World` and `Processor` aliases must not be restored as
-  compatibility shims.
+  compatibility shims. `archetype-smol` owns similarly named educational types
+  in an independent distribution.
 
 ### Contract Tests
 

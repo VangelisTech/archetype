@@ -102,7 +102,7 @@ Every target below is a `.PHONY` rule. Run `make help` for the quick version.
 
 | Target | What it does | Purpose |
 |--------|-------------|---------|
-| `make test` | `pytest -q -n auto` with all four package source roots | Fast test run, no coverage |
+| `make test` | `pytest -q -n auto` with all five package source roots | Fast test run, no coverage |
 | `make test-cov` | `pytest --cov --cov-branch --cov-fail-under=70` with all package roots | Tests with 70% branch coverage gate |
 | `make test-all` | `pytest -v --tb=short` with all package roots | Verbose test run |
 
@@ -110,10 +110,11 @@ Every target below is a `.PHONY` rule. Run `make help` for the quick version.
 
 | Target | Steps | Purpose |
 |--------|-------|---------|
-| `make ci` | `make static` + `make test` | **The required PR profile. Run before every push.** |
+| `make ci` | `make static` + `make test` + `make package-smoke` | **The required PR profile. Run before every push.** |
 
 `make ci` is the single command that must pass for any PR to merge. It runs
-the same two targets as the required GitHub Actions jobs.
+the same three targets as the required GitHub Actions jobs: `Static` owns the
+static target, while `Tests (3.12)` owns both tests and the distribution smoke.
 
 ### Build & Release
 
@@ -121,13 +122,13 @@ the same two targets as the required GitHub Actions jobs.
 |--------|---------|---------|
 | `make version` | reads `packages/archetype-ecs/pyproject.toml` | Print current release-line version |
 | `make lock-check` | `uv lock --check` | Verify lockfile is in sync |
-| `make build` | `uv build --all-packages --no-sources` | Build all four sdists and wheels into `dist/` |
-| `make release-artifact` | build + wheel/sdist smoke + immutable manifest | Record the exact four-wheel/four-sdist matrix |
+| `make build` | `uv build --all-packages --no-sources` | Build all five sdists and wheels into `dist/` |
+| `make release-artifact` | build + wheel/sdist smoke + immutable manifest | Record the exact five-wheel/five-sdist matrix |
 | `make verify-release-artifact` | verify `dist/` against `release-artifact.json` | Reject changed, missing, or extra release artifacts |
 | `make verify-release` | full source profile + installed release-artifact evidence | Run the release verification profile |
 | `make release-check` | sync development dependencies + `verify-release` | Prepare and verify a manual release candidate |
-| `make verify-test-index` | exact-byte query + five isolated TestPyPI installs | Verify a TestPyPI rehearsal |
-| `make verify-published` | exact-byte query + five isolated PyPI installs | Verify the published release |
+| `make verify-test-index` | exact-byte query + six isolated TestPyPI installs | Verify a TestPyPI rehearsal |
+| `make verify-published` | exact-byte query + six isolated PyPI installs | Verify the published release |
 
 Publication is intentionally available only through the hosted release workflow. Its
 environment-scoped OIDC identities produce the provenance required by the same
@@ -161,12 +162,12 @@ The primary CI workflow intentionally contains two required jobs:
 | Job | What it runs | Required to merge? |
 |-----|--------------|-------------------|
 | `Static` | `make static` | **Yes** |
-| `Tests (3.12)` | `make test` | **Yes** |
+| `Tests (3.12)` | `make test` + `make package-smoke` | **Yes** |
 
 Concurrency: grouped by `ci-${{ github.ref }}`, cancels in-progress runs on
 the same branch.
 
-Coverage, evals, external infrastructure, examples, packaging, docs, and
+Coverage, evals, external infrastructure, examples, docs, and
 compatibility evidence are not part of the PR merge path. They remain in the
 full and release profiles. The retired deterministic review and merge-queue
 workflows are preserved under `quality/quarantine/review-gate/`.
@@ -178,25 +179,28 @@ Release workflow with the same tag as its input. The workflow authorizes the rel
 operator, requires the tag commit to be on `main`, and verifies that the tag agrees
 with the package version.
 
-The release profile builds four wheels and four sdists once, package-smokes the wheels,
-rebuilds every sdist and probes their combined stack, records every digest, and runs
-installed-artifact evidence.
+The release profile builds five wheels and five sdists once, package-smokes the
+four-package world stack and independent Smol wheel, rebuilds every sdist and
+repeats both probes, records every digest, and runs installed-artifact evidence.
 The external-provider and
 Apple lanes download that same matrix; Python 3.13 compatibility runs alongside them.
-The evidence gate requires every release receipt to name all four wheel digests.
+The operational evidence gate requires every release receipt to name all four
+world-stack wheel digests; Smol has a separate installed-wheel behavior probe.
 
-Publication then proceeds as one fail-closed chain: an unprivileged job rejects any
-conflicting TestPyPI files, then the coordinator and package-specific OIDC workflows
-upload exact distribution slices from the original `dist/` artifact. Isolated
-environments install the base, each selective library, and the full stack from
-TestPyPI. The same preflight, upload, exact-byte index verification, and five-shape
-install matrix run against PyPI. The GitHub Release is created only after PyPI serves
-all eight attested files and the registry-installed matrix passes. Exact matching
-partial uploads are resumable; an existing filename with different bytes fails before
-either publishing job receives an OIDC token. A matching pre-existing file is accepted
-only when the registry Integrity API binds its publish attestation to this repository,
-workflow, environment, filename, and digest, and the pinned `pypi-attestations`
-verifier validates the Sigstore proof for the served file.
+Publication then proceeds as one fail-closed chain. An unprivileged coordinator
+rejects conflicting TestPyPI files, dispatches the four package-specific child
+workflows, and records their exact run identities. The ECS publisher remains in
+`release.yml`; each child publishes only its own original two-file artifact. The
+coordinator waits for all five OIDC publishers before isolated environments install
+the base, each selective library, and the full stack from TestPyPI. The same preflight,
+five-publisher upload, exact-byte index verification, and six-shape install matrix run
+against PyPI. The GitHub Release is created only after PyPI serves all ten attested
+files and the registry-installed matrix passes. Exact matching partial uploads are
+resumable; an existing filename with different bytes fails before any publishing job
+receives an OIDC token. A matching pre-existing file is accepted only when the registry
+Integrity API binds its publish attestation to this repository, exact package workflow,
+environment, filename, and digest, and the pinned `pypi-attestations` verifier validates
+the Sigstore proof for the served file.
 
 Immediately before each OIDC publisher action, its checkout-free job performs one
 inline `git ls-remote` check against the literal canonical repository without
@@ -205,13 +209,12 @@ The exact canonical `vMAJOR.MINOR.PATCH` tag, including an annotated tag's peele
 commit, must still resolve to the workflow's original `GITHUB_SHA`. This narrows the
 final mutable-ref window without exposing the publish token to checked-out code.
 
-Before the first four-project release, register pending Trusted Publishers for the
-three new project names on both PyPI and TestPyPI. This preconfigures their OIDC
+Before the first five-project release, register pending Trusted Publishers for the
+four new project names on both PyPI and TestPyPI. This preconfigures their OIDC
 identities; it does not reserve or claim the names. Each new name remains claimable
 until the first successful OIDC publication creates the project on that registry.
-All four projects on each registry must trust repository `VangelisTech/archetype`,
-the exact workflow below, and the environment for that registry: `release-pypi` or
-`release-testpypi`.
+Every row uses repository `VangelisTech/archetype` and must be registered once with
+`release-testpypi` and once with `release-pypi`:
 
 | Project | Trusted Publisher workflow |
 |---|---|
@@ -219,9 +222,12 @@ the exact workflow below, and the environment for that registry: `release-pypi` 
 | `archetype-missions` | `publish-archetype-missions.yml` |
 | `archetype-physical-ai` | `publish-archetype-physical-ai.yml` |
 | `archetype-research` | `publish-archetype-research.yml` |
+| `archetype-smol` | `publish-archetype-smol.yml` |
 
 The coordinator publishes ECS directly and dispatches each other distribution's
-direct workflow with an exact-run allowlist. Protect both GitHub environments to
+direct workflow with an exact-run allowlist.
+The [repository harness](docs/guide/repository-harness.md#release-profile-and-publisher-identities)
+owns the full identity and dispatch contract. Protect both GitHub environments to
 allow only `v*` tags, require the release operator's review, and disable administrator
 bypass.
 
@@ -273,7 +279,7 @@ what to run locally to reproduce a CI failure.
 | `link-check` | `lychee` (via `make docs-lint`) | Requires lychee installed locally |
 | `build` | `make docs` | Generates references before building |
 | Release `test` | `make test-all` | Uses `pytest -v --tb=short` |
-| Release `build` | `make build` | Builds all four sdists and wheels without workspace source overrides |
+| Release `build` | `make build` | Builds all five sdists and wheels without workspace source overrides |
 
 ## Pre-commit Hooks
 
@@ -335,7 +341,7 @@ docs/       # MkDocs site — deployed at archetype.vangelis.tech/docs
 ```
 
 The checkout is one uv workspace and one lockfile, but release artifacts are
-four independently installable distributions. See
+five independently installable distributions. See
 [World Libraries](docs/guide/world-libraries.md) before adding a domain package,
 manifest contribution, adapter, or compatibility alias.
 

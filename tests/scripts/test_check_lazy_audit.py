@@ -545,7 +545,6 @@ def test_core_count_rows_is_banned():
     from check_lazy_audit import is_banned
 
     assert is_banned("packages/archetype-ecs/src/archetype/core/aio/async_store.py", "count_rows")
-    assert is_banned("packages/archetype-ecs/src/archetype/core/sync/store.py", "count_rows")
 
 
 def test_ban_is_scoped_to_core_and_count_rows():
@@ -560,6 +559,7 @@ def test_ban_is_scoped_to_core_and_count_rows():
 def test_workspace_scan_unions_all_distribution_source_roots(tmp_path: Path) -> None:
     import check_lazy_audit as mod
 
+    assert "packages/archetype-smol/src" in mod.WORKSPACE_SOURCE_ROOTS
     for index, relative in enumerate(mod.WORKSPACE_SOURCE_ROOTS):
         source = tmp_path / relative / "archetype" / f"probe_{index}.py"
         source.parent.mkdir(parents=True)

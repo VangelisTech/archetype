@@ -185,7 +185,7 @@ def _validate_distinct_wheel_location(
 
 
 def _workspace_source_roots(checkout: Path) -> tuple[Path, ...]:
-    """Return every first-party source root in deterministic distribution order."""
+    """Return all world-stack source roots in deterministic distribution order."""
 
     return tuple((checkout / relative).resolve() for _, relative, _ in WORKSPACE_DISTRIBUTIONS)
 
@@ -195,7 +195,7 @@ def _resolve_wheel_artifacts(
     wheel: Path,
     wheel_dir: Path | None,
 ) -> tuple[WheelArtifact, ...]:
-    """Resolve exactly one same-version local wheel for each first-party distribution."""
+    """Resolve one same-version local wheel for each world-stack distribution."""
 
     anchor = wheel.resolve()
     if not anchor.is_file():
@@ -599,7 +599,7 @@ def _prepare_wheel_python(
     destination: Path,
 ) -> tuple[Path, dict[str, str]]:
     if len(wheels) != len(WORKSPACE_DISTRIBUTIONS):
-        raise ValueError("installed-wheel scenarios require all four first-party wheels")
+        raise ValueError("installed-wheel scenarios require all four world-stack wheels")
     uv = shutil.which("uv")
     if uv is None:
         raise RuntimeError("installed-wheel scenarios require uv")

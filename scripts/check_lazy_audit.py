@@ -93,6 +93,7 @@ WORKSPACE_SOURCE_ROOTS: tuple[str, ...] = (
     "packages/archetype-missions/src",
     "packages/archetype-physical-ai/src",
     "packages/archetype-research/src",
+    "packages/archetype-smol/src",
 )
 LEGACY_SOURCE_ROOT = "src"
 ALLOWLIST_FILENAME = "lazy_audit.toml"

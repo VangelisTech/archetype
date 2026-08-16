@@ -1702,6 +1702,20 @@ def test_repository_does_not_reserve_removed_legacy_app_root() -> None:
     assert "archetype.app" not in policy["top_level_family_policy"]["reserved_infrastructure"]
 
 
+def test_repository_classifies_smol_as_an_independent_engine() -> None:
+    policy = checker._load_policy(checker.DEFAULT_POLICY)
+
+    assert "packages/archetype-smol/src" in policy["source_roots"]
+    smol_family = next(
+        rule for rule in policy["top_level_family_rule"] if rule["consumer"] == "archetype.smol"
+    )
+    assert smol_family["allowed_families"] == []
+    independence = next(
+        rule for rule in policy["package_rule"] if rule["consumer"] == "archetype.smol"
+    )
+    assert set(independence["forbidden"]) == {"archetype.core", "archetype.errors"}
+
+
 def test_repository_storage_capability_rule_keeps_canonical_owner() -> None:
     policy = checker._load_policy(checker.DEFAULT_POLICY)
     storage_rules = [

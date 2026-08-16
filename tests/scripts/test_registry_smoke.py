@@ -32,6 +32,7 @@ def _manifest() -> dict[str, object]:
         "archetype-missions": "archetype_missions",
         "archetype-physical-ai": "archetype_physical_ai",
         "archetype-research": "archetype_research",
+        "archetype-smol": "archetype_smol",
     }
     return {
         "schema": SCHEMA,
@@ -76,6 +77,7 @@ def test_registry_matrix_pins_every_selected_distribution() -> None:
         "archetype-physical-ai==0.6.0",
         "archetype-research==0.6.0",
     )
+    assert _requirements("smol", "0.6.0") == ("archetype-smol==0.6.0",)
 
 
 @pytest.mark.parametrize("value", ["v0.6.0", "0.6", "0.6.0+local", "0.6.0.dev1"])
@@ -142,6 +144,16 @@ def test_registry_probe_rejects_split_compatibility_facades() -> None:
     assert 'find_spec("archetype.artifacts.contracts") is None' in probe
     assert '"library" not in SyncRuntimeWorld.__dict__' in probe
     assert '"library" not in SyncArchetypeRuntime.__dict__' in probe
+    assert 'find_spec("archetype.smol") is None' in probe
+
+
+def test_registry_smol_probe_is_isolated_and_behavioral() -> None:
+    probe = _probe_source("smol", "0.6.0")
+
+    assert 'version("archetype-smol") == release_version' in probe
+    assert 'find_spec("archetype.core") is None' in probe
+    assert 'version("archetype-ecs")' in probe
+    assert "world.run(steps=2)" in probe
 
 
 def test_registry_smoke_derives_version_from_clean_manifest(tmp_path: Path) -> None:

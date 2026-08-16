@@ -3,6 +3,7 @@
 # Python API
 
 Archetype's Python reference inventories and classifies the supported framework and world-library surfaces. Most applications only need the runtime, world-handle, and building-block pages.
+The independent [Smol](../smol/index.md) package documents its complete four-name surface on its package page rather than entering the framework inventory.
 
 | Surface | Distribution | Use it for |
 | --- | --- | --- |

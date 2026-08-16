@@ -175,19 +175,21 @@ execution and receipt retention land with the owning release-gate slices. A
 declared cadence MUST NOT be reported as satisfied until its workflow invokes
 the scenario and retains the resulting receipt.
 
+### Release profile and publisher identities
+
 The operator-dispatched tag workflow builds the exact 0.6 distribution matrix
 after the source profile: one wheel and one source distribution for each of
 `archetype-ecs`, `archetype-missions`, `archetype-physical-ai`, and
-`archetype-research`. It validates and package-smokes the four wheels, rebuilds
-all four source distributions through isolated PEP 517, probes the rebuilt
-full stack, records every digest, and runs every
-credential-free release scenario against an isolated install of the exact
-four-wheel set. OpenAI, Docker, R2, Apple Container, and the Modal lanes
-download the same immutable distribution matrix. Publication is gated by
-an aggregate receipt check: every release-required scenario must have passed,
-every receipt must name the release commit and all four wheel digests, and no
-result may be `not_run`. The publish job uploads the recorded eight files
-without rebuilding them.
+`archetype-research`, plus the independent `archetype-smol` teaching engine.
+It validates all five wheels, package-smokes the four-package world stack and
+Smol independently, rebuilds all five source distributions through isolated
+PEP 517, and repeats both probes against the rebuilt wheels. Credential-free
+release scenarios run against an isolated install of the exact four-wheel
+world stack; OpenAI, Docker, R2, Apple Container, and Modal scenario lanes use
+that same stack. Publication is gated by an aggregate receipt check: every
+release-required scenario must have passed, every receipt must name the release
+commit and all four world-stack wheel digests, and no result may be `not_run`.
+The publish job uploads the recorded ten files without rebuilding them.
 
 Before the first coordinated release, both registries need the complete OIDC
 publisher matrix below. Every row uses repository `VangelisTech/archetype`.
@@ -198,6 +200,7 @@ publisher matrix below. Every row uses repository `VangelisTech/archetype`.
 | `archetype-missions` | `publish-archetype-missions.yml` | `release-testpypi` | `release-pypi` |
 | `archetype-physical-ai` | `publish-archetype-physical-ai.yml` | `release-testpypi` | `release-pypi` |
 | `archetype-research` | `publish-archetype-research.yml` | `release-testpypi` | `release-pypi` |
+| `archetype-smol` | `publish-archetype-smol.yml` | `release-testpypi` | `release-pypi` |
 
 Register pending Trusted Publishers to preconfigure the OIDC identities for
 project names that do not yet exist. This registration does not reserve or

@@ -374,6 +374,7 @@ def test_workspace_source_module_identity_covers_each_distribution() -> None:
         "packages/archetype-research/src/archetype/research/runtime.py": (
             "archetype.research.runtime"
         ),
+        "packages/archetype-smol/src/archetype/smol/world.py": "archetype.smol.world",
     }
 
     for relative, expected in targets.items():

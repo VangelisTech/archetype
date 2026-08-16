@@ -23,10 +23,12 @@ Three checks keep the command gate's claim-vs-effect surface honest:
    ``WorldNotFoundError`` extended ``LookupError``, missed the ``KeyError``
    branch, and fell through to the 500 fallback while tests stayed green).
 
-Run via ``make lint``. The checker inserts every package source root for local
-execution, then verifies the three first-party world-library distributions are
-installed and discovered before treating the composed registry as complete.
-It exits non-zero with a specific message on any drift.
+Run via ``make lint``. The checker inserts the framework and world-library
+source roots for local execution, then verifies the three first-party
+world-library distributions are installed and discovered before treating the
+composed registry as complete. Smol has no command gate and is intentionally
+outside this audit. The checker exits non-zero with a specific message on any
+drift.
 """
 
 from __future__ import annotations

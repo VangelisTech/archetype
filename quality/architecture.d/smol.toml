@@ -1,0 +1,16 @@
+# Architecture policy fragment: independent Smol teaching engine.
+# Merged into quality/architecture.toml by scripts/check_architecture.py;
+# fragments may declare only rule/exception arrays, never scalar policy.
+
+[[top_level_family_rule]]
+name = "smol-independent-engine"
+consumer = "archetype.smol"
+allowed_families = []
+
+# Registered families ordinarily have access to core and the common error
+# boundary. Smol is a separate teaching engine, so even those two implicit
+# framework dependencies are denied.
+[[package_rule]]
+name = "smol-does-not-import-framework"
+consumer = "archetype.smol"
+forbidden = ["archetype.core", "archetype.errors"]
