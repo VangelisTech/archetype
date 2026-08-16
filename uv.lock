@@ -198,7 +198,7 @@ wheels = [
 
 [[package]]
 name = "archetype-ecs"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "packages/archetype-ecs" }
 dependencies = [
     { name = "av" },
@@ -290,7 +290,7 @@ provides-extras = ["missions", "physical-ai", "research", "all", "coding-agent",
 
 [[package]]
 name = "archetype-missions"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "packages/archetype-missions" }
 dependencies = [
     { name = "archetype-ecs" },
@@ -318,7 +318,7 @@ provides-extras = ["modal"]
 
 [[package]]
 name = "archetype-physical-ai"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "packages/archetype-physical-ai" }
 dependencies = [
     { name = "archetype-ecs" },
@@ -356,7 +356,7 @@ provides-extras = ["modal", "sim", "all"]
 
 [[package]]
 name = "archetype-research"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "packages/archetype-research" }
 dependencies = [
     { name = "archetype-ecs" },
@@ -373,7 +373,7 @@ requires-dist = [
 
 [[package]]
 name = "archetype-smol"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "packages/archetype-smol" }
 dependencies = [
     { name = "daft" },
@@ -390,7 +390,7 @@ requires-dist = [
 
 [[package]]
 name = "archetype-workspace"
-version = "0.6.0"
+version = "0.6.1"
 source = { virtual = "." }
 dependencies = [
     { name = "archetype-ecs", extra = ["all", "coding-agent", "logfire", "sim"] },

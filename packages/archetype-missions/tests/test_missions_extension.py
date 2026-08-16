@@ -85,7 +85,7 @@ def test_manifest_declares_exact_missions_surface() -> None:
     assert first is second
     assert first.name == "missions"
     assert first.distribution == "archetype-missions"
-    assert first.version == "0.6.0"
+    assert first.version == "0.6.1"
     assert first.requires_framework == ">=0.6,<0.7"
     assert first.operation_models == MISSION_OPERATION_MODELS
     assert first.operation_names == (

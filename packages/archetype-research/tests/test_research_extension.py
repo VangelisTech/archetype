@@ -56,7 +56,7 @@ def test_research_manifest_is_complete_and_side_effect_free() -> None:
     assert first == second
     assert first.name == "research"
     assert first.distribution == "archetype-research"
-    assert first.version == "0.6.0"
+    assert first.version == "0.6.1"
     assert first.requires_framework == ">=0.6,<0.7"
     assert first.operation_models == (AutoResearch,)
     assert first.operation_names == ("autoresearch",)

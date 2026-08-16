@@ -9,4 +9,4 @@ from .world import RunResult, World
 
 __all__ = ["Component", "Processor", "RunResult", "World"]
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
