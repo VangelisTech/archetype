@@ -294,7 +294,10 @@ library adapter  -> its own family internals plus bounded framework composition 
 Forbidden reverse edges include:
 
 - core importing app, runtime, API, CLI, or registered domain families;
-- a top-level family importing app, runtime, API, or CLI;
+- an ordinary top-level family module importing app, runtime, API, CLI,
+  runtime resources, or wiring; only exact world-library adapters classified
+  by module and role in the architecture policy may cross their corresponding
+  framework host or composition boundary;
 - a top-level family importing another registered family without a declared
   lower-family edge;
 - one world library importing another world library;
@@ -620,8 +623,11 @@ Together, the repository's architecture and observability checkers must:
 - reject cycles in the complete registered top-level family graph;
 - derive core's ban on domain-family imports from that registry, so registering
   a family cannot bypass the reverse-dependency rule;
-- reject top-level-family imports of app, runtime, API, or CLI and reject
-  undeclared top-level family-to-family imports;
+- reject ordinary top-level-family module imports of app, runtime, API, CLI,
+  runtime resources, or wiring; exempt only exact world-library adapters
+  classified by module and role in the architecture policy; and reject
+  undeclared top-level family-to-family imports from every module, including
+  those adapters;
 - resolve root-facade package and symbol imports to their owning module before
   enforcing package direction;
 - fail closed when the root-facade export map is missing a valid static
