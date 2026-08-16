@@ -1,0 +1,5 @@
+# Keep actionlint's runner model aligned with the repository-owned release
+# runner group. Built-in self-hosted, macOS, and ARM64 labels need no entry.
+self-hosted-runner:
+  labels:
+    - archetype-apple-container-macos-26

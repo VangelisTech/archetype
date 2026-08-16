@@ -88,6 +88,22 @@ def test_local_pr_profile_matches_the_two_ci_jobs() -> None:
     ]
 
 
+def test_release_check_emits_the_immutable_annotated_tag_recipe() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    target = re.search(
+        r"^release-check:[^\n]*\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+
+    assert target is not None
+    body = target.group("body")
+    assert "git fetch origin main" in body
+    assert 'git tag -a v$(VERSION) origin/main -m \\"Release v$(VERSION)\\"' in body
+    assert "git push origin refs/tags/v$(VERSION):refs/tags/v$(VERSION)" in body
+    assert 'git tag v$(VERSION)"' not in body
+
+
 def test_review_gate_and_merge_queue_are_not_executable_workflows() -> None:
     active = ROOT / ".github" / "workflows"
     for name in (
@@ -116,10 +132,10 @@ def test_release_publish_requires_credentialed_r2_evidence() -> None:
     assert "target: operational-release-r2" in external
     assert "tests/infrastructure/test_r2_idempotency.py" in external
     assert "operational-release-r2-results.json" in gate
-    assert "needs: [release-evidence-gate, python-compatibility]" in _job(
+    assert "needs: [authorize-release, release-evidence-gate, python-compatibility]" in _job(
         workflow, "testpypi-preflight"
     )
-    assert "needs: pypi-preflight" in publish
+    assert "needs: [authorize-release, pypi-preflight]" in publish
 
     selected = _select_scenarios(
         load_scenarios(),
@@ -325,6 +341,8 @@ def test_new_distribution_publishers_are_direct_isolated_workflows() -> None:
         assert "workflow_dispatch:" in workflow
         assert "workflow_call:" not in workflow
         assert "push:" not in workflow
+        assert "expected_tag_object:" in workflow
+        assert 'description: "Exact immutable release tag object"' in workflow
         assert "group: archetype-release" not in workflow
         references = re.findall(r"^\s*- uses:\s+([^\s#]+)", workflow, re.MULTILINE)
         assert references
@@ -337,6 +355,8 @@ def test_new_distribution_publishers_are_direct_isolated_workflows() -> None:
         assert "scripts/verify_publisher_dispatch.py" in authorize
         assert f"--expected-workflow {workflow_name}" in authorize
         assert f"--distribution {distribution}" in authorize
+        assert "EXPECTED_TAG_OBJECT: ${{ inputs.expected_tag_object }}" in authorize
+        assert '--expected-tag-object "$EXPECTED_TAG_OBJECT"' in authorize
         assert "publisher-dispatch-${{ inputs.registry }}-${{ inputs.parent_run_attempt }}" in (
             authorize
         )
@@ -354,8 +374,42 @@ def test_new_distribution_publishers_are_direct_isolated_workflows() -> None:
             assert "skip-existing: true" in job
             assert "attestations: true" in job
             assert "actions/checkout@" not in job
-            assert "run:" not in job
-            assert job.count("- uses:") == 2
+            assert job.count("run:") == 2
+            assert job.count("- uses:") == 3
+            assert job.count("actions/download-artifact@") == 2
+            assert "name: Reauthorize the live parent release" in job
+            assert "publisher-dispatch-${{ inputs.registry }}-${{ inputs.parent_run_attempt }}" in (
+                job
+            )
+            assert "path: .context/publisher-dispatch-live/" in job
+            assert "GH_TOKEN: ${{ github.token }}" in job
+            assert f"PUBLISHER_DISTRIBUTION: {distribution}" in job
+            assert f"PUBLISHER_WORKFLOW: {workflow_name}" in job
+            assert 'parent_json="$(gh api' in job
+            assert '.status == "in_progress"' in job
+            assert ".conclusion == null" in job
+            assert '.actor.login == "everettVT"' in job
+            assert '.triggering_actor.login == "everettVT"' in job
+            assert '.schema == "archetype.publisher-dispatch/v2"' in job
+            assert ".run_id == $child_run_id" in job
+            assert "name: Reauthorize the remote release tag" in job
+            assert "EXPECTED_TAG_OBJECT: ${{ inputs.expected_tag_object }}" in job
+            assert "RELEASE_INPUT_TAG: ${{ inputs.tag }}" in job
+            assert "git ls-remote --exit-code" in job
+            assert '[[ "$direct_sha" == "$EXPECTED_TAG_OBJECT" ]]' in job
+            assert 'resolved_sha="${peeled_sha:-$direct_sha}"' in job
+            assert '[[ "$resolved_sha" == "$GITHUB_SHA" ]]' in job
+            assert "scripts/" not in job
+            assert (
+                job.index("actions/download-artifact@")
+                < job.index(
+                    "name: publisher-dispatch-${{ inputs.registry }}-"
+                    "${{ inputs.parent_run_attempt }}"
+                )
+                < job.index("name: Reauthorize the live parent release")
+                < job.index("name: Reauthorize the remote release tag")
+                < job.index("pypa/gh-action-pypi-publish@")
+            )
         assert "repository-url: https://test.pypi.org/legacy/" in testpypi
         assert "repository-url:" not in pypi
 
@@ -493,7 +547,9 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert 'UV_PYTHON: "3.13"' in compatibility
     assert 'uv sync --python "3.13" --all-packages --all-extras --group dev' in compatibility
     assert "sys.version_info[:2] == (3, 13)" in compatibility
-    assert "needs: [release-evidence-gate, python-compatibility]" in test_preflight
+    assert "needs: [authorize-release, release-evidence-gate, python-compatibility]" in (
+        test_preflight
+    )
     assert "scripts/verify_release_index.py" in test_preflight
     assert "scripts/verify_release_ref.py" in test_preflight
     assert "--publisher-environment release-testpypi" in test_preflight
@@ -501,7 +557,11 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert "--registry-artifact-host test-files.pythonhosted.org" in test_preflight
     assert "--attestation-staging" not in test_preflight
     assert '--expected-commit "$GITHUB_SHA"' in test_preflight
-    assert "needs: testpypi-preflight" in publish_test
+    assert (
+        '--expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"'
+        in test_preflight
+    )
+    assert "needs: [authorize-release, testpypi-preflight]" in publish_test
     assert "environment: release-testpypi" in publish_test
     assert "repository-url: https://test.pypi.org/legacy/" in publish_test
     assert "needs: [publish-testpypi, publish-testpypi-libraries]" in test_smoke
@@ -514,14 +574,18 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert "--registry-artifact-host test-files.pythonhosted.org" in test_smoke
     assert "--attestation-staging" not in test_smoke
     assert '--expected-commit "$GITHUB_SHA"' in test_smoke
-    assert "needs: testpypi-smoke" in pypi_preflight
+    assert "needs: [authorize-release, testpypi-smoke]" in pypi_preflight
     assert "scripts/verify_release_index.py" in pypi_preflight
     assert "scripts/verify_release_ref.py" in pypi_preflight
     assert "--publisher-environment release-pypi" in pypi_preflight
     assert "pypi-attestations==0.0.30" in pypi_preflight
     assert "--registry-artifact-host files.pythonhosted.org" in pypi_preflight
     assert '--expected-commit "$GITHUB_SHA"' in pypi_preflight
-    assert "needs: pypi-preflight" in publish
+    assert (
+        '--expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"'
+        in pypi_preflight
+    )
+    assert "needs: [authorize-release, pypi-preflight]" in publish
     assert "needs: [publish, publish-libraries]" in registry_smoke
     assert "scripts/verify_release_index.py" in registry_smoke
     assert "scripts/registry_smoke.py" in registry_smoke
@@ -531,7 +595,7 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert "pypi-attestations==0.0.30" in registry_smoke
     assert "--registry-artifact-host files.pythonhosted.org" in registry_smoke
     assert '--expected-commit "$GITHUB_SHA"' in registry_smoke
-    assert "needs: registry-smoke" in github_release
+    assert "needs: [authorize-release, registry-smoke]" in github_release
 
     for publishing_job in (publish_test, publish):
         assert "name: dist-archetype-ecs" in publishing_job
@@ -540,7 +604,7 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
         assert "attestations: true" in publishing_job
         assert "id-token: write" in publishing_job
         assert "actions/checkout@" not in publishing_job
-        assert "run:" not in publishing_job
+        assert publishing_job.count("run:") == 1
         assert "uv build" not in publishing_job
         assert "make build" not in publishing_job
         assert "github.triggering_actor == 'everettVT'" in publishing_job
@@ -559,6 +623,13 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
         assert '--parent-run-attempt "$GITHUB_RUN_ATTEMPT"' in coordinator
         assert '--tag "$GITHUB_REF_NAME"' in coordinator
         assert '--expected-commit "$GITHUB_SHA"' in coordinator
+        assert (
+            coordinator.count(
+                '--expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"'
+            )
+            == 2
+        )
+        assert "needs: [authorize-release," in coordinator
         assert f"publisher-dispatch-{registry}.json" in coordinator
         assert f"name: publisher-dispatch-{registry}-${{{{ github.run_attempt }}}}" in coordinator
         assert (
@@ -568,7 +639,51 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
         )
         assert "github.triggering_actor == 'everettVT'" in coordinator
 
+    publisher_check = re.compile(
+        r"      - name: Reauthorize the remote release tag\n"
+        r"(?P<step>.*?)(?=      - uses: pypa/gh-action-pypi-publish@)",
+        re.DOTALL,
+    )
+    publish_test_check = publisher_check.search(publish_test)
+    publish_check = publisher_check.search(publish)
+    assert publish_test_check is not None
+    assert publish_check is not None
+    assert publish_test_check.group("step") == publish_check.group("step")
+    check = publish_test_check.group("step")
+    assert "shell: bash" in check
+    assert "set -euo pipefail" in check
+    assert "RELEASE_INPUT_TAG: ${{ inputs.tag }}" in check
+    assert "EXPECTED_TAG_OBJECT: ${{ needs.authorize-release.outputs.tag_object_sha }}" in check
+    assert '[[ "$GITHUB_REPOSITORY" == "VangelisTech/archetype" ]]' in check
+    assert '[[ "$GITHUB_REF" == "$tag_ref" ]]' in check
+    assert "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" in check
+    assert "git ls-remote --exit-code" in check
+    assert 'remote="https://github.com/VangelisTech/archetype.git"' in check
+    assert '"$tag_ref" "$tag_ref^{}"' in check
+    assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in check
+    assert '[[ "$direct_sha" == "$EXPECTED_TAG_OBJECT" ]]' in check
+    assert 'resolved_sha="${peeled_sha:-$direct_sha}"' in check
+    assert '[[ "$resolved_sha" == "$GITHUB_SHA" ]]' in check
+    assert "scripts/" not in check
+    assert "uses:" not in check
+    for publishing_job in (publish_test, publish):
+        assert (
+            publishing_job.index("actions/download-artifact@")
+            < publishing_job.index("name: Reauthorize the remote release tag")
+            < publishing_job.index("pypa/gh-action-pypi-publish@")
+        )
+        assert publishing_job.count("- uses:") == 2
+
     assert "github.triggering_actor == 'everettVT'" in github_release
+    assert "scripts/verify_release_ref.py" in github_release
+    assert '--expected-commit "$GITHUB_SHA"' in github_release
+    assert (
+        '--expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"'
+        in github_release
+    )
+    assert github_release.index("scripts/verify_release_ref.py") < github_release.index(
+        "softprops/action-gh-release@"
+    )
     assert 'version: "latest"' not in workflow
     assert workflow.count('version: "0.9.28"') == 8
     assert workflow.count("persist-credentials: false") == 12
@@ -597,15 +712,23 @@ def test_release_workflow_is_operator_dispatched_from_an_immutable_tag() -> None
     assert "push:\n    tags:" not in workflow
     assert "RELEASE_ACTOR: ${{ github.actor }}" in authorize
     assert "RELEASE_TRIGGERING_ACTOR: ${{ github.triggering_actor }}" in authorize
-    assert 'test "$RELEASE_ACTOR" = "everettVT"' in authorize
-    assert 'test "$RELEASE_TRIGGERING_ACTOR" = "everettVT"' in authorize
-    assert 'test "$RELEASE_REF_TYPE" = "tag"' in authorize
-    assert 'test "$RELEASE_INPUT_TAG" = "$RELEASE_REF_NAME"' in authorize
+    assert '[[ "$RELEASE_ACTOR" == "everettVT" ]]' in authorize
+    assert '[[ "$RELEASE_TRIGGERING_ACTOR" == "everettVT" ]]' in authorize
+    assert '[[ "$RELEASE_REF_TYPE" == "tag" ]]' in authorize
+    assert '[[ "$RELEASE_INPUT_TAG" == "$RELEASE_REF_NAME" ]]' in authorize
+    assert "tag_object_sha: ${{ steps.release_ref.outputs.tag_object_sha }}" in authorize
+    assert "git ls-remote --exit-code" in authorize
+    assert "printf 'tag_object_sha=%s\\n'" in authorize
     assert "needs: authorize-release" in profile
     assert "needs: authorize-release" in compatibility
     assert 'git merge-base --is-ancestor "${GITHUB_REF_NAME}^{commit}" origin/main' in profile
-    assert "scripts/verify_release_ref.py" in _job(workflow, "testpypi-preflight")
-    assert "scripts/verify_release_ref.py" in _job(workflow, "pypi-preflight")
+    for job_id in ("testpypi-preflight", "pypi-preflight", "github-release"):
+        job = _job(workflow, job_id)
+        assert "scripts/verify_release_ref.py" in job
+        assert '--expected-commit "$GITHUB_SHA"' in job
+        assert (
+            '--expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"' in job
+        )
     assert "tag_name: ${{ github.ref_name }}" in github_release
 
 

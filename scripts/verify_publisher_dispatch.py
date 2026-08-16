@@ -76,6 +76,7 @@ def verify_publisher_dispatch(
     allowlist: Mapping[str, Any],
     tag: str,
     expected_commit: str,
+    expected_tag_object: str,
     registry: str,
 ) -> dict[str, Any]:
     """Bind a child publisher to one live, operator-authorized release run."""
@@ -90,6 +91,8 @@ def verify_publisher_dispatch(
         raise ValueError("publisher tag must be canonical vMAJOR.MINOR.PATCH")
     if _COMMIT.fullmatch(expected_commit) is None:
         raise ValueError("publisher expected commit must be a full Git commit")
+    if not isinstance(expected_tag_object, str) or _COMMIT.fullmatch(expected_tag_object) is None:
+        raise ValueError("publisher expected tag object must be a full Git object ID")
     if expected_workflow not in _PUBLISHER_WORKFLOWS:
         raise ValueError("publisher workflow is not registered to a release distribution")
     if PUBLISHER_WORKFLOWS.get(distribution) != expected_workflow:
@@ -148,12 +151,13 @@ def verify_publisher_dispatch(
         "parent_run_attempt",
         "tag",
         "commit",
+        "tag_object",
         "registry",
         "runs",
     }
     if set(allowlist) != expected_allowlist_keys:
         raise PermissionError("publisher dispatch allowlist has unexpected fields")
-    if allowlist.get("schema") != "archetype.publisher-dispatch/v1":
+    if allowlist.get("schema") != "archetype.publisher-dispatch/v2":
         raise PermissionError("publisher dispatch allowlist has an unsupported schema")
     for field, expected in (
         ("repository", repository),
@@ -161,6 +165,7 @@ def verify_publisher_dispatch(
         ("parent_run_attempt", parent_run_attempt),
         ("tag", tag),
         ("commit", expected_commit),
+        ("tag_object", expected_tag_object),
         ("registry", registry),
     ):
         if allowlist.get(field) != expected:
@@ -200,6 +205,7 @@ def verify_publisher_dispatch(
         "workflow": expected_workflow,
         "tag": tag,
         "commit": expected_commit,
+        "tag_object": expected_tag_object,
         "registry": registry,
         "environment": _REGISTRY_ENVIRONMENTS[registry],
         "child_run_id": child_run_id,
@@ -243,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--parent-run-attempt", type=int, required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--expected-commit", required=True)
+    parser.add_argument("--expected-tag-object", required=True)
     parser.add_argument("--registry", choices=tuple(_REGISTRY_ENVIRONMENTS), required=True)
     parser.add_argument("--allowlist", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -270,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         allowlist=allowlist,
         tag=args.tag,
         expected_commit=args.expected_commit,
+        expected_tag_object=args.expected_tag_object,
         registry=args.registry,
     )
     print(

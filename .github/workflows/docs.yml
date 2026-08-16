@@ -172,11 +172,12 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: f11df81ebc1ba9b7450c59398474827a
+          DOCS_DEPLOY_BRANCH: ${{ github.head_ref || 'main' }}
         run: |
           set -o pipefail
           npx --yes wrangler pages deploy site/ \
             --project-name=archetype-docs \
-            --branch=${{ github.head_ref || 'main' }} \
+            --branch="$DOCS_DEPLOY_BRANCH" \
             --commit-dirty=true 2>&1 | tee /tmp/deploy.log
           url=$(grep -oP 'https://[a-z0-9-]+\.archetype-docs\.pages\.dev' /tmp/deploy.log | head -1)
           if [ -z "$url" ]; then

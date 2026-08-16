@@ -28,7 +28,7 @@ else:  # pragma: no cover - exercised by the command-line entry point
 API_VERSION = "2026-03-10"
 API_ROOT = "https://api.github.com"
 REPOSITORY = "VangelisTech/archetype"
-SCHEMA = "archetype.publisher-dispatch/v1"
+SCHEMA = "archetype.publisher-dispatch/v2"
 RELEASE_WORKFLOW = "release.yml"
 
 DEFAULT_TIMEOUT_SECONDS = 30 * 60.0
@@ -111,17 +111,20 @@ def _context(
     parent_run_attempt: object,
     tag: object,
     expected_commit: object,
+    expected_tag_object: object,
     registry: object,
-) -> tuple[int, int, str, str, str]:
+) -> tuple[int, int, str, str, str, str]:
     run_id = _positive_integer(parent_run_id, "parent run ID")
     run_attempt = _positive_integer(parent_run_attempt, "parent run attempt")
     if not isinstance(tag, str) or _TAG.fullmatch(tag) is None:
         raise ValueError("release tag must be canonical vMAJOR.MINOR.PATCH")
     if not isinstance(expected_commit, str) or _COMMIT.fullmatch(expected_commit) is None:
         raise ValueError("expected commit must be one lowercase 40-hex SHA")
+    if not isinstance(expected_tag_object, str) or _COMMIT.fullmatch(expected_tag_object) is None:
+        raise ValueError("expected tag object must be one lowercase 40-hex SHA")
     if not isinstance(registry, str) or registry not in _REGISTRIES:
         raise ValueError("registry must be testpypi or pypi")
-    return run_id, run_attempt, tag, expected_commit, registry
+    return run_id, run_attempt, tag, expected_commit, expected_tag_object, registry
 
 
 def _publishers() -> tuple[tuple[str, str], ...]:
@@ -269,6 +272,7 @@ def dispatch_publishers(
     parent_run_attempt: int,
     tag: str,
     expected_commit: str,
+    expected_tag_object: str,
     registry: str,
     token: str,
     open_request: OpenRequest = _OPEN,
@@ -276,11 +280,19 @@ def dispatch_publishers(
 ) -> dict[str, Any]:
     """Dispatch each child publisher and return its exact-run allowlist."""
 
-    parent_run_id, parent_run_attempt, tag, expected_commit, registry = _context(
+    (
+        parent_run_id,
+        parent_run_attempt,
+        tag,
+        expected_commit,
+        expected_tag_object,
+        registry,
+    ) = _context(
         parent_run_id=parent_run_id,
         parent_run_attempt=parent_run_attempt,
         tag=tag,
         expected_commit=expected_commit,
+        expected_tag_object=expected_tag_object,
         registry=registry,
     )
     token = _token(token)
@@ -294,6 +306,7 @@ def dispatch_publishers(
         "parent_run_attempt": str(parent_run_attempt),
         "tag": tag,
         "expected_commit": expected_commit,
+        "expected_tag_object": expected_tag_object,
         "registry": registry,
     }
     runs: list[dict[str, Any]] = []
@@ -304,7 +317,7 @@ def dispatch_publishers(
             "POST",
             endpoint,
             token=token,
-            payload={"ref": tag, "inputs": inputs},
+            payload={"ref": tag, "inputs": inputs, "return_run_details": True},
             open_request=open_request,
             timeout_seconds=http_timeout_seconds,
         )
@@ -325,6 +338,7 @@ def dispatch_publishers(
         "parent_run_attempt": parent_run_attempt,
         "tag": tag,
         "commit": expected_commit,
+        "tag_object": expected_tag_object,
         "registry": registry,
         "runs": runs,
     }
@@ -337,15 +351,24 @@ def validate_allowlist(
     parent_run_attempt: int,
     tag: str,
     expected_commit: str,
+    expected_tag_object: str,
     registry: str,
 ) -> dict[str, Any]:
     """Validate an immutable dispatch receipt against the parent run context."""
 
-    parent_run_id, parent_run_attempt, tag, expected_commit, registry = _context(
+    (
+        parent_run_id,
+        parent_run_attempt,
+        tag,
+        expected_commit,
+        expected_tag_object,
+        registry,
+    ) = _context(
         parent_run_id=parent_run_id,
         parent_run_attempt=parent_run_attempt,
         tag=tag,
         expected_commit=expected_commit,
+        expected_tag_object=expected_tag_object,
         registry=registry,
     )
     if not isinstance(value, dict):
@@ -357,6 +380,7 @@ def validate_allowlist(
         "parent_run_attempt",
         "tag",
         "commit",
+        "tag_object",
         "registry",
         "runs",
     }
@@ -369,6 +393,7 @@ def validate_allowlist(
         "parent_run_attempt": parent_run_attempt,
         "tag": tag,
         "commit": expected_commit,
+        "tag_object": expected_tag_object,
         "registry": registry,
     }
     for field, expected in expected_context.items():
@@ -472,6 +497,7 @@ def await_publishers(
     parent_run_attempt: int,
     tag: str,
     expected_commit: str,
+    expected_tag_object: str,
     registry: str,
     token: str,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
@@ -489,6 +515,7 @@ def await_publishers(
         parent_run_attempt=parent_run_attempt,
         tag=tag,
         expected_commit=expected_commit,
+        expected_tag_object=expected_tag_object,
         registry=registry,
     )
     token = _token(token)
@@ -568,6 +595,7 @@ def _add_context_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--parent-run-attempt", type=_positive_decimal, required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--expected-commit", required=True)
+    parser.add_argument("--expected-tag-object", required=True)
     parser.add_argument("--registry", choices=sorted(_REGISTRIES), required=True)
     parser.add_argument("--token-env", default="GITHUB_TOKEN")
     parser.add_argument(
@@ -599,6 +627,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parent_run_attempt=args.parent_run_attempt,
             tag=args.tag,
             expected_commit=args.expected_commit,
+            expected_tag_object=args.expected_tag_object,
             registry=args.registry,
             token=token,
             http_timeout_seconds=args.http_timeout_seconds,
@@ -610,6 +639,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parent_run_attempt=args.parent_run_attempt,
             tag=args.tag,
             expected_commit=args.expected_commit,
+            expected_tag_object=args.expected_tag_object,
             registry=args.registry,
             token=token,
             http_timeout_seconds=args.http_timeout_seconds,

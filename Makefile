@@ -25,6 +25,7 @@ help:
 	@echo "  make format         Format code (ruff)"
 	@echo "  make lint           Lint code (ruff)"
 	@echo "  make static         All version-independent blocking validation"
+	@echo "  make actionlint-audit  Validate active GitHub Actions workflows"
 	@echo "  make contract-audit Validate normative sources and executable oracles"
 	@echo "  make benchmark-audit Validate benchmark ownership and policies"
 	@echo "  make operational-audit Validate operational scenario ownership and policies"
@@ -145,8 +146,12 @@ operational-audit:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/validate_operational_scenarios.py
 
 .PHONY: static
-static: format-check lint typecheck lock-check contract-audit benchmark-audit
+static: format-check lint typecheck lock-check contract-audit benchmark-audit actionlint-audit
 	@echo "Static validation passed"
+
+.PHONY: actionlint-audit
+actionlint-audit:
+	@uv run python scripts/run_actionlint.py
 
 .PHONY: lockfile-audit
 lockfile-audit:
@@ -533,9 +538,10 @@ release-check: sync-dev verify-release
 	@echo "✅ Release check passed for v$(VERSION)"
 	@echo ""
 	@echo "Next steps:"
-	@echo "  1. git tag v$(VERSION)"
-	@echo "  2. git push origin v$(VERSION)"
-	@echo "  3. Dispatch the Release workflow for v$(VERSION)"
+	@echo "  1. git fetch origin main"
+	@echo "  2. git tag -a v$(VERSION) origin/main -m \"Release v$(VERSION)\""
+	@echo "  3. git push origin refs/tags/v$(VERSION):refs/tags/v$(VERSION)"
+	@echo "  4. Dispatch the Release workflow for v$(VERSION)"
 
 .PHONY: verify-test-index
 verify-test-index:

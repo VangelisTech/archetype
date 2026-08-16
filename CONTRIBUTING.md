@@ -198,6 +198,13 @@ only when the registry Integrity API binds its publish attestation to this repos
 workflow, environment, filename, and digest, and the pinned `pypi-attestations`
 verifier validates the Sigstore proof for the served file.
 
+Immediately before each OIDC publisher action, its checkout-free job performs one
+inline `git ls-remote` check against the literal canonical repository without
+checking out or executing repository files or scripts.
+The exact canonical `vMAJOR.MINOR.PATCH` tag, including an annotated tag's peeled
+commit, must still resolve to the workflow's original `GITHUB_SHA`. This narrows the
+final mutable-ref window without exposing the publish token to checked-out code.
+
 Before the first four-project release, register pending Trusted Publishers for the
 three new project names on both PyPI and TestPyPI. This preconfigures their OIDC
 identities; it does not reserve or claim the names. Each new name remains claimable

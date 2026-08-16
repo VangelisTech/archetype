@@ -15,6 +15,7 @@ from scripts.verify_publisher_dispatch import verify_publisher_dispatch
 
 _AUTOMATION_ACTOR = "github-actions[bot]"
 _COMMIT = "a" * 40
+_TAG_OBJECT = "b" * 40
 _DISTRIBUTION = "archetype-missions"
 _PARENT_RUN_ATTEMPT = 2
 _PARENT_RUN_ID = 101
@@ -50,12 +51,13 @@ def _parent_run() -> dict[str, Any]:
 def _allowlist() -> dict[str, Any]:
     run_ids = _run_ids()
     return {
-        "schema": "archetype.publisher-dispatch/v1",
+        "schema": "archetype.publisher-dispatch/v2",
         "repository": _REPOSITORY,
         "parent_run_id": _PARENT_RUN_ID,
         "parent_run_attempt": _PARENT_RUN_ATTEMPT,
         "tag": _TAG,
         "commit": _COMMIT,
+        "tag_object": _TAG_OBJECT,
         "registry": "testpypi",
         "runs": [
             {
@@ -90,6 +92,7 @@ def _arguments() -> dict[str, Any]:
         "allowlist": _allowlist(),
         "tag": _TAG,
         "expected_commit": _COMMIT,
+        "expected_tag_object": _TAG_OBJECT,
         "registry": "testpypi",
     }
 
@@ -102,6 +105,7 @@ def test_verify_publisher_dispatch_accepts_allowlisted_bot_child_and_live_parent
         "workflow": _WORKFLOW,
         "tag": _TAG,
         "commit": _COMMIT,
+        "tag_object": _TAG_OBJECT,
         "registry": "testpypi",
         "environment": "release-testpypi",
         "child_run_id": _run_ids()[_DISTRIBUTION],
@@ -203,7 +207,7 @@ def test_verify_publisher_dispatch_rejects_wrong_parent_run(
     elif case == "tag":
         parent["head_branch"] = "v0.6.1"
     elif case == "sha":
-        parent["head_sha"] = "b" * 40
+        parent["head_sha"] = "c" * 40
     elif case == "attempt":
         parent["run_attempt"] += 1
     elif case == "repository":
@@ -238,7 +242,7 @@ def test_verify_publisher_dispatch_rejects_malformed_allowlist_matrix(
     arguments["allowlist"] = allowlist
     runs = allowlist["runs"]
     if case == "schema":
-        allowlist["schema"] = "archetype.publisher-dispatch/v2"
+        allowlist["schema"] = "archetype.publisher-dispatch/v1"
     elif case == "extra_top_level":
         allowlist["extra"] = True
     elif case == "not_a_list":
@@ -259,4 +263,21 @@ def test_verify_publisher_dispatch_rejects_malformed_allowlist_matrix(
         runs[0]["extra"] = True
 
     with pytest.raises(error, match=message):
+        verify_publisher_dispatch(**arguments)
+
+
+def test_verify_publisher_dispatch_rejects_different_tag_object_in_allowlist() -> None:
+    arguments = _arguments()
+    arguments["allowlist"]["tag_object"] = "c" * 40
+
+    with pytest.raises(PermissionError, match="tag_object differs"):
+        verify_publisher_dispatch(**arguments)
+
+
+@pytest.mark.parametrize("value", ["", "B" * 40, "b" * 39, 3, None])
+def test_verify_publisher_dispatch_rejects_malformed_tag_object(value: object) -> None:
+    arguments = _arguments()
+    arguments["expected_tag_object"] = value
+
+    with pytest.raises(ValueError, match="expected tag object"):
         verify_publisher_dispatch(**arguments)
