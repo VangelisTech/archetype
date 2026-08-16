@@ -18,9 +18,11 @@ and returns only complete, content-addressed episode evidence.
 
 ```mermaid
 graph TB
-    Req["HostedEpisodeRequest batch"] --> RT["ArchetypeRuntime"]
-    RT --> World["RuntimeWorld"]
-    World --> Act["Modal-hosted Activity"]
+    RT["ArchetypeRuntime"] --> World["RuntimeWorld"]
+    Req["HostedEpisodeRequest batch"] --> Adapter["PhysicalAI(world)"]
+    Adapter --> World
+    World --> Dispatch["CommandDispatcher"]
+    Dispatch --> Act["Modal-hosted Activity"]
     Act --> Obs["HostedEpisodeObservation<br/>result_ref + digests"]
     World --> Evidence["Committed world evidence"]
     Obs -.-> Evidence
@@ -85,10 +87,30 @@ Installing `archetype-physical-ai` registers the operation; it does not add a
 method to generic async or sync world handles. The typed adapter is async.
 
 `activity_id` is caller-stable within a World. Repeating it with the same
-canonical request reconciles the same durable Activity. Reusing it with
+canonical request reconciles the same durable Activity. Reusing it with a
 different request content fails closed. A fork may reuse the family-local ID:
 provider operation identity includes `world_id`, so parent and child execution
 remain independent.
+
+For an embedded host that supplies a custom provider factory or lease duration,
+pass `PhysicalAIExtensionConfig` through the generic runtime composition seam:
+
+```python
+from archetype import ArchetypeRuntime
+from archetype.physical_ai import PhysicalAIExtensionConfig
+
+async with ArchetypeRuntime(
+    world_library_configs={
+        "physical-ai": PhysicalAIExtensionConfig(
+            hosted_activity_lease_seconds=600,
+        )
+    }
+) as runtime:
+    world = runtime.world("physical-eval")
+    # Run hosted episodes through PhysicalAI(world) while the runtime is open.
+```
+
+This is trusted process-host configuration, not per-world state.
 
 ## Committed-state sequence
 

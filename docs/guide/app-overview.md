@@ -291,8 +291,10 @@ registered operations.
 - Process lifetime: `packages/archetype-ecs/src/archetype/runtime_resources.py`
 - Governed entry, scheduler, policy, and audit: `packages/archetype-ecs/src/archetype/commands/`
 - Generic between-tick delivery: `packages/archetype-ecs/src/archetype/activities/`
+- Storage migration workflow: `packages/archetype-ecs/src/archetype/migration/`
 - Agent Mission workflow authority: `packages/archetype-missions/src/archetype/missions/`
 - Physical-AI models, state, views, and handlers: `packages/archetype-physical-ai/src/archetype/physical_ai/`
+- AutoResearch values, ledger, views, and workflow: `packages/archetype-research/src/archetype/research/`
 - Family protocols: `packages/archetype-ecs/src/archetype/<family>/interfaces.py` or another focused family module
 - World ports: `packages/archetype-ecs/src/archetype/world/interfaces.py`
 - Storage port: `packages/archetype-ecs/src/archetype/storage/interfaces.py`

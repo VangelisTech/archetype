@@ -469,14 +469,14 @@ Managed ECS appends follow the same storage authority without changing core:
 the private Iceberg adapter materializes one Arrow payload, retains its commit
 token and physical table identity, and refreshes/retries only an exact catalog
 compare-and-swap conflict. Retry is bounded and uses full jitter. A
-commit-state-unknown response cannot prove absence, so v0.5 does not retry it
+commit-state-unknown response cannot prove absence, so v0.6 does not retry it
 or claim exact reconciliation. Storage raises `AmbiguousCommitError` with the
 exact table/world/run/tick identity and commit token, then rejects later
 non-empty appends to that table for the managed store's remaining lifetime.
 This also prevents a restored cached batch from replaying. The manifest-last
 protocol keeps any unconfirmed rows invisible (issue #709).
 
-The v0.5 API exposes no general schema-evolution contract. Physical layout
+The v0.6 API exposes no general schema-evolution contract. Physical layout
 tuning, compaction, and snapshot expiry are also deferred. Visibility pinning
 uses an explicit manifest-token allowlist whose size is linear in committed
 tick count.
@@ -656,18 +656,18 @@ live-world-registry dependency.
 The research workflow pull-forward (#652) is complete:
 `archetype.research` owns the frozen `AutoResearch` operation, supported values,
 ledger Components, views, process-shared keyed admission type, and free
-handler. Its reviewed graph is `research → storage, world`; the deleted
-the former research facade and its service protocol have no
-compatibility facade.
+handler. Its reviewed graph is `research → storage, world`; the former
+research facade and its service protocol were deleted without a compatibility
+facade.
 
 The trajectory, physical-AI, physical-workflow, ontology, HTN, and transcript
-stages have landed. Physical workflows are reachable through exact
-dispatcher operations exposed by `ArchetypeRuntime`; their former raw-service
-bridges and all six Issue #589 architecture exceptions are gone. Transcript
-ingestion is reachable through a trusted runtime operation and writes only
-sanitized narrative to typed rows linked to the common artifact occurrence;
-its PR4 registration is not actor-aware. It does not implicitly spawn mission
-Components. The provisional
+stages have landed. `PhysicalAI` reaches physical workflows through exact
+dispatcher operations without adding domain methods to `ArchetypeRuntime`;
+their former raw-service bridges and all six Issue #589 architecture
+exceptions are gone. `MissionWorld` reaches transcript ingestion through a
+trusted Missions operation and writes only sanitized narrative to typed rows
+linked to the common artifact occurrence; its registration is not
+actor-aware. It does not implicitly spawn mission Components. The provisional
 `archetype.experiments` package and its two unsafe logging exceptions are gone.
 The architecture manifest currently has no owned migration exceptions.
 
@@ -690,9 +690,9 @@ commands-owned `GetAuditHistory`/`AuditLog` projection. `ActorCtx` and exact
 operation models live with the commands or owning family. There is no generic
 command envelope, facade bridge, or compatibility auth re-export.
 
-## 13. Accepted v0.5 target architecture
+## 13. Current v0.6 architecture
 
-This section records the landed v0.5 architecture. The dispatcher,
+This section records the current v0.6 architecture. The dispatcher,
 exact-operation, Activity, composition, and runtime-resource ownership
 described here are current. Later changes must update policy, focused
 specifications, and executable oracles atomically.
@@ -716,7 +716,6 @@ dependency. `errors` is the exact common-family module; `runtime`, `api`,
 | `storage` | none |
 | `world` | `storage` |
 | `commands` | `storage`, `world` |
-| `activities` | `storage` |
 | `artifacts` | `storage` |
 | `migration` | `artifacts`, `storage` |
 | `redaction` | none |

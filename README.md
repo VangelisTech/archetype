@@ -15,8 +15,8 @@ command layer when you need a multi-user host.
 
 ## Install
 
-Install only the generic ECS framework for simulations, storage, evaluation,
-the runtime, API, and CLI:
+Install only the generic ECS framework for simulations, storage, migration,
+evaluation, the runtime, API, and CLI:
 
 ```bash
 uv add archetype-ecs

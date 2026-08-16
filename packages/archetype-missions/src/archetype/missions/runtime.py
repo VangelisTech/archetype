@@ -71,31 +71,23 @@ class Missions:
         *,
         config: AgentMissionConfig,
         storage: str | Path | StorageConfig | None = None,
-        owner_id: str | None = None,
-        reservation: Any | None = None,
     ) -> None:
         self._runtime = runtime
         self._resources = runtime._resources
         self._dispatcher = self._resources.dispatcher
-        self._owner_id = owner_id or f"mission:{uuid7()}"
+        self._owner_id = f"mission:{uuid7()}"
         self._name = name
         self._config = config
         self._storage = storage
-        created_reservation = reservation is None
-        self._reservation = (
-            reservation
-            if reservation is not None
-            else self._resources.reserve_owner(
-                self._owner_id,
-                phase="workflow-handles",
-                closed_message="Agent Missions handle is closed",
-            )
+        self._reservation = self._resources.reserve_owner(
+            self._owner_id,
+            phase="workflow-handles",
+            closed_message="Agent Missions handle is closed",
         )
         # A directly constructed typed adapter is the supported surface. Keep
         # it strongly reachable from the process owner just like a handle
         # obtained through the dynamic library lookup.
-        if created_reservation:
-            self._reservation.retain_anchor(self)
+        self._reservation.retain_anchor(self)
         self._operation_admission = self._reservation.operation_admission
         self._close_lock = asyncio.Lock()
         self._public_closing = False

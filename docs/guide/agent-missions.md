@@ -581,7 +581,7 @@ checkpoint-capable session for a bounded, best-effort snapshot and record
 either its reference or a `FrictionLog`. A slow or failed snapshot cannot delay
 or change the valid task decision, and rejected work is still checkpointed.
 
-Checkpoint restore is not supported by the v0.5 Modal Activity execution path.
+Checkpoint restore is not supported by the current v0.6 Modal Activity execution path.
 `restore_sandbox(...)` fails explicitly before provider I/O; accepting a
 checkpoint while the Activity executor starts a different operation-scoped
 sandbox would silently discard the restored filesystem. Checkpoint references
@@ -593,13 +593,13 @@ into the immutable Activity request before re-enabling the public operation.
 
 | Backend | Role | Checkpoint / restore | Credential capabilities |
 |---|---|---|---|
-| Apple Container | Backend-capability and parity adapter; not admitted by the v0.5 Mission workflow. | Stops, exports the session root filesystem to an atomic content-addressed host-local archive, restarts in `finally`, verifies integrity, and rebuilds a restore image. | None. The parity adapter exposes no Codex OAuth, auth-volume, login, or process-secret capability. |
-| Docker | Linux/CI backend-capability reference; not admitted by the v0.5 Mission workflow. | `docker commit`, followed by immutable image-ID inspection and same-provider restore. | None. The parity adapter exposes no Codex OAuth, auth-volume, login, or process-secret capability. |
-| Modal | The sole v0.5 Mission Activity backend. | Captures `snapshot_filesystem` as durable evidence. Backend-level restore accepts exact `im-...` image IDs, but workflow restore is disabled until checkpoint identity is part of Activity admission. | Required named Modal Volume plus a separate broker sandbox. |
+| Apple Container | Backend-capability and parity adapter; not admitted by the v0.6 Mission workflow. | Stops, exports the session root filesystem to an atomic content-addressed host-local archive, restarts in `finally`, verifies integrity, and rebuilds a restore image. | None. The parity adapter exposes no Codex OAuth, auth-volume, login, or process-secret capability. |
+| Docker | Linux/CI backend-capability reference; not admitted by the v0.6 Mission workflow. | `docker commit`, followed by immutable image-ID inspection and same-provider restore. | None. The parity adapter exposes no Codex OAuth, auth-volume, login, or process-secret capability. |
+| Modal | The sole v0.6 Mission Activity backend. | Captures `snapshot_filesystem` as durable evidence. Backend-level restore accepts exact `im-...` image IDs, but workflow restore is disabled until checkpoint identity is part of Activity admission. | Required named Modal Volume plus a separate broker sandbox. |
 
 #### Authentication paths by provider
 
-Codex is the only coding-agent provider in v0.5, and Modal is the sole backend
+Codex is the only coding-agent provider in v0.6, and Modal is the sole backend
 that brokers its subscription device credential. Apple Container and Docker
 exercise lifecycle and checkpoint parity only; they expose no Codex
 authentication or provider-secret surface. Four Modal authorities remain
@@ -675,7 +675,7 @@ In Actions, optional repository variable `CODING_AGENT_MODAL_PROFILE` becomes
 the SDK's `MODAL_PROFILE`. The interactive login
 operation owns writes to the Codex auth Volume; an admitted mission reads one
 copy for thread admission and never writes a refresh back. Give each
-concurrently active runtime its own Volume because v0.5 does not claim
+concurrently active runtime its own Volume because v0.6 does not claim
 cross-runtime compare-and-swap over the mutable login credential.
 
 The GitHub Secret should contain a fine-grained, expiring token scoped to the
@@ -696,7 +696,7 @@ argument, Activity result, ECS row, or checkpoint. The admitted Modal path
 removes the exact staged file before the model turn, TUI, tools, and
 trace-producing agent work begin.
 
-Repository hydration and critic fetch are credential-free for the v0.5 public
+Repository hydration and critic fetch are credential-free for the v0.6 public
 repository path. The GitHub capability is leased only for author publication,
 from a clean Git repository in the separate provider-owned auth broker with
 inherited Git configuration, hooks, URL rewrites, and credential helpers
@@ -751,7 +751,7 @@ transitions. Both ttyd ports are reached through distinct port-scoped Modal
 Sandbox Connect Tokens minted by the same trusted-maintainer Modal authority,
 including the spectate lane; neither lane is an unauthenticated public tunnel.
 There is no application-actor authorization, durable grant audit, explicit
-revocation API, or user-selected TTL in v0.5. The displayed bearer may remain
+revocation API, or user-selected TTL in v0.6. The displayed bearer may remain
 in browser history, and sandbox teardown is its practical revocation boundary.
 Takeover is intentionally a trusted-maintainer capability over an externally
 isolated sandbox: the TUI uses the mission's `never` approval and
@@ -928,9 +928,9 @@ the process-local Mission behavior. A provider-bound Activity is reconciled by
 its recorded operation identity; cold recovery never creates a second Mission
 or blindly repeats the provider operation.
 
-### Accepted v0.5 control-plane contract
+### Current v0.6 control-plane contract
 
-This subsection is normative for v0.5. The supported Modal author and
+This subsection is normative for v0.6. The supported Modal author and
 exact-head critic both use this Activity contract.
 
 Agent Missions has three cooperating concerns with distinct authority:
@@ -1036,7 +1036,8 @@ effects. A drained run returns its factual terminal result; teardown never
 replaces it with a generic runtime-closed error. Retryable cleanup receives
 only a narrow exact-world capability and cannot use inherited task context to
 admit another mission or touch a sibling world. This whole-operation barrier
-is the v0.5 resolution of the admission race tracked in issue #627.
+was introduced in v0.5 to resolve the admission race tracked in issue #627 and
+remains part of the v0.6 contract.
 
 ## 8. File and responsibility map
 
@@ -1061,7 +1062,7 @@ The implementation follows this layout:
 | `archetype/missions/sandboxes/docker.py` | Linux/CI sandbox-capability backend (rejected for end-to-end admission) and immutable image restore. |
 | `archetype/missions/sandboxes/modal.py` | Supported end-to-end remote backend, device login, snapshots, and direct live monitor. |
 | `archetype/missions/service.py` | Graph materialization, tick/I/O composition, family workflow, and projections. |
-| `archetype/runtime/missions.py` | Mission-author runtime handle and lifecycle. |
+| `packages/archetype-missions/src/archetype/missions/runtime.py` | `Missions` and `MissionWorld` typed adapters and workflow-handle lifecycle. |
 | `examples/11_coding_agent_mission.py` | Real typed dogfood script. |
 | `tests/missions/` | Family contract, transition, sandbox, harness, and provider oracles. |
 | `tests/missions/test_mission_author_world_integration.py` | Exact committed author admission, staging, restart, and settlement oracle. |

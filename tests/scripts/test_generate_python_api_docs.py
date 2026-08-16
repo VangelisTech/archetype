@@ -8,7 +8,9 @@ from __future__ import annotations
 import archetype
 from scripts.generate_python_api_docs import (
     PAGES_DIR,
+    WORLD_LIBRARY_FACADE_TIERS,
     _validate_coverage,
+    _validate_world_library_facades,
     main,
 )
 
@@ -17,9 +19,11 @@ WORLD_LIBRARY_EXPORTS = {
     "AgentTask",
     "AutoResearchConfig",
     "AutoResearchResult",
+    "CandidatePreparer",
     "CommandValidator",
     "CriticPolicy",
     "EvaluationResult",
+    "Evaluator",
     "HostedEpisodeObservation",
     "HostedEpisodeRequest",
     "MissionResult",
@@ -27,6 +31,7 @@ WORLD_LIBRARY_EXPORTS = {
     "Missions",
     "ModalHostedEpisodeConfig",
     "PhysicalAI",
+    "PhysicalAIExtensionConfig",
     "Research",
     "RepositoryPublicationPolicy",
     "ResearchCandidateContext",
@@ -68,5 +73,38 @@ def test_world_library_exports_are_documented_without_entering_framework_all() -
         assert f"::: archetype.missions.{name}" in missions
 
     reference = (PAGES_DIR.parent / "python-api.md").read_text(encoding="utf-8")
-    assert "CandidateContext" not in reference
+    assert "`CandidateContext`" not in reference
     assert "Compatibility-tier root attributes" not in reference
+
+
+def test_physical_ai_provider_factory_signature_is_documented() -> None:
+    reference = (PAGES_DIR / "physical-ai-host.md").read_text(encoding="utf-8")
+
+    for name in (
+        "HostedEpisodeProvider",
+        "HostedEpisodeProviderResult",
+        "HostedEpisodeRetryGuard",
+        "HostedEpisodeReconciliation",
+        "HostedEpisodeRecovered",
+        "HostedEpisodeConfirmedAbsent",
+        "HostedEpisodeRecoveryUnknown",
+    ):
+        assert f"::: archetype.physical_ai.hosted_activity_contracts.{name}" in reference
+
+
+def test_world_library_facade_exports_have_exact_stability_tiers() -> None:
+    import importlib
+
+    _validate_world_library_facades()
+
+    for module_name, tiers in WORLD_LIBRARY_FACADE_TIERS.items():
+        module = importlib.import_module(module_name)
+        classified = [name for names in tiers.values() for name in names]
+        assert len(classified) == len(set(classified))
+        assert set(classified) == set(module.__all__)
+
+    reference = (PAGES_DIR.parent / "python-api.md").read_text(encoding="utf-8")
+    assert "## World-library facade classifications" in reference
+    assert "### `archetype.missions`" in reference
+    assert "**Recommended:** `Missions`, `MissionWorld`" in reference
+    assert "**Extension:** `MISSION_COMPONENTS`" in reference

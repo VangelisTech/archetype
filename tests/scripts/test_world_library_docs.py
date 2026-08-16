@@ -12,12 +12,16 @@ ROOT = Path(__file__).resolve().parents[2]
 CANONICAL_SURFACES = (
     ROOT / "README.md",
     ROOT / "docs/index.md",
+    ROOT / "docs/guide/agent-missions.md",
+    ROOT / "docs/guide/api-layer.md",
     ROOT / "docs/guide/api-stability.md",
+    ROOT / "docs/guide/application-architecture.md",
     ROOT / "docs/guide/artifacts.md",
     ROOT / "docs/guide/autoresearch.md",
     ROOT / "docs/guide/examples.md",
     ROOT / "docs/guide/physical-ai.md",
     ROOT / "docs/guide/runtime.md",
+    ROOT / "docs/guide/storage-migration.md",
     ROOT / "docs/guide/trajectories.md",
     ROOT / "docs/guide/world-libraries.md",
     ROOT / "examples/06_trajectory_analysis.py",
@@ -54,6 +58,15 @@ def test_autoresearch_guide_uses_generic_terminal_states() -> None:
     assert "`CRASHED`" not in guide
 
 
+def test_agent_missions_guide_uses_the_0_6_adapter_and_contract() -> None:
+    guide = (ROOT / "docs/guide/agent-missions.md").read_text(encoding="utf-8")
+
+    assert "archetype/runtime/missions.py" not in guide
+    assert "packages/archetype-missions/src/archetype/missions/runtime.py" in guide
+    assert "v0.5 Mission workflow" not in guide
+    assert "normative for v0.5" not in guide
+
+
 def test_clean_break_release_note_is_reader_visible() -> None:
     release_note = (ROOT / "docs/guide/release-0.6.md").read_text(encoding="utf-8")
     navigation = (ROOT / "mkdocs.yml").read_text(encoding="utf-8")
@@ -78,3 +91,30 @@ def test_missions_reference_renders_the_primary_workflow_methods() -> None:
         assert "Persist one coding mission and return its durable identity." in page
         assert "Run a submitted mission to a terminal result." in page
         assert "Release this mission workflow handle and its world reservation." in page
+
+
+def test_world_library_signature_contracts_are_in_the_reference_inventory() -> None:
+    research = (ROOT / "docs/reference/python/autoresearch.md").read_text(encoding="utf-8")
+    physical = (ROOT / "docs/reference/python/physical-ai.md").read_text(encoding="utf-8")
+    optimization = (ROOT / "docs/reference/python/physical-ai-optimization.md").read_text(
+        encoding="utf-8"
+    )
+    host = (ROOT / "docs/reference/python/physical-ai-host.md").read_text(encoding="utf-8")
+
+    assert "::: archetype.research.Evaluator" in research
+    assert "::: archetype.research.CandidatePreparer" in research
+    assert "::: archetype.physical_ai.PhysicalAIExtensionConfig" in host
+    assert "::: archetype.physical_ai.hosted_activity_contracts.HostedEpisodeProvider" in host
+    assert "::: archetype.physical_ai.hosted_activity_contracts.HostedEpisodeReconciliation" in host
+    assert "::: archetype.physical_ai.optimization.PerturbationStrategy" in optimization
+    assert "::: archetype.physical_ai.interfaces.EnvClient" not in physical
+    assert "::: archetype.physical_ai.interfaces.PolicyClient" not in physical
+
+
+def test_embedded_physical_ai_host_example_closes_its_runtime() -> None:
+    guide = (ROOT / "docs/guide/physical-ai.md").read_text(encoding="utf-8")
+
+    section = guide.split("For an embedded host", maxsplit=1)[1].split(
+        "## Committed-state sequence", maxsplit=1
+    )[0]
+    assert "async with ArchetypeRuntime(" in section

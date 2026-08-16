@@ -13,7 +13,7 @@ libraries:
 
 | Distribution | Import namespace | Responsibility |
 |---|---|---|
-| `archetype-ecs` | `archetype` | ECS execution, worlds, storage, commands, Activities, artifacts, evaluation, runtime, API, and CLI hosting |
+| `archetype-ecs` | `archetype` | ECS execution, worlds, storage, migration, commands, Activities, artifacts, evaluation, runtime, API, and CLI hosting |
 | `archetype-missions` | `archetype.missions` | Coding-agent missions, sandboxes, sessions, transcripts, and trajectory evidence |
 | `archetype-physical-ai` | `archetype.physical_ai` | Physical state, local policies, and hosted physical episodes |
 | `archetype-research` | `archetype.research` | Minimal world-library optimization and AutoResearch ledger workflow |

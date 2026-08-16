@@ -13,7 +13,7 @@ before upgrading its environment.
 
 | Install | Owns |
 |---|---|
-| `archetype-ecs` | Generic ECS execution, storage, commands, Activities, artifacts, evaluation, runtime, API, and CLI |
+| `archetype-ecs` | Generic ECS execution, storage, migration, commands, Activities, artifacts, evaluation, runtime, API, and CLI |
 | `archetype-missions` | Coding-agent missions, sandboxes, sessions, transcripts, and trajectory evidence |
 | `archetype-physical-ai` | Physical state, local policies, and hosted physical episodes |
 | `archetype-research` | Generic AutoResearch values, ledger state, views, and workflow |

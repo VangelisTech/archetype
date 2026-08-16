@@ -12,7 +12,7 @@ from dataclasses import MISSING, dataclass, fields, is_dataclass
 from enum import Enum
 from importlib import import_module
 from pathlib import Path
-from typing import Annotated, Any, Union, get_args, get_origin
+from typing import Annotated, Any, Union, cast, get_args, get_origin
 
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs" / "reference"
 OUTPUT = DOCS_DIR / "python-api.md"
@@ -150,6 +150,8 @@ PAGES: tuple[ReferencePage, ...] = (
             "AutoResearchResult",
             "ResearchCandidateContext",
             "EvaluationResult",
+            "Evaluator",
+            "CandidatePreparer",
             "IterationResult",
             "FrameGrader",
             "Outcome",
@@ -167,13 +169,35 @@ PAGES: tuple[ReferencePage, ...] = (
             "HostedEpisodeRequest",
             "HostedEpisodeObservation",
             "ModalHostedEpisodeConfig",
-            "EnvClient",
-            "PolicyClient",
+        ),
+    ),
+    ReferencePage(
+        "physical-ai-optimization",
+        "Physical AI optimization",
+        "Extension API",
+        "Build pure instruction-search workflows over an injected evaluator and strategy.",
+        (
             "PerturbationStrategy",
             "TemplatePerturbation",
             "RoundRecord",
             "OptimizationResult",
             "optimize_instruction",
+        ),
+    ),
+    ReferencePage(
+        "physical-ai-host",
+        "Physical AI host configuration",
+        "Integration API",
+        "Configure trusted hosted-episode providers at process composition time.",
+        (
+            "PhysicalAIExtensionConfig",
+            "HostedEpisodeProvider",
+            "HostedEpisodeProviderResult",
+            "HostedEpisodeRetryGuard",
+            "HostedEpisodeReconciliation",
+            "HostedEpisodeRecovered",
+            "HostedEpisodeConfirmedAbsent",
+            "HostedEpisodeRecoveryUnknown",
         ),
     ),
     ReferencePage(
@@ -219,6 +243,113 @@ PAGES: tuple[ReferencePage, ...] = (
         ),
     ),
 )
+
+# A family facade is convenient without making every exported ECS primitive the
+# beginner surface. Keep the complete classification explicit: adding a name to
+# a world-library ``__all__`` must also make a deliberate stability-tier choice.
+WORLD_LIBRARY_FACADE_TIERS: dict[str, dict[str, tuple[str, ...]]] = {
+    "archetype.missions": {
+        "Recommended": (
+            "Missions",
+            "MissionWorld",
+            "AgentMissionConfig",
+            "AgentTask",
+            "CommandValidator",
+            "CriticPolicy",
+            "RepositoryPublicationPolicy",
+            "SubmittedMission",
+            "MissionResult",
+            "TaskResult",
+        ),
+        "Extension": (
+            "MISSION_COMPONENTS",
+            "MISSION_TRANSITIONS",
+            "OUTPUT_COMPONENTS",
+            "TASK_COMPONENTS",
+            "TASK_TRANSITIONS",
+            "AgentArtifact",
+            "AgentExecution",
+            "AgentExecutionStatus",
+            "AuthoredBy",
+            "AuthorActivityObservation",
+            "Candidate",
+            "CandidateFor",
+            "Checkpoint",
+            "Commit",
+            "CompleteAuthorActivityObservation",
+            "CompleteCriticActivityObservation",
+            "CriticConclusion",
+            "CriticExecution",
+            "CriticExecutionStatus",
+            "CriticFinding",
+            "CriticReceipt",
+            "DependsOn",
+            "Executes",
+            "FilesystemManifest",
+            "FrictionLog",
+            "Guards",
+            "Mission",
+            "MissionState",
+            "MissionStatus",
+            "MissionSubmission",
+            "mission_episode_id",
+            "PartOfMission",
+            "ProducedBy",
+            "Reviews",
+            "RunsIn",
+            "RunnerSession",
+            "Sandbox",
+            "Task",
+            "TaskCriticPolicy",
+            "TaskCriticSubjectPolicy",
+            "TaskDispatch",
+            "TaskPolicy",
+            "TaskState",
+            "TaskStatus",
+            "TaskValidator",
+            "TaskWorkspace",
+            "ValidationResult",
+            "Supersedes",
+            "require_mission_transition",
+            "require_task_transition",
+            "load_runner_sessions",
+        ),
+    },
+    "archetype.physical_ai": {
+        "Recommended": (
+            "PhysicalAI",
+            "HostedEpisodeRequest",
+            "HostedEpisodeObservation",
+            "ModalHostedEpisodeConfig",
+        ),
+        "Extension": (
+            "PerturbationStrategy",
+            "TemplatePerturbation",
+            "RoundRecord",
+            "OptimizationResult",
+            "optimize_instruction",
+        ),
+        "Integration": ("PhysicalAIExtensionConfig",),
+    },
+    "archetype.research": {
+        "Extension": (
+            "Research",
+            "AutoResearchConfig",
+            "AutoResearchResult",
+            "ResearchCandidateContext",
+            "Evaluation",
+            "EvaluationResult",
+            "Evaluator",
+            "CandidatePreparer",
+            "IterationResult",
+            "Experiment",
+            "Run",
+            "RunStatus",
+            "Result",
+            "BranchHead",
+        ),
+    },
+}
 
 ALIASES: dict[str, str] = {
     "Processor": "SyncProcessor",
@@ -270,6 +401,8 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
         "ResearchCandidateContext",
     ),
     "EvaluationResult": ("archetype.research", "EvaluationResult"),
+    "Evaluator": ("archetype.research", "Evaluator"),
+    "CandidatePreparer": ("archetype.research", "CandidatePreparer"),
     "IterationResult": ("archetype.research", "IterationResult"),
     "PhysicalAI": ("archetype.physical_ai", "PhysicalAI"),
     "HostedEpisodeRequest": (
@@ -284,13 +417,43 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
         "archetype.physical_ai",
         "ModalHostedEpisodeConfig",
     ),
-    "EnvClient": ("archetype.physical_ai.interfaces", "EnvClient"),
+    "PhysicalAIExtensionConfig": (
+        "archetype.physical_ai",
+        "PhysicalAIExtensionConfig",
+    ),
+    "HostedEpisodeProvider": (
+        "archetype.physical_ai.hosted_activity_contracts",
+        "HostedEpisodeProvider",
+    ),
+    "HostedEpisodeProviderResult": (
+        "archetype.physical_ai.hosted_activity_contracts",
+        "HostedEpisodeProviderResult",
+    ),
+    "HostedEpisodeRetryGuard": (
+        "archetype.physical_ai.hosted_activity_contracts",
+        "HostedEpisodeRetryGuard",
+    ),
+    "HostedEpisodeReconciliation": (
+        "archetype.physical_ai.hosted_activity_contracts",
+        "HostedEpisodeReconciliation",
+    ),
+    "HostedEpisodeRecovered": (
+        "archetype.physical_ai.hosted_activity_contracts",
+        "HostedEpisodeRecovered",
+    ),
+    "HostedEpisodeConfirmedAbsent": (
+        "archetype.physical_ai.hosted_activity_contracts",
+        "HostedEpisodeConfirmedAbsent",
+    ),
+    "HostedEpisodeRecoveryUnknown": (
+        "archetype.physical_ai.hosted_activity_contracts",
+        "HostedEpisodeRecoveryUnknown",
+    ),
     "OptimizationResult": ("archetype.physical_ai.optimization", "OptimizationResult"),
     "PerturbationStrategy": (
         "archetype.physical_ai.optimization",
         "PerturbationStrategy",
     ),
-    "PolicyClient": ("archetype.physical_ai.interfaces", "PolicyClient"),
     "RoundRecord": ("archetype.physical_ai.optimization", "RoundRecord"),
     "TemplatePerturbation": (
         "archetype.physical_ai.optimization",
@@ -365,6 +528,11 @@ RECORDS = frozenset(
         "HostedEpisodeRequest",
         "HostedEpisodeObservation",
         "ModalHostedEpisodeConfig",
+        "HostedEpisodeProviderResult",
+        "HostedEpisodeRetryGuard",
+        "HostedEpisodeRecovered",
+        "HostedEpisodeConfirmedAbsent",
+        "HostedEpisodeRecoveryUnknown",
         "OptimizationResult",
         "RoundRecord",
     }
@@ -393,9 +561,31 @@ COMPATIBILITY_CLASSES = frozenset(
 HIDDEN_SIGNATURES = frozenset({"RuntimeWorld", "SyncRuntimeWorld"})
 
 
+def _validate_world_library_facades() -> None:
+    """Require every family-facade export to have exactly one API tier."""
+    problems: list[str] = []
+    for module_name, tiers in WORLD_LIBRARY_FACADE_TIERS.items():
+        classified = [name for names in tiers.values() for name in names]
+        duplicates = sorted({name for name in classified if classified.count(name) > 1})
+        exports = set(getattr(import_module(module_name), "__all__", ()))
+        declared = set(classified)
+        unclassified = sorted(exports - declared)
+        stale = sorted(declared - exports)
+        if duplicates:
+            problems.append(f"{module_name} multiply classified: {', '.join(duplicates)}")
+        if unclassified:
+            problems.append(f"{module_name} unclassified exports: {', '.join(unclassified)}")
+        if stale:
+            problems.append(f"{module_name} classified names not exported: {', '.join(stale)}")
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+
 def _validate_coverage() -> dict[str, tuple[str, str]]:
     """Return export locations after checking classification and alias coverage."""
     import archetype
+
+    _validate_world_library_facades()
 
     framework_locations = dict(archetype._EXPORTS)
     framework_exports = set(archetype.__all__)
@@ -474,9 +664,10 @@ def _record_rows(record: type) -> list[tuple[str, str, str, str]]:
     if issubclass(record, Enum):
         return [(member.name, record.__name__, repr(member.value), "—") for member in record]
 
-    if hasattr(record, "model_fields"):
+    model_fields = cast(dict[str, Any] | None, getattr(record, "model_fields", None))
+    if model_fields is not None:
         rows = []
-        for name, info in record.model_fields.items():
+        for name, info in model_fields.items():
             rows.append(
                 (
                     name,
@@ -603,6 +794,21 @@ def _render_index() -> str:
             "",
             "See [API stability and docstrings](../guide/api-stability.md) for the full policy.",
             "",
+            "## World-library facade classifications",
+            "",
+            "Every name in a world-library facade is assigned exactly one tier. The docs "
+            "build fails when an export is added or removed without updating this inventory.",
+            "",
+        )
+    )
+    for module_name, tiers in WORLD_LIBRARY_FACADE_TIERS.items():
+        lines.extend((f"### `{module_name}`", ""))
+        for tier, names in tiers.items():
+            rendered = ", ".join(f"`{name}`" for name in names)
+            lines.append(f"- **{tier}:** {rendered}")
+        lines.append("")
+    lines.extend(
+        (
             "## Compatibility aliases",
             "",
         )

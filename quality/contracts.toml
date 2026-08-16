@@ -70,13 +70,13 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
-id = "architecture.v0_5.target_dag"
+id = "architecture.v0_6.current_dag"
 source = "docs/guide/application-architecture.md"
-section = "13. Accepted v0.5 target architecture"
+section = "13. Current v0.6 architecture"
 owner = "architecture"
 risk = "high"
 pytest = [
-  "tests/scripts/test_check_architecture.py::test_ratified_v0_5_family_dag_is_complete_acyclic_and_exact",
+  "tests/scripts/test_check_architecture.py::test_current_v0_6_family_dag_is_complete_acyclic_and_exact",
 ]
 static = []
 evals = []

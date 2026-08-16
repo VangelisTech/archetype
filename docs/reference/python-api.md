@@ -17,6 +17,8 @@ Archetype's Python reference inventories and classifies the supported framework 
 | [Configuration](python/configuration.md) | Runtime configuration is user-facing. `WorldConfig` is primarily for custom hosts and lower-level engine construction. |
 | [AutoResearch and evaluation](python/autoresearch.md) | Configure optimization loops and persist evaluation evidence with explicit identities. |
 | [Physical AI](python/physical-ai.md) | Run or recover complete Modal-hosted episode batches through a World. |
+| [Physical AI optimization](python/physical-ai-optimization.md) | Build pure instruction-search workflows over an injected evaluator and strategy. |
+| [Physical AI host configuration](python/physical-ai-host.md) | Configure trusted hosted-episode providers at process composition time. |
 | [Core engine](python/core.md) | Supported engine primitives for custom execution and world lifecycle extensions. |
 | [Storage backends](python/storage.md) | Supported asynchronous storage implementations for custom engine wiring. |
 | [Compatibility API](python/compatibility.md) | The synchronous educational engine and legacy aliases remain available for compatibility. New application code should use `ArchetypeRuntime`. |
@@ -30,6 +32,25 @@ World-library APIs are family-qualified and remain deliberately absent from the 
 The container and concrete application services are internal and are not top-level exports. Repository wiring imports them from their owning family modules; applications use the runtime or an adapter.
 
 See [API stability and docstrings](../guide/api-stability.md) for the full policy.
+
+## World-library facade classifications
+
+Every name in a world-library facade is assigned exactly one tier. The docs build fails when an export is added or removed without updating this inventory.
+
+### `archetype.missions`
+
+- **Recommended:** `Missions`, `MissionWorld`, `AgentMissionConfig`, `AgentTask`, `CommandValidator`, `CriticPolicy`, `RepositoryPublicationPolicy`, `SubmittedMission`, `MissionResult`, `TaskResult`
+- **Extension:** `MISSION_COMPONENTS`, `MISSION_TRANSITIONS`, `OUTPUT_COMPONENTS`, `TASK_COMPONENTS`, `TASK_TRANSITIONS`, `AgentArtifact`, `AgentExecution`, `AgentExecutionStatus`, `AuthoredBy`, `AuthorActivityObservation`, `Candidate`, `CandidateFor`, `Checkpoint`, `Commit`, `CompleteAuthorActivityObservation`, `CompleteCriticActivityObservation`, `CriticConclusion`, `CriticExecution`, `CriticExecutionStatus`, `CriticFinding`, `CriticReceipt`, `DependsOn`, `Executes`, `FilesystemManifest`, `FrictionLog`, `Guards`, `Mission`, `MissionState`, `MissionStatus`, `MissionSubmission`, `mission_episode_id`, `PartOfMission`, `ProducedBy`, `Reviews`, `RunsIn`, `RunnerSession`, `Sandbox`, `Task`, `TaskCriticPolicy`, `TaskCriticSubjectPolicy`, `TaskDispatch`, `TaskPolicy`, `TaskState`, `TaskStatus`, `TaskValidator`, `TaskWorkspace`, `ValidationResult`, `Supersedes`, `require_mission_transition`, `require_task_transition`, `load_runner_sessions`
+
+### `archetype.physical_ai`
+
+- **Recommended:** `PhysicalAI`, `HostedEpisodeRequest`, `HostedEpisodeObservation`, `ModalHostedEpisodeConfig`
+- **Extension:** `PerturbationStrategy`, `TemplatePerturbation`, `RoundRecord`, `OptimizationResult`, `optimize_instruction`
+- **Integration:** `PhysicalAIExtensionConfig`
+
+### `archetype.research`
+
+- **Extension:** `Research`, `AutoResearchConfig`, `AutoResearchResult`, `ResearchCandidateContext`, `Evaluation`, `EvaluationResult`, `Evaluator`, `CandidatePreparer`, `IterationResult`, `Experiment`, `Run`, `RunStatus`, `Result`, `BranchHead`
 
 ## Compatibility aliases
 

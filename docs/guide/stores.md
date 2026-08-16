@@ -344,7 +344,7 @@ PyIceberg's exact catalog compare-and-swap conflict, for at most 16 attempts
 with full jitter. Every attempt retains the same physical table identity and
 commit token; processor work is never planned or materialized again.
 
-The deliberate v0.5 ambiguity posture is fail-closed rather than
+The deliberate v0.6 ambiguity posture is fail-closed rather than
 reconciliation: PyIceberg's exact commit-state-unknown signal becomes
 `AmbiguousCommitError`, whose fields preserve the table, world, run, tick,
 commit token, and writer epoch. Storage does not replay that append because it
@@ -355,7 +355,7 @@ manifest-last visibility keeps them hidden. Exact snapshot readback,
 reconciliation, and restart-persistent freeze state remain future work
 (issue #709).
 
-The v0.5 surface does not expose general schema evolution, physical layout
+The v0.6 surface does not expose general schema evolution, physical layout
 tuning, compaction, or snapshot expiry. Visibility pinning retains an explicit
 manifest-token allowlist and therefore grows linearly with committed tick
 count.
