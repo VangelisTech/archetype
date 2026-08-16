@@ -216,6 +216,11 @@ def _validate_changed_fields[ComponentT: Component](
     token = _UNTOUCHED_FIELDS.set(untouched)
     try:
         validated = cast(ComponentT, validator.validate_python(values, by_name=True))
+        if type(validated) is not component_type:
+            raise TypeError(
+                f"{component_type.__name__} validation returned "
+                f"{type(validated).__name__}; validators must preserve the Component type"
+            )
         _require_supported_component_fields(validated)
         return validated
     finally:

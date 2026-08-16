@@ -559,6 +559,40 @@ def test_wrap_model_validator_cannot_bypass_untouched_field_validation() -> None
     assert world.history(Pair).to_pylist() == before
 
 
+def test_model_validator_cannot_change_the_component_type() -> None:
+    class Other(Component):
+        z: int
+
+    class Original(Component):
+        x: int
+
+        @model_validator(mode="wrap")
+        @classmethod
+        def replace_type(cls, value: Any, handler: Any) -> Any:
+            candidate = handler(value)
+            if candidate.x == 2:
+                return Other(z=9)
+            return candidate
+
+    class IncrementX(Processor):
+        components = (Original,)
+
+        def process(self, df, *, tick):
+            del tick
+            return df.with_column("original__x", col("original__x") + 1)
+
+    world = World(processors=[IncrementX()])
+    world.spawn(Original(x=1))
+    before = world.history(Original).to_pylist()
+
+    with pytest.raises(TypeError, match="validators must preserve the Component type"):
+        world.step()
+
+    assert world.tick == 0
+    assert world.history(Original).to_pylist() == before
+    assert world.query(Other).to_pylist() == []
+
+
 def test_equal_but_differently_typed_processor_values_are_revalidated() -> None:
     class StrictCount(Component):
         value: int = Field(strict=True)
