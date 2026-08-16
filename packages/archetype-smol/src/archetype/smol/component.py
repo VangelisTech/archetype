@@ -17,6 +17,8 @@ class Component(BaseModel):
     Define a component by subclassing this type and declaring Pydantic fields.
     Smol prefixes those fields with the lowercase class name in processor
     DataFrames, matching the notation used by the full Archetype framework.
+    Values must resolve to scalars or nested lists of scalars; encode mappings,
+    tuples, enums, and nested models as JSON strings instead.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)

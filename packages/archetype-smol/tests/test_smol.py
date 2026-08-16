@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import tomllib
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Self
 
@@ -392,89 +393,61 @@ def test_multi_field_updates_validate_one_atomic_candidate() -> None:
     ]
 
 
-def test_tuple_fields_survive_noop_daft_round_trips() -> None:
-    validated: list[tuple[int, int]] = []
-
-    class Bounds(Component):
-        value: tuple[int, int]
-
-        @field_validator("value")
-        @classmethod
-        def record_value(cls, value: tuple[int, int]) -> tuple[int, int]:
-            validated.append(value)
-            return value
-
-    world = World()
-    world.spawn(Bounds(value=(2, 5)))
-
-    world.step()
-
-    assert validated == [(2, 5)]
-    assert world.tick == 1
-    assert world.history(Bounds).to_pylist() == [
-        {
-            "entity_id": 1,
-            "tick": 0,
-            "is_active": True,
-            "bounds__value": {"_0": 2, "_1": 5},
-        },
-        {
-            "entity_id": 1,
-            "tick": 1,
-            "is_active": True,
-            "bounds__value": {"_0": 2, "_1": 5},
-        },
-    ]
-
-
-def test_nested_models_survive_noop_steps_without_replaying_validators() -> None:
-    validated: list[int] = []
-
+def test_ambiguous_structured_fields_fail_before_entity_admission() -> None:
     class Nested(BaseModel):
         value: int
 
-        @field_validator("value")
-        @classmethod
-        def increment(cls, value: int) -> int:
-            validated.append(value)
-            return value + 1
+    class Color(StrEnum):
+        RED = "red"
 
-    class NestedComponent(Component):
-        nested: Nested
+    class Flexible(Component):
+        value: Any
 
     world = World()
-    world.spawn(NestedComponent(nested=Nested(value=0)))
+    cyclic: list[Any] = []
+    cyclic.append(cyclic)
+    unsupported = (
+        (1, 2),
+        {"left": 1},
+        Nested(value=1),
+        Color.RED,
+        [[{"nested": 1}]],
+        cyclic,
+    )
+    for value in unsupported:
+        with pytest.raises(TypeError, match="Smol fields must be scalars"):
+            world.spawn(Flexible(value=value))
 
-    world.step()
+    entity_id = world.spawn(Flexible(value=[1, [2, None], "three"]))
+    before = world.history(Flexible).to_pylist()
 
-    assert validated == [0]
-    assert world.tick == 1
+    with pytest.raises(TypeError, match="Smol fields must be scalars"):
+        world.update(entity_id, Flexible(value={"invalid": 1}))
 
-
-def test_heterogeneous_dictionary_struct_padding_is_not_published() -> None:
-    class Labels(Component):
-        values: dict[str, int]
-
-    world = World()
-    world.spawn(Labels(values={"left": 1}))
-    world.spawn(Labels(values={"right": 2}))
-
-    world.step()
-
-    assert world.tick == 1
+    assert entity_id == 1
+    assert world.history(Flexible).to_pylist() == before
 
 
-def test_variable_tuple_struct_padding_is_not_published() -> None:
-    class Path(Component):
-        values: tuple[int, ...]
+def test_processor_cannot_publish_an_unsupported_field_shape() -> None:
+    class Flexible(Component):
+        value: Any
 
-    world = World()
-    world.spawn(Path(values=(1,)))
-    world.spawn(Path(values=(2, 3)))
+    class EmitMapping(Processor):
+        components = (Flexible,)
 
-    world.step()
+        def process(self, df, *, tick):
+            del tick
+            return df.with_column("flexible__value", lit({"invalid": 1}))
 
-    assert world.tick == 1
+    world = World(processors=[EmitMapping()])
+    world.spawn(Flexible(value=1))
+    before = world.history(Flexible).to_pylist()
+
+    with pytest.raises(TypeError, match="Smol fields must be scalars"):
+        world.step()
+
+    assert world.tick == 0
+    assert world.history(Flexible).to_pylist() == before
 
 
 def test_before_model_validator_observes_changed_candidate_once() -> None:
@@ -584,34 +557,6 @@ def test_wrap_model_validator_cannot_bypass_untouched_field_validation() -> None
 
     assert world.tick == 0
     assert world.history(Pair).to_pylist() == before
-
-
-def test_tuple_shape_restoration_does_not_bypass_strict_validation() -> None:
-    class StrictBounds(Component):
-        value: tuple[int, int] = Field(strict=True)
-
-    class ReplaceWithList(Processor):
-        components = (StrictBounds,)
-
-        def process(self, df, *, tick):
-            del tick
-            return df.with_column("strictbounds__value", lit([3, 5]))
-
-    world = World(processors=[ReplaceWithList()])
-    world.spawn(StrictBounds(value=(2, 5)))
-
-    with pytest.raises(ValidationError):
-        world.step()
-
-    assert world.tick == 0
-    assert world.history(StrictBounds).to_pylist() == [
-        {
-            "entity_id": 1,
-            "tick": 0,
-            "is_active": True,
-            "strictbounds__value": {"_0": 2, "_1": 5},
-        }
-    ]
 
 
 def test_equal_but_differently_typed_processor_values_are_revalidated() -> None:

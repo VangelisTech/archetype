@@ -14,14 +14,14 @@ from math import isnan
 from typing import Any, cast
 
 import daft
-from daft import DataFrame
-from pydantic import BaseModel
+from daft import DataFrame, col
 from pydantic_core import SchemaValidator, core_schema
 
 from .component import Component
 from .processor import Processor
 
 _METADATA_COLUMNS = ("entity_id", "tick", "is_active")
+_SOURCE_COLUMN_PREFIX = "__smol_source__"
 _UNTOUCHED_FIELDS: ContextVar[dict[str, Any] | None] = ContextVar(
     "archetype_smol_untouched_fields",
     default=None,
@@ -47,10 +47,35 @@ def _component_key(component_type: type[Component]) -> tuple[str, str]:
     return (component_type.__module__, component_type.__qualname__)
 
 
+def _source_column(column: str) -> str:
+    return f"{_SOURCE_COLUMN_PREFIX}{column}"
+
+
+def _is_supported_field_value(value: Any, ancestors: frozenset[int] = frozenset()) -> bool:
+    if type(value) in {type(None), bool, int, float, str, bytes}:
+        return True
+    if type(value) is not list or id(value) in ancestors:
+        return False
+    nested_ancestors = ancestors | {id(value)}
+    return all(_is_supported_field_value(item, nested_ancestors) for item in value)
+
+
+def _require_supported_component_fields(component: Component) -> None:
+    for name in type(component).model_fields:
+        value = getattr(component, name)
+        if not _is_supported_field_value(value):
+            raise TypeError(
+                f"{type(component).__name__}.{name} resolved to unsupported "
+                f"{type(value).__name__}; Smol fields must be scalars or nested lists of scalars"
+            )
+
+
 def _canonical_components(components: Iterable[Component]) -> tuple[Component, ...]:
     values = tuple(components)
     if not all(isinstance(component, Component) for component in values):
         raise TypeError("component values must be Component instances")
+    for component in values:
+        _require_supported_component_fields(component)
     types = [type(component) for component in values]
     if len(types) != len(set(types)):
         raise ValueError("an entity may contain only one value of each Component type")
@@ -88,53 +113,6 @@ def _same_value(left: Any, right: Any) -> bool:
     if isinstance(left, float) and isnan(left):
         return isnan(right)
     return bool(left == right)
-
-
-def _restore_daft_shape(value: Any, template: Any) -> Any:
-    """Restore Python container shapes that Arrow represents as structs."""
-
-    if isinstance(template, tuple):
-        items: list[Any] | None = None
-        if isinstance(value, dict):
-            indexes = {
-                int(key[1:])
-                for key in value
-                if isinstance(key, str) and key.startswith("_") and key[1:].isdigit()
-            }
-            if indexes and indexes == set(range(max(indexes) + 1)) and len(indexes) == len(value):
-                items = [value[f"_{index}"] for index in range(len(indexes))]
-                while len(items) > len(template) and items[-1] is None:
-                    items.pop()
-        elif isinstance(value, tuple):
-            items = list(value)
-        if items is not None:
-            return tuple(
-                _restore_daft_shape(item, template[index]) if index < len(template) else item
-                for index, item in enumerate(items)
-            )
-    if isinstance(template, list) and isinstance(value, list):
-        return [
-            _restore_daft_shape(item, template[index]) if index < len(template) else item
-            for index, item in enumerate(value)
-        ]
-    if isinstance(template, BaseModel) and isinstance(value, dict):
-        field_names = type(template).model_fields
-        restored = {
-            key: _restore_daft_shape(item, getattr(template, key)) if key in field_names else item
-            for key, item in value.items()
-        }
-        if set(restored) == set(field_names) and all(
-            _same_value(restored[name], getattr(template, name)) for name in field_names
-        ):
-            return template.model_copy(deep=True)
-        return restored
-    if isinstance(template, dict) and isinstance(value, dict):
-        return {
-            key: _restore_daft_shape(item, template[key]) if key in template else item
-            for key, item in value.items()
-            if key in template or item is not None
-        }
-    return value
 
 
 def _find_model_fields_node(schema: Any) -> dict[str, Any]:
@@ -237,7 +215,9 @@ def _validate_changed_fields[ComponentT: Component](
     validator = _changed_fields_validator(component_type, tuple(sorted(changed_values)))
     token = _UNTOUCHED_FIELDS.set(untouched)
     try:
-        return cast(ComponentT, validator.validate_python(values, by_name=True))
+        validated = cast(ComponentT, validator.validate_python(values, by_name=True))
+        _require_supported_component_fields(validated)
+        return validated
     finally:
         _UNTOUCHED_FIELDS.reset(token)
 
@@ -369,11 +349,18 @@ class World:
                     self._entity_row(entity_id, self.tick, self._entities[entity_id], signature)
                     for entity_id in entity_ids
                 ]
-                source_rows = {row["entity_id"]: row for row in rows}
                 source_components = {
                     entity_id: self._entities[entity_id] for entity_id in entity_ids
                 }
                 frame = daft.from_pylist(rows)
+                source_frame = frame.select(
+                    col("entity_id"),
+                    *(
+                        col(column).alias(_source_column(column))
+                        for column in self._columns(signature)
+                        if column not in _METADATA_COLUMNS
+                    ),
+                )
                 for _index, processor in processors:
                     if set(processor.components).issubset(signature):
                         frame = processor.process(frame, tick=self.tick)
@@ -384,9 +371,9 @@ class World:
                 staged.update(
                     self._decode_frame(
                         frame,
+                        source_frame,
                         signature,
                         entity_ids,
-                        source_rows=source_rows,
                         source_components=source_components,
                         expected_tick=self.tick,
                     )
@@ -488,10 +475,10 @@ class World:
     def _decode_frame(
         cls,
         frame: DataFrame,
+        source_frame: DataFrame,
         signature: _Signature,
         expected_entity_ids: list[int],
         *,
-        source_rows: dict[int, dict[str, Any]],
         source_components: dict[int, tuple[Component, ...]],
         expected_tick: int,
     ) -> dict[int, tuple[Component, ...]]:
@@ -504,6 +491,7 @@ class World:
                 f"processor output columns changed; missing={missing!r}, extra={extra!r}"
             )
 
+        frame = frame.join(source_frame, on="entity_id")
         rows = frame.to_pylist()
         actual_entity_ids = [row["entity_id"] for row in rows]
         if any(type(entity_id) is not int for entity_id in actual_entity_ids):
@@ -521,23 +509,18 @@ class World:
                 raise ValueError("processors may not change tick metadata")
             components: list[Component] = []
             entity_id = row["entity_id"]
-            source_row = source_rows[entity_id]
             current_by_type = {
                 type(component): component for component in source_components[entity_id]
             }
             for component_type in signature:
                 prefix = component_type.prefix()
-                values = {
-                    name: _restore_daft_shape(
-                        row[f"{prefix}{name}"],
-                        source_row[f"{prefix}{name}"],
-                    )
-                    for name in component_type.model_fields
-                }
                 changed_values = {
-                    name: value
-                    for name, value in values.items()
-                    if not _same_value(value, source_row[f"{prefix}{name}"])
+                    name: row[f"{prefix}{name}"]
+                    for name in component_type.model_fields
+                    if not _same_value(
+                        row[f"{prefix}{name}"],
+                        row[_source_column(f"{prefix}{name}")],
+                    )
                 }
                 if not changed_values:
                     components.append(current_by_type[component_type])

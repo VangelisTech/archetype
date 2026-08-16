@@ -105,6 +105,14 @@ once. A failed transform publishes no state, history, or tick. Python side
 effects inside a processor cannot be rolled back, so processors should remain
 pure.
 
+Component fields must resolve to `None`, `bool`, `int`, `float`, `str`,
+`bytes`, or nested lists of those scalar values. Smol rejects mappings,
+tuples, enums, nested Pydantic models, and other values whose Python identity
+would be erased by DataFrame materialization. Encode structured teaching state
+as a JSON string in a `_json` field. This keeps the small engine's validation
+boundary exact instead of reproducing the production framework's Arrow
+serialization policy.
+
 ## Choose the production framework when
 
 Use [`archetype-ecs`](../guide/runtime.md) when work needs durable worlds,

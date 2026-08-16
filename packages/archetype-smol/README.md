@@ -38,3 +38,10 @@ Smol keeps only the teaching loop: typed Components, priority-ordered
 DataFrame Processors, immediate in-memory entity mutation, atomic steps, and
 queryable snapshots. It intentionally has no storage providers, commands,
 Activities, hooks, runtime host, API, CLI, or world-library extension system.
+
+Component fields must resolve to `None`, `bool`, `int`, `float`, `str`,
+`bytes`, or nested lists of those scalar values. Smol rejects mappings,
+tuples, enums, nested models, and other values whose Python identity is erased
+by DataFrame materialization. Encode structured teaching state as a JSON string
+in a `_json` field; use `archetype-ecs` when typed structured storage is part of
+the exercise.
