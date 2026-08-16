@@ -535,7 +535,7 @@ def install(context: WorldLibraryContext) -> InstalledWorldLibrary:
 MANIFEST = WorldLibraryManifest(
     name="missions",
     distribution="archetype-missions",
-        version="0.6.1",
+    version="0.6.1",
     requires_framework=">=0.6,<0.7",
     operation_models=MISSION_OPERATION_MODELS,
     install=install,
