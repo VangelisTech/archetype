@@ -103,10 +103,12 @@ durably coordinated into a later committed observation, it follows the
 writes, provider reconciliation, durable result reference, and exact-receipt
 settlement.
 
-Worlds constructed without a coordinator (bare core usage, the sync stack)
-run uncoordinated: rows stamp the implicit epoch-0 identity (`""`/`0`), no
-manifests are written, and nothing is filtered — v0.2 semantics, unchanged.
-Their tokenless receipts do not provide the pinned source or observation
+An `AsyncWorld` constructed directly without a coordinator runs uncoordinated:
+rows stamp the implicit epoch-0 identity (`""`/`0`), no manifests are written,
+and nothing is filtered — v0.2 semantics, unchanged. The
+`ArchetypeRuntime.sync()` blocking facade still uses the managed asynchronous
+engine and does not select this bare-core mode. Tokenless receipts from direct
+uncoordinated construction do not provide the pinned source or observation
 snapshot required by the [Activity](activities.md) contract.
 
 ## 4. Reader-side allowlist

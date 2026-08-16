@@ -27,6 +27,15 @@ class ReferencePage:
     tier: str
     introduction: str
     names: tuple[str, ...]
+    distribution: str = "archetype-ecs"
+
+
+PACKAGE_IMPORTS = {
+    "archetype-ecs": "archetype",
+    "archetype-missions": "archetype.missions",
+    "archetype-physical-ai": "archetype.physical_ai",
+    "archetype-research": "archetype.research",
+}
 
 
 PAGES: tuple[ReferencePage, ...] = (
@@ -36,7 +45,15 @@ PAGES: tuple[ReferencePage, ...] = (
         "Recommended API",
         "Start here for scripts, notebooks, and applications. A runtime owns process-level "
         "services and creates world handles.",
-        ("ArchetypeRuntime", "configure_session", "entrypoint", "public_api"),
+        (
+            "ArchetypeRuntime",
+            "SyncArchetypeRuntime",
+            "SyncRuntimeWorld",
+            "run_sync",
+            "configure_session",
+            "entrypoint",
+            "public_api",
+        ),
     ),
     ReferencePage(
         "world-handle",
@@ -94,6 +111,7 @@ PAGES: tuple[ReferencePage, ...] = (
             "MissionResult",
             "TaskResult",
         ),
+        "archetype-missions",
     ),
     ReferencePage(
         "transcripts",
@@ -105,6 +123,7 @@ PAGES: tuple[ReferencePage, ...] = (
             "ClaudeTranscriptSource",
             "TranscriptIngestionResult",
         ),
+        "archetype-missions",
     ),
     ReferencePage(
         "building-blocks",
@@ -141,9 +160,10 @@ PAGES: tuple[ReferencePage, ...] = (
     ),
     ReferencePage(
         "autoresearch",
-        "AutoResearch and evaluation",
+        "Research and AutoResearch",
         "Extension API",
-        "Configure optimization loops and persist evaluation evidence with explicit identities.",
+        "Use the separately installed `archetype-research` library to configure optimization "
+        "loops and persist its experiment ledger.",
         (
             "Research",
             "AutoResearchConfig",
@@ -153,6 +173,16 @@ PAGES: tuple[ReferencePage, ...] = (
             "Evaluator",
             "CandidatePreparer",
             "IterationResult",
+        ),
+        "archetype-research",
+    ),
+    ReferencePage(
+        "evaluation",
+        "Framework evaluation",
+        "Extension API",
+        "Grade frames and persist generic evaluation outcomes and receipts owned by "
+        "`archetype-ecs`.",
+        (
             "FrameGrader",
             "Outcome",
             "GraderContract",
@@ -170,6 +200,7 @@ PAGES: tuple[ReferencePage, ...] = (
             "HostedEpisodeObservation",
             "ModalHostedEpisodeConfig",
         ),
+        "archetype-physical-ai",
     ),
     ReferencePage(
         "physical-ai-optimization",
@@ -183,6 +214,7 @@ PAGES: tuple[ReferencePage, ...] = (
             "OptimizationResult",
             "optimize_instruction",
         ),
+        "archetype-physical-ai",
     ),
     ReferencePage(
         "physical-ai-host",
@@ -199,6 +231,7 @@ PAGES: tuple[ReferencePage, ...] = (
             "HostedEpisodeConfirmedAbsent",
             "HostedEpisodeRecoveryUnknown",
         ),
+        "archetype-physical-ai",
     ),
     ReferencePage(
         "core",
@@ -223,24 +256,6 @@ PAGES: tuple[ReferencePage, ...] = (
         "Integration API",
         "Supported asynchronous storage implementations for custom engine wiring.",
         ("AsyncStore", "AsyncCachedStore", "AsyncLancedbStore"),
-    ),
-    ReferencePage(
-        "compatibility",
-        "Compatibility API",
-        "Compatibility API",
-        "The synchronous educational engine and legacy aliases remain available for "
-        "compatibility. New application code should use `ArchetypeRuntime`.",
-        (
-            "SyncArchetypeRuntime",
-            "SyncRuntimeWorld",
-            "run_sync",
-            "SyncProcessor",
-            "SyncWorld",
-            "SyncSystem",
-            "SyncStore",
-            "QueryManager",
-            "UpdateManager",
-        ),
     ),
 )
 
@@ -349,15 +364,6 @@ WORLD_LIBRARY_FACADE_TIERS: dict[str, dict[str, tuple[str, ...]]] = {
             "BranchHead",
         ),
     },
-}
-
-ALIASES: dict[str, str] = {
-    "Processor": "SyncProcessor",
-    "World": "SyncWorld",
-    "System": "SyncSystem",
-    "Store": "SyncStore",
-    "Querier": "QueryManager",
-    "Updater": "UpdateManager",
 }
 
 # These types are part of the public signature closure but are intentionally
@@ -545,19 +551,6 @@ EXPLICIT_MEMBERS: dict[str, tuple[str, ...]] = {
     "GraderContract": ("digest",),
 }
 
-COMPATIBILITY_CLASSES = frozenset(
-    {
-        "SyncArchetypeRuntime",
-        "SyncRuntimeWorld",
-        "SyncProcessor",
-        "SyncWorld",
-        "SyncSystem",
-        "SyncStore",
-        "QueryManager",
-        "UpdateManager",
-    }
-)
-
 HIDDEN_SIGNATURES = frozenset({"RuntimeWorld", "SyncRuntimeWorld"})
 
 
@@ -599,14 +592,12 @@ def _validate_coverage() -> dict[str, tuple[str, str]]:
         )
 
     documented = {name for page in PAGES for name in page.names}
-    top_level_documented = (documented - set(SUPPLEMENTAL)) | set(ALIASES)
+    top_level_documented = documented - set(SUPPLEMENTAL)
     actual = framework_exports
     missing = sorted(actual - top_level_documented)
     stale = sorted(top_level_documented - actual)
     duplicates = sorted(
-        name
-        for name in documented
-        if sum(name in page.names for page in PAGES) + int(name in ALIASES) > 1
+        name for name in documented if sum(name in page.names for page in PAGES) > 1
     )
     if missing or stale or duplicates:
         problems = []
@@ -731,7 +722,7 @@ def _directive(name: str, locations: dict[str, tuple[str, str]]) -> list[str]:
     if members:
         options.append("      members:")
         options.extend(f"        - {member}" for member in members)
-    elif name in RECORDS or name in COMPATIBILITY_CLASSES:
+    elif name in RECORDS:
         options.append("      members: false")
     if name in HIDDEN_SIGNATURES:
         options.append("      show_signature: false")
@@ -747,6 +738,11 @@ def _render_page(page: ReferencePage, locations: dict[str, tuple[str, str]]) -> 
         GENERATED,
         "",
         f"# {page.title}",
+        "",
+        "| Package | Value |",
+        "| --- | --- |",
+        f"| Distribution | `{page.distribution}` |",
+        f"| Import package | `{PACKAGE_IMPORTS[page.distribution]}` |",
         "",
         f"**{page.tier}.** {page.introduction}",
         "",
@@ -768,11 +764,14 @@ def _render_index() -> str:
         "framework and world-library surfaces. Most "
         "applications only need the runtime, world-handle, and building-block pages.",
         "",
-        "| Surface | Use it for |",
-        "| --- | --- |",
+        "| Surface | Distribution | Use it for |",
+        "| --- | --- | --- |",
     ]
     for page in PAGES:
-        lines.append(f"| [{page.title}](python/{page.slug}.md) | {page.introduction} |")
+        lines.append(
+            f"| [{page.title}](python/{page.slug}.md) | `{page.distribution}` | "
+            f"{page.introduction} |"
+        )
     lines.extend(
         (
             "",
@@ -807,15 +806,6 @@ def _render_index() -> str:
             rendered = ", ".join(f"`{name}`" for name in names)
             lines.append(f"- **{tier}:** {rendered}")
         lines.append("")
-    lines.extend(
-        (
-            "## Compatibility aliases",
-            "",
-        )
-    )
-    for alias, target in ALIASES.items():
-        lines.append(f"- `{alias}` is an alias for `{target}`.")
-    lines.append("")
     return "\n".join(lines)
 
 

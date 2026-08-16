@@ -2,6 +2,11 @@
 
 # Physical AI host configuration
 
+| Package | Value |
+| --- | --- |
+| Distribution | `archetype-physical-ai` |
+| Import package | `archetype.physical_ai` |
+
 **Integration API.** Configure trusted hosted-episode providers at process composition time.
 
 ::: archetype.physical_ai.PhysicalAIExtensionConfig

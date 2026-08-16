@@ -2,6 +2,11 @@
 
 # World handle
 
+| Package | Value |
+| --- | --- |
+| Distribution | `archetype-ecs` |
+| Import package | `archetype` |
+
 **Recommended API.** Create entities, run simulations, query history, and manage one world.
 
 ::: archetype.runtime.RuntimeWorld

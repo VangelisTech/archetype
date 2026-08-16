@@ -2,6 +2,11 @@
 
 # Agent Missions
 
+| Package | Value |
+| --- | --- |
+| Distribution | `archetype-missions` |
+| Import package | `archetype.missions` |
+
 **Recommended API.** Run coding-agent missions and inspect mission-owned transcript and trajectory evidence.
 
 ::: archetype.missions.Missions

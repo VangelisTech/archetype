@@ -19,8 +19,20 @@ before upgrading its environment.
 | `archetype-research` | Generic AutoResearch values, ledger state, views, and workflow |
 
 Install only the libraries an application uses, or install the complete
-first-party set with `archetype-ecs[all]`. Each world library depends on the
+world-library stack with `archetype-ecs[all]`. Each world library depends on the
 compatible framework release; world libraries do not depend on one another.
+
+## Synchronous surface reset
+
+`ArchetypeRuntime.sync()`, `SyncArchetypeRuntime`, `SyncRuntimeWorld`, and
+`run_sync` remain the supported blocking interface to the production runtime.
+They execute the same async engine, command gate, storage, and lifecycle
+contracts as the async handles.
+
+The parallel `archetype.core.sync` engine and its root aliases are removed:
+`World`, `Processor`, `System`, `Store`, `SyncWorld`, `SyncProcessor`,
+`SyncSystem`, `SyncStore`, `QueryManager`, and `UpdateManager`. Applications
+that need production semantics use the runtime facade.
 
 ## Required source changes
 

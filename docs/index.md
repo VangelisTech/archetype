@@ -28,8 +28,8 @@ For the normative application contracts, see
 | **Columnar ECS** | Entities that share a component set live in one archetype table |
 | **Lazy DataFrames** | Processors are Daft transforms over populations, not per-entity loops |
 | **Append-only history** | Each tick writes new rows; past state is a query, not a replay hack |
-| **Read/write split** | `QueryManager` reads; `UpdateManager` appends; the world orchestrates |
-| **Pluggable storage** | Stores sit under the same query/update facades (LanceDB by default) |
+| **Read/write split** | `AsyncQueryManager` reads; `AsyncUpdateManager` appends; the world orchestrates |
+| **Pluggable storage** | `AsyncStore` sits under the same query/update facades (LanceDB by default) |
 
 ## Where to go
 
@@ -54,11 +54,11 @@ For the normative application contracts, see
 ```mermaid
 graph TB
     App["Application / ArchetypeRuntime"]
-    World["World"]
-    System["System"]
-    QM["QueryManager"]
-    UM["UpdateManager"]
-    Store["Store"]
+    World["AsyncWorld"]
+    System["AsyncSystem"]
+    QM["AsyncQueryManager"]
+    UM["AsyncUpdateManager"]
+    Store["AsyncStore"]
 
     subgraph "Storage backends"
         Lance["LanceDB"]
@@ -85,8 +85,8 @@ graph TB
 ```
 
 The world is the orchestrator. It does not touch tables directly: reads go
-through `QueryManager`, writes through `UpdateManager`, and behavior through
-`System` + processors.
+through `AsyncQueryManager`, writes through `AsyncUpdateManager`, and behavior
+through `AsyncSystem` + processors.
 
 ## Core ECS Components
 
@@ -96,18 +96,18 @@ through `QueryManager`, writes through `UpdateManager`, and behavior through
 graph LR
     subgraph "World management"
         Runtime["ArchetypeRuntime"]
-        World["World"]
+        World["AsyncWorld"]
     end
 
     subgraph "ECS processing"
-        System["System"]
-        Processor["Processor / AsyncProcessor"]
+        System["AsyncSystem"]
+        Processor["AsyncProcessor"]
     end
 
     subgraph "Data management"
-        QM["QueryManager"]
-        UM["UpdateManager"]
-        Store["Store"]
+        QM["AsyncQueryManager"]
+        UM["AsyncUpdateManager"]
+        Store["AsyncStore"]
     end
 
     subgraph "Base types"
@@ -130,12 +130,12 @@ graph LR
 | Primitive | Role |
 |---|---|
 | `Component` | Typed fields on an entity (`Position`, `Velocity`, …) |
-| `Processor` | Declares required components; transforms their DataFrame |
-| `System` | Runs eligible processors in priority order for an archetype |
-| `World` | Spawns entities, steps/runs ticks, owns the live simulation |
-| `QueryManager` | Read facade over the store |
-| `UpdateManager` | Append facade over the store |
-| `Store` | Physical tables keyed by archetype signature |
+| `AsyncProcessor` | Declares required components; transforms their DataFrame |
+| `AsyncSystem` | Runs eligible processors in priority order for an archetype |
+| `AsyncWorld` | Spawns entities, steps/runs ticks, owns the live simulation |
+| `AsyncQueryManager` | Read facade over the store |
+| `AsyncUpdateManager` | Append facade over the store |
+| `AsyncStore` | Physical tables keyed by archetype signature |
 | `Archetype` | The component-set → table schema grouping |
 
 `ArchetypeRuntime` is the usual script entry point: it owns process lifetime
@@ -149,11 +149,11 @@ actually moves through.
 ```mermaid
 sequenceDiagram
     participant App as Application
-    participant World as World
-    participant System as System
-    participant QM as QueryManager
-    participant UM as UpdateManager
-    participant Store as Store
+    participant World as AsyncWorld
+    participant System as AsyncSystem
+    participant QM as AsyncQueryManager
+    participant UM as AsyncUpdateManager
+    participant Store as AsyncStore
 
     App->>World: step() / run(steps=N)
     World->>System: execute per active archetype
@@ -231,7 +231,7 @@ The rest of Archetype layers product semantics on this engine:
 ```mermaid
 graph TB
     Product["Runtime, REST, CLI, missions, prefabs, graphs"]
-    Core["World · System · Processor · Query · Update · Store"]
+    Core["AsyncWorld · AsyncSystem · AsyncProcessor · AsyncQueryManager · AsyncUpdateManager · AsyncStore"]
     Data["Daft DataFrames · columnar tables"]
 
     Product --> Core

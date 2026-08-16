@@ -2,6 +2,11 @@
 
 # Building blocks
 
+| Package | Value |
+| --- | --- |
+| Distribution | `archetype-ecs` |
+| Import package | `archetype` |
+
 **Extension API.** Use these types to define component data, processors, and processor resources.
 
 ::: archetype.core.Component

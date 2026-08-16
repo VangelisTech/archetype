@@ -183,7 +183,7 @@ These cover:
 - honest `spawn()` return semantics
 - runtime-vs-world lifetime boundaries
 - explicit script ceremony
-- public export stability
+- explicit versioned public-surface changes
 - governance-preserving ergonomics
 
 ### Executable contract suites
@@ -198,7 +198,7 @@ Some of the most important contracts are enforced directly in tests:
 
 - [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py)
 - [`tests/storage/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/storage/test_runtime_fork_storage.py)
-- [`tests/sync/test_sync_stack_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/sync/test_sync_stack_contracts.py)
+- [`tests/core/test_no_legacy_sync_kernel.py`](https://github.com/VangelisTech/archetype/blob/main/tests/core/test_no_legacy_sync_kernel.py)
 - [`tests/integration/test_command_flow.py`](https://github.com/VangelisTech/archetype/blob/main/tests/integration/test_command_flow.py)
 - [`tests/app/test_services.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_services.py)
 - [`tests/cli/test_cli.py`](https://github.com/VangelisTech/archetype/blob/main/tests/cli/test_cli.py)

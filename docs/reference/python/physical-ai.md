@@ -2,6 +2,11 @@
 
 # Physical AI
 
+| Package | Value |
+| --- | --- |
+| Distribution | `archetype-physical-ai` |
+| Import package | `archetype.physical_ai` |
+
 **Recommended API.** Run or recover complete Modal-hosted episode batches through a World.
 
 ::: archetype.physical_ai.PhysicalAI

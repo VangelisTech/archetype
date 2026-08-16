@@ -152,12 +152,10 @@ def test_get_archetype_schema_allows_repeated_same_type_in_sig():
 
 
 def test_archetype_instance_populates_sig_name_and_schema():
-    """The Archetype constructor is used at the query layer
-    (``core/sync/querier.py`` and ``core/aio/async_querier.py``) to bundle a
-    component list into its signature, archetype name, and unified PyArrow
-    schema. Each attribute must equal what the corresponding staticmethod
-    returns — drift between ``__init__`` and the static API would silently
-    break the queriers' archetype lookups."""
+    """The async query layer uses Archetype to bundle a component list into its
+    signature, table name, and unified PyArrow schema. Each attribute must equal
+    what the corresponding static method returns so query lookups cannot drift
+    from the canonical identity helpers."""
     components = [B(y=2), A(x=1)]
     archetype = Archetype(components)
 

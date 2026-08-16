@@ -102,6 +102,18 @@ if TYPE_CHECKING:
 _FireMode = Any  # Literal["blocking", "spawn"] — kept loose for forward compat
 
 
+def _adapt_sync_hook(fn: Callable[[HookEvent], Any]) -> Callable[[HookEvent], Awaitable[None]]:
+    """Make a blocking-facade hook awaitable by the asynchronous hook bus."""
+
+    @wraps(fn)
+    async def adapted(event: HookEvent) -> None:
+        result = fn(event)
+        if inspect.isawaitable(result):
+            await result
+
+    return adapted
+
+
 def _admitted_world_operation[**P, R](
     operation: Callable[Concatenate[RuntimeWorld, P], Awaitable[R]],
 ) -> Callable[Concatenate[RuntimeWorld, P], Awaitable[R]]:
@@ -961,7 +973,8 @@ class SyncRuntimeWorld:
         *,
         mode: _FireMode = "blocking",
     ) -> HookHandle:
-        return self._run(lambda: self._world.add_hook(event_type, fn, mode=mode))
+        adapted = _adapt_sync_hook(fn)
+        return self._run(lambda: self._world.add_hook(event_type, adapted, mode=mode))
 
     def remove_hook(self, handle: HookHandle) -> None:
         self._run(lambda: self._world.remove_hook(handle))

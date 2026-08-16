@@ -98,13 +98,6 @@ method = "to_pylist"
 reason = "Lineage metadata extract: a fork's ancestor segments (bounded by fork depth, typically 1-3 rows) must become Python (world_id, run_id, up_to_tick) tuples because they route subsequent per-tick store queries; the routing decision cannot be expressed inside a single Daft plan."
 
 [[entries]]
-path = "packages/archetype-ecs/src/archetype/core/sync/world.py"
-symbol = "SyncWorld._move_entity"
-expr = "df.to_pylist"
-method = "to_pylist"
-reason = "Cross-archetype entity migration (sync mirror of async_world): extract the latest tick row for component overlay before re-insertion."
-
-[[entries]]
 path = "packages/archetype-ecs/src/archetype/graph/cascade.py"
 symbol = "_plan"
 expr = "dangling_edges(edges, rel, population).select(col('entity_id'), col(f'{prefix}source').alias('source')).to_pylist"
@@ -516,13 +509,6 @@ symbol = "AsyncStore._append_table"
 expr = "df.write_iceberg"
 method = "write_iceberg"
 reason = "Iceberg storage sink: explicit IO configuration requires the native Daft write at the store-owned append boundary."
-
-[[entries]]
-path = "packages/archetype-ecs/src/archetype/core/sync/store.py"
-symbol = "SyncStore._append_table"
-expr = "df.write_iceberg"
-method = "write_iceberg"
-reason = "Synchronous Iceberg storage sink: explicit IO configuration requires the native Daft write at the store-owned append boundary."
 
 [[entries]]
 path = "packages/archetype-ecs/src/archetype/evaluation/views.py"

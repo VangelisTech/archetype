@@ -133,12 +133,13 @@ signal than a normal survivor: not "tests ran but missed the mutation"
 but "no test exercises this code path at all." When the function is
 called from production code elsewhere, that's an unverified contract.
 
-The pilot's expansion to `archetype.py` surfaced exactly this case —
-`Archetype.__init__` was used by both queriers (`core/sync/querier.py`
-and `core/aio/async_querier.py`) but no test in the dedicated suite
-ever constructed an instance. A single contract test that asserts the
-constructor populates `sig`, `name`, and `schema` consistently with
-the staticmethod API killed all seven survivors at once.
+The pilot's expansion to `archetype.py` surfaced exactly this case. At the
+time, `Archetype.__init__` was reached by parallel synchronous and asynchronous
+queriers, but no test in the dedicated suite ever constructed an instance. A
+single contract test that asserts the constructor populates `sig`, `name`, and
+`schema` consistently with the staticmethod API killed all seven survivors at
+once. The parallel synchronous core was retired in 0.6; the production oracle
+now exercises `AsyncQueryManager`.
 
 This is consistent with the project's stated testing posture:
 

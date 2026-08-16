@@ -18,8 +18,9 @@ Components, processors, resources, and the configuration and result types
 required by runtime signatures form the extension/signature interface. REST and
 CLI are supported adapters over the same governed operations. Concrete
 application services, app protocols, process wiring, and `RuntimeResources`
-are internal. The synchronous
-educational engine remains a compatibility interface.
+are internal. `ArchetypeRuntime.sync()` and its blocking handles are a
+recommended facade over the same asynchronous production engine; they are not
+a second ECS kernel.
 
 Separately installed world libraries expose supported family-qualified imports
 and typed adapters. The base framework root does not own their API. See

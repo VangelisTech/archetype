@@ -171,13 +171,13 @@ Components are prefixed in the DataFrame:
 ### Processors = DataFrame Transforms
 
 ```python
-from archetype import Processor
+from archetype import AsyncProcessor
 
-class PhysicsProcessor(Processor):
+class PhysicsProcessor(AsyncProcessor):
     components = (EnvironmentComponent,)  # Declares dependencies
     priority = 10  # Lower = runs first
 
-    def process(self, df: daft.DataFrame, **kwargs) -> daft.DataFrame:
+    async def process(self, df: daft.DataFrame, **kwargs) -> daft.DataFrame:
         # Transform and return
         return df.with_column("result", col("environmentcomponent__gravity") * 2)
 ```
@@ -185,9 +185,9 @@ class PhysicsProcessor(Processor):
 ### The Loop
 
 ```text
-Entities (DataFrame) → Processor 1 → Processor 2 → ... → Store (LanceDB)
-         ↑                                                      |
-         └──────────────────────────────────────────────────────┘
+Entities (DataFrame) → AsyncProcessor 1 → AsyncProcessor 2 → ... → AsyncStore
+         ↑                                                           |
+         └───────────────────────────────────────────────────────────┘
                               (next tick)
 ```
 
@@ -379,16 +379,17 @@ Pass `mode="spawn"` to `AsyncWorld.add_hook` to run the handler detached from
 the tick (via `asyncio.create_task`) for observability sinks that must not
 block. Handler errors are logged at WARNING and never abort the tick.
 
-**Handler types:** `AsyncWorld.add_hook` takes an `AsyncHookHandler`;
-`SyncWorld.add_hook` takes a `SyncHookHandler`. Both use the same event
-dataclasses and `HookHandle` type, but sync hooks have no `"spawn"` mode
-because there is no event loop to defer to.
+**Handler types:** `AsyncWorld.add_hook` takes an `AsyncHookHandler`.
+`SyncRuntimeWorld.add_hook` is a blocking facade that adapts an ordinary
+callable onto that same asynchronous hook bus; it is not a second hook
+registry or engine. Both `"blocking"` and `"spawn"` remain fire modes of the
+underlying `AsyncWorld`.
 
 ---
 
 ## The Data-Centric Principle (Mar 2026)
 
-Archetype is **data-centric**. The DataFrame is the source of truth. Processors are pure functions `DataFrame → DataFrame`. So long as the data looks right at the end of a tick, nothing else matters — not how the LLM was called, not whether it was async or sync, not how long it took.
+Archetype is **data-centric**. The DataFrame is the source of truth. Processors are pure functions `DataFrame → DataFrame`. So long as the data looks right at the end of a tick, nothing else matters — not how the LLM call was scheduled or how long it took.
 
 This means:
 

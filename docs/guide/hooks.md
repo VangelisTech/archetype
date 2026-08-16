@@ -4,8 +4,9 @@ Hooks are typed lifecycle callbacks attached to a single world. They are
 intended for observability, integration glue, and lightweight side effects that
 need to run at known world boundaries.
 
-The hook catalogue lives in `archetype.core.hooks`, a neutral core module used
-by both `AsyncWorld` and `SyncWorld`.
+The hook catalogue lives in `archetype.core.hooks` and is executed by
+`AsyncWorld`. `RuntimeWorld` routes hook operations to that engine;
+`SyncRuntimeWorld` adapts blocking callbacks onto the same asynchronous bus.
 
 ## Type Model
 
@@ -20,10 +21,10 @@ assert issubclass(PostTick, HookEvent)
 
 The handler types are explicit about runtime mode:
 
-| Type | Runtime | Callable shape |
+| Surface | Runtime | Callable shape |
 |------|---------|----------------|
-| `AsyncHookHandler[E]` | `AsyncWorld` | `async def handler(event: E) -> None` |
-| `SyncHookHandler[E]` | `SyncWorld` | `def handler(event: E) -> None` |
+| `AsyncHookHandler[E]` | `AsyncWorld` / `RuntimeWorld` | `async def handler(event: E) -> None` |
+| Blocking facade callback | `SyncRuntimeWorld` | `def handler(event: E) -> None` |
 
 `E` is bound to `HookEvent`, so `world.add_hook(PostTick, handler)` ties the
 event class and handler argument to the same event type.
@@ -33,21 +34,25 @@ world hot path. Events are small immutable payloads, not validation boundaries.
 
 ## Registering Hooks
 
+For an already-active `RuntimeWorld`:
+
 ```python
 from archetype.core.hooks import HookHandle, PostTick
 
 async def log_tick(event: PostTick) -> None:
     print(f"world={event.world_id} tick={event.tick}")
 
-handle: HookHandle = world.add_hook(PostTick, log_tick)
+handle: HookHandle = await world.add_hook(PostTick, log_tick)
 
 # Later:
-world.remove_hook(handle)
+await world.remove_hook(handle)
 ```
 
-`add_hook()` returns an opaque `HookHandle`. Store the handle if the hook should
-be removed later. Handles are registry-scoped, so a handle minted by one world
-cannot unregister a same-shaped hook in another world.
+`RuntimeWorld.add_hook()` returns an opaque `HookHandle`. Store the handle if
+the hook should be removed later. Handles are registry-scoped, so a handle
+minted by one world cannot unregister a same-shaped hook in another world.
+Direct `AsyncWorld.add_hook()` mutates its local registry synchronously;
+ordinary applications use the awaited runtime operation shown above.
 
 For a complete runnable example, see
 [`examples/07_hooks.py`](https://github.com/VangelisTech/archetype/blob/main/examples/07_hooks.py).
@@ -56,7 +61,7 @@ For a complete runnable example, see
 
 | Event | Payload fields | Fires when |
 |-------|----------------|------------|
-| `PreTick` | `world_id`, `tick` | At the start of `World.step()`, before any archetype runs |
+| `PreTick` | `world_id`, `tick` | At the start of `AsyncWorld.step()`, before any archetype runs |
 | `PostTick` | `world_id`, `tick`, `results` | After all archetypes process, `_live` refreshes, and `tick` increments |
 | `OnSpawn` | `world_id`, `entity_id`, `components` | After `create_entity()` or `spawn_reserved()` registers the entity |
 | `OnDespawn` | `world_id`, `entity_id` | After `remove_entity()` cancels a pending spawn or queues a despawn row |
@@ -85,9 +90,10 @@ step(tick=N)
 Spawn/despawn/component hooks fire when the world mutation is queued in memory,
 not when the row is later materialized and persisted during the tick.
 
-## Async Fire Modes
+## Fire Modes
 
-`AsyncWorld.add_hook()` supports two fire modes:
+The `AsyncWorld` hook bus supports two fire modes. Async and blocking runtime
+handles forward the selected mode to that same bus:
 
 | Mode | Behavior |
 |------|----------|
@@ -98,25 +104,35 @@ Use `"spawn"` for telemetry or integration sinks that should not block the tick
 path:
 
 ```python
-world.add_hook(PostTick, publish_metrics, mode="spawn")
+await world.add_hook(PostTick, publish_metrics, mode="spawn")
 ```
 
 Detached hook failures are logged. They are not raised into the tick caller.
 
-## Sync Hooks
+## Blocking Runtime Hooks
 
-`SyncWorld.add_hook()` uses the same event dataclasses and `HookHandle` type,
-but handlers are plain callables and there is no `"spawn"` mode:
+`SyncRuntimeWorld.add_hook()` accepts an ordinary callable and adapts it to the
+production asynchronous hook bus. The blocking facade does not select a
+separate synchronous engine:
 
 ```python
+from archetype import ArchetypeRuntime
 from archetype.core.hooks import PreTick
 
 def trace_tick(event: PreTick) -> None:
     print(event.tick)
 
-handle = world.add_hook(PreTick, trace_tick)
-world.remove_hook(handle)
+with ArchetypeRuntime.sync() as runtime:
+    world = runtime.world("observed", hooks=[(PreTick, trace_tick)])
+    world.spawn()
+    world.step()
 ```
+
+Dynamic registration on either runtime facade requires an already-activated
+world. Use the `hooks=` argument shown above when a hook must observe the first
+operation. The `"spawn"` mode is available through the blocking facade too,
+but a plain callback still runs on the engine's event-loop thread and should
+remain lightweight.
 
 ## Failure Policy
 

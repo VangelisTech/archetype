@@ -75,6 +75,31 @@ def test_world_library_exports_are_documented_without_entering_framework_all() -
     reference = (PAGES_DIR.parent / "python-api.md").read_text(encoding="utf-8")
     assert "`CandidateContext`" not in reference
     assert "Compatibility-tier root attributes" not in reference
+    assert "| Surface | Distribution | Use it for |" in reference
+
+
+def test_blocking_facade_is_runtime_api_not_a_second_engine() -> None:
+    runtime = (PAGES_DIR / "runtime.md").read_text(encoding="utf-8")
+    reference = (PAGES_DIR.parent / "python-api.md").read_text(encoding="utf-8")
+
+    assert "::: archetype.runtime.SyncArchetypeRuntime" in runtime
+    assert "::: archetype.runtime.SyncRuntimeWorld" in runtime
+    assert "::: archetype.runtime.run_sync" in runtime
+    assert "Compatibility API" not in reference
+    assert "Compatibility aliases" not in reference
+    assert not (PAGES_DIR / "compatibility.md").exists()
+
+
+def test_research_and_framework_evaluation_have_distinct_owners() -> None:
+    research = (PAGES_DIR / "autoresearch.md").read_text(encoding="utf-8")
+    evaluation = (PAGES_DIR / "evaluation.md").read_text(encoding="utf-8")
+
+    assert "| Distribution | `archetype-research` |" in research
+    assert "::: archetype.research.Research" in research
+    assert "::: archetype.evaluation.models.FrameGrader" not in research
+    assert "| Distribution | `archetype-ecs` |" in evaluation
+    assert "::: archetype.evaluation.models.FrameGrader" in evaluation
+    assert "::: archetype.research.Research" not in evaluation
 
 
 def test_physical_ai_provider_factory_signature_is_documented() -> None:

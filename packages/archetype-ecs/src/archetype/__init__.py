@@ -56,29 +56,17 @@ __all__ = [
     "AmbiguousTickCommitError",
     "TickExecutionError",
     "TickFailure",
-    # Processor (with alias)
-    "Processor",
-    "SyncProcessor",
+    # Processor
     "AsyncProcessor",
-    # World (with alias)
-    "World",
-    "SyncWorld",
+    # World
     "AsyncWorld",
-    # System (with alias)
-    "System",
-    "SyncSystem",
+    # System
     "AsyncSystem",
-    # Store (with alias)
-    "Store",
-    "SyncStore",
+    # Store
     "AsyncStore",
     "AsyncCachedStore",
     "AsyncLancedbStore",
-    # Querier/Updater (with aliases)
-    "Querier",
-    "Updater",
-    "QueryManager",
-    "UpdateManager",
+    # Query/update managers
     "AsyncQueryManager",
     "AsyncUpdateManager",
     # Config
@@ -124,31 +112,19 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "AmbiguousTickCommitError": ("archetype.core", "AmbiguousTickCommitError"),
     "TickExecutionError": ("archetype.core", "TickExecutionError"),
     "TickFailure": ("archetype.core", "TickFailure"),
-    # Processors (and aliases)
-    "SyncProcessor": ("archetype.core", "SyncProcessor"),
+    # Processors
     "AsyncProcessor": ("archetype.core", "AsyncProcessor"),
-    "Processor": ("archetype.core", "SyncProcessor"),
-    # Worlds (and aliases)
-    "SyncWorld": ("archetype.core", "SyncWorld"),
+    # Worlds
     "AsyncWorld": ("archetype.core", "AsyncWorld"),
-    "World": ("archetype.core", "SyncWorld"),
-    # Systems (and aliases)
-    "SyncSystem": ("archetype.core", "SyncSystem"),
+    # Systems
     "AsyncSystem": ("archetype.core", "AsyncSystem"),
-    "System": ("archetype.core", "SyncSystem"),
-    # Stores (and aliases)
-    "SyncStore": ("archetype.core", "SyncStore"),
+    # Stores
     "AsyncStore": ("archetype.core", "AsyncStore"),
     "AsyncCachedStore": ("archetype.core", "AsyncCachedStore"),
     "AsyncLancedbStore": ("archetype.core", "AsyncLancedbStore"),
-    "Store": ("archetype.core", "SyncStore"),
-    # Query/update managers (and aliases)
-    "QueryManager": ("archetype.core", "QueryManager"),
-    "UpdateManager": ("archetype.core", "UpdateManager"),
+    # Query/update managers
     "AsyncQueryManager": ("archetype.core", "AsyncQueryManager"),
     "AsyncUpdateManager": ("archetype.core", "AsyncUpdateManager"),
-    "Querier": ("archetype.core", "QueryManager"),
-    "Updater": ("archetype.core", "UpdateManager"),
     # Config
     "StorageConfig": ("archetype.core", "StorageConfig"),
     "CacheConfig": ("archetype.core", "CacheConfig"),
@@ -182,24 +158,6 @@ _EXPORTS: dict[str, tuple[str, str]] = {
 }
 
 
-# Sync-engine exports are the educational tier (issue #278): stable, kept,
-# and deprecated at the TOP-LEVEL alias only. `archetype.core.sync` imports
-# stay silent — the tier is for reading and teaching; the async stack (and
-# the Rust core beyond it) is the performance path.
-_SYNC_TIER_DEPRECATED = frozenset(
-    {
-        "World",
-        "Processor",
-        "System",
-        "Store",
-        "SyncWorld",
-        "SyncProcessor",
-        "SyncSystem",
-        "SyncStore",
-    }
-)
-
-
 def __getattr__(name: str) -> Any:
     """
     Lazy public API loader.
@@ -214,17 +172,6 @@ def __getattr__(name: str) -> Any:
     # the framework is only partially initialized.
     if name.startswith("_"):
         raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-
-    if name in _SYNC_TIER_DEPRECATED:
-        import warnings
-
-        warnings.warn(
-            f"archetype.{name} is the educational sync tier: stable but frozen. "
-            "New code should use ArchetypeRuntime (or the Async* classes); see "
-            "docs/guide/runtime.md.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
 
     target = _EXPORTS.get(name)
     if not target:
