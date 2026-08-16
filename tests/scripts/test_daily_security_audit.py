@@ -30,7 +30,7 @@ def _result() -> dict:
                 "severity": "medium",
                 "title": "Example finding",
                 "evidence": [
-                    "src/archetype/commands/dispatch.py: authorization precedes delegation"
+                    "packages/archetype-ecs/src/archetype/commands/dispatch.py: actor-aware entry applies policy before handler invocation"
                 ],
                 "recommendation": "Keep the executable API contract current.",
             }
@@ -143,14 +143,28 @@ def test_workflow_uses_current_read_only_scope_and_fail_loud_publication() -> No
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "SECURITY_AUDIT_2026-03-28.md" not in workflow
-    assert "src/archetype/app/auth/" not in workflow
-    assert "src/archetype/app/gateway/auth/" not in workflow
-    assert "src/archetype/app/storage/" not in workflow
-    assert "src/archetype/app/artifacts/" not in workflow
-    assert "src/archetype/api/deps.py" in workflow
-    assert "src/archetype/commands/policy.py" in workflow
-    assert "src/archetype/storage/" in workflow
-    assert "src/archetype/missions/sandboxes/versions.toml" in workflow
+    for retired_path in (
+        "src/archetype/app/auth/",
+        "src/archetype/app/gateway/",
+        "src/archetype/app/storage/",
+        "src/archetype/app/artifacts/",
+        "src/archetype/app/container.py",
+    ):
+        assert retired_path not in workflow
+    for current_path in (
+        "docs/guide/api-layer.md",
+        "packages/archetype-ecs/src/archetype/api/deps.py",
+        "packages/archetype-ecs/src/archetype/api/errors.py",
+        "packages/archetype-ecs/src/archetype/commands/policy.py",
+        "packages/archetype-ecs/src/archetype/commands/dispatch.py",
+        "packages/archetype-ecs/src/archetype/storage/",
+        "packages/archetype-ecs/src/archetype/artifacts/",
+        "packages/archetype-ecs/src/archetype/wiring.py",
+        "packages/archetype-ecs/src/archetype/world_libraries/",
+        "packages/archetype-*/src/archetype/*/_extension.py",
+        "packages/archetype-missions/src/archetype/missions/sandboxes/versions.toml",
+    ):
+        assert current_path in workflow
     assert '--allowedTools "Read,Grep,Glob"' in workflow
     assert "--max-turns 32" in workflow
     assert "do not search for those removed legacy paths" in workflow

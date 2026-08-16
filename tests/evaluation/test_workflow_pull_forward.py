@@ -19,7 +19,7 @@ from archetype.core.component import Component
 from archetype.evaluation.contracts import GraderContract, Outcome
 from archetype.evaluation.models import Evaluate
 
-_SRC = Path(__file__).resolve().parents[2] / "src" / "archetype"
+_SRC = Path(__file__).resolve().parents[2] / "packages" / "archetype-ecs" / "src" / "archetype"
 _FAMILY = _SRC / "evaluation"
 
 

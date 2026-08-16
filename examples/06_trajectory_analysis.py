@@ -20,6 +20,7 @@ from daft import DataFrame
 
 from archetype import ArchetypeRuntime
 from archetype.core.config import StorageConfig
+from archetype.missions import MissionWorld
 from archetype.missions.trajectories import (
     TrajectoryReward,
     TrajectorySelection,
@@ -92,8 +93,9 @@ async def run_demo(storage_uri: str = "./archetype_data") -> dict[str, object]:
             )
         await world.run(steps=1)
 
+        evidence = MissionWorld(world)
         failed_episode_id = "episode-cache-1"
-        turns_frame = await world.query_trajectory(TrajectoryTurn)
+        turns_frame = await evidence.query_trajectory(TrajectoryTurn)
         ordered = trajectory(turns_frame, TrajectoryTurn, episode_id=failed_episode_id)
         roles = [row["trajectoryturn__role"] for row in ordered.collect().to_pylist()]
 
@@ -104,7 +106,7 @@ async def run_demo(storage_uri: str = "./archetype_data") -> dict[str, object]:
                 "total_reward": sum(row["trajectoryreward__reward"] for row in rows),
             }
 
-        outputs = await world.grade_trajectory(
+        outputs = await evidence.grade_trajectory(
             TrajectoryReward,
             selection=TrajectorySelection(episode_ids=(failed_episode_id,)),
             graders=[reward_summary],

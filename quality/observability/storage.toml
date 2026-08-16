@@ -96,7 +96,7 @@ rationale = "StorageService centralizes terminal Daft admission, table registrat
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 qualified_scope = "archetype.storage.service.StorageService.shutdown"
 target = "log:exception:'Failed to shut down store %r':exception"
 owner = "storage"
@@ -106,7 +106,7 @@ expiry_condition = "Remove when #517 records a bounded store-shutdown failure wi
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 qualified_scope = "archetype.storage.service.StorageService.shutdown"
 target = "log:exception:'Failed to close control catalog %r':exception"
 owner = "storage"
@@ -116,7 +116,7 @@ expiry_condition = "Remove when #517 records a bounded catalog-shutdown failure 
 
 [[legacy]]
 rule = "unsafe_log_value"
-path = "src/archetype/storage/catalog/sqlite.py"
+path = "packages/archetype-ecs/src/archetype/storage/catalog/sqlite.py"
 qualified_scope = "archetype.storage.catalog.sqlite.SqliteControlCatalog._connect_sync"
 target = "log:warning:'catalog %s: journal_mode=%s (WAL unavailable)':sensitive-value"
 owner = "storage"

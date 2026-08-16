@@ -4,7 +4,9 @@
 
 **Recommended API.** Run or recover complete Modal-hosted episode batches through a World.
 
-::: archetype.physical_ai.models.HostedEpisodeRequest
+::: archetype.physical_ai.PhysicalAI
+
+::: archetype.physical_ai.HostedEpisodeRequest
     options:
       members: false
 
@@ -20,7 +22,7 @@
 | `policy_id` | `str` | `required` |
 | `config_json` | `str` | `'{}'` |
 
-::: archetype.physical_ai.models.HostedEpisodeObservation
+::: archetype.physical_ai.HostedEpisodeObservation
     options:
       members: false
 
@@ -43,7 +45,7 @@
 | `transition_count` | `int` | `required` |
 | `success_count` | `int` | `required` |
 
-::: archetype.physical_ai.models.ModalHostedEpisodeConfig
+::: archetype.physical_ai.ModalHostedEpisodeConfig
     options:
       members: false
 

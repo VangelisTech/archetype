@@ -2,7 +2,7 @@
 
 # Version inventory
 
-This page is generated from `src/archetype/missions/sandboxes/versions.toml`,
+This page is generated from `packages/archetype-missions/src/archetype/missions/sandboxes/versions.toml`,
 the machine-readable inventory of executable dependencies used by Agent
 Missions V1. The TOML inventory is the machine authority; this page
 is its operator review surface. The normative contract, including the

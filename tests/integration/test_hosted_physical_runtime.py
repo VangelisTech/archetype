@@ -15,16 +15,18 @@ from typing import Any, cast
 
 import pytest
 
-from archetype import (
-    ArchetypeRuntime,
-    HostedEpisodeRequest,
-    ModalHostedEpisodeConfig,
-    StorageConfig,
-)
+from archetype import ArchetypeRuntime, StorageConfig
 from archetype.activities import ActivityAdmission, ActivityCoordinator
 from archetype.core.config import StorageBackend
 from archetype.core.interfaces import CommittedTickReceipt
-from archetype.physical_ai import hosted_modal
+from archetype.physical_ai import (
+    HostedEpisodeRequest,
+    ModalHostedEpisodeConfig,
+    PhysicalAI,
+    hosted_modal,
+)
+from archetype.physical_ai._extension import get_manifest as physical_ai_manifest
+from archetype.physical_ai.config import PhysicalAIExtensionConfig
 from archetype.physical_ai.hosted_activity_contracts import HostedEpisodeProviderResult
 from archetype.physical_ai.hosted_activity_values import SeededHostedEpisodeRunner
 from archetype.physical_ai.hosted_episode import (
@@ -38,7 +40,24 @@ from archetype.storage.activity_catalog import (
 )
 from archetype.storage.config import ControlCatalogConfig
 from archetype.wiring import RuntimeBootstrapConfig
+from archetype.world.projectors import RequiredProjectorFanout
 from archetype.world.registry import WorldRegistry
+
+
+def _physical_ai_extension(
+    provider_factory: object,
+    *,
+    lease_seconds: float = 300.0,
+) -> dict[str, object]:
+    return {
+        "world_libraries": (physical_ai_manifest(),),
+        "world_library_configs": {
+            "physical-ai": PhysicalAIExtensionConfig(
+                hosted_episode_provider_factory=cast(Any, provider_factory),
+                hosted_activity_lease_seconds=lease_seconds,
+            )
+        },
+    }
 
 
 @dataclass
@@ -160,6 +179,82 @@ def _request() -> HostedEpisodeRequest:
 
 
 @pytest.mark.asyncio
+async def test_hosted_binding_setup_failure_unwinds_and_remains_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = StorageConfig(
+        uri=str(tmp_path / "worlds"),
+        namespace="hosted-retry",
+        backend=StorageBackend.ICEBERG,
+    )
+    catalog = ControlCatalogConfig(catalog_dir=tmp_path / "catalogs")
+    registry = WorldRegistry()
+    state = _ModalState(tmp_path / "modal", registry, crash_once=False)
+    provider_attempts = 0
+
+    def provider_factory(config: ModalHostedEpisodeConfig):
+        nonlocal provider_attempts
+        provider_attempts += 1
+        if provider_attempts == 1:
+            raise RuntimeError("transient provider construction")
+        return ModalHostedEpisodeProvider(config, runtime=_ModalRuntime(state))
+
+    bind_attempts = 0
+    original_bind = RequiredProjectorFanout.bind
+
+    async def bind_then_fail_once(
+        fanout: RequiredProjectorFanout,
+        world_id: str,
+        binding: object,
+    ) -> None:
+        nonlocal bind_attempts
+        bind_attempts += 1
+        await original_bind(fanout, world_id, binding)
+        if bind_attempts == 1:
+            raise RuntimeError("transient projector binding")
+
+    monkeypatch.setattr(RequiredProjectorFanout, "bind", bind_then_fail_once)
+    monkeypatch.setattr(
+        "archetype.runtime.runtime._bootstrap_config",
+        lambda **_kwargs: RuntimeBootstrapConfig(
+            control_catalog_config=catalog,
+            world_registry=registry,
+            audit_storage_config=storage,
+            **_physical_ai_extension(provider_factory),
+        ),
+    )
+
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("hosted-retry", storage=storage)
+        state.world_id = str((await world.info()).world_id)
+        physical = PhysicalAI(world)
+        with pytest.raises(RuntimeError, match="transient provider construction"):
+            await physical.run_hosted_episode(
+                [_request()],
+                provider=_provider_config(),
+                activity_id="provider-failure",
+            )
+        with pytest.raises(RuntimeError, match="transient projector binding"):
+            await physical.run_hosted_episode(
+                [_request()],
+                provider=_provider_config(),
+                activity_id="projector-failure",
+            )
+
+        observation = await physical.run_hosted_episode(
+            [_request()],
+            provider=_provider_config(),
+            activity_id="retry-succeeds",
+        )
+
+    assert observation.activity_id == "retry-succeeds"
+    assert provider_attempts == 3
+    assert bind_attempts == 2
+    assert state.execution_count == 1
+
+
+@pytest.mark.asyncio
 async def test_public_hosted_episode_ignores_unrelated_unsettled_activity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -182,7 +277,7 @@ async def test_public_hosted_episode_ignores_unrelated_unsettled_activity(
             control_catalog_config=catalog_config,
             world_registry=registry,
             audit_storage_config=storage,
-            hosted_episode_provider_factory=provider_factory,
+            **_physical_ai_extension(provider_factory),
         ),
     )
 
@@ -209,7 +304,7 @@ async def test_public_hosted_episode_ignores_unrelated_unsettled_activity(
         )
         await physical.close()
 
-        observation = await world.run_hosted_episode(
+        observation = await PhysicalAI(world).run_hosted_episode(
             [_request()],
             provider=_provider_config(),
             activity_id="requested-hosted-episode",
@@ -245,15 +340,13 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
             control_catalog_config=catalog,
             world_registry=first_registry,
             audit_storage_config=storage,
-            hosted_episode_provider_factory=provider_factory,
-            hosted_activity_lease_seconds=300,
+            **_physical_ai_extension(provider_factory),
         ),
         RuntimeBootstrapConfig(
             control_catalog_config=catalog,
             world_registry=second_registry,
             audit_storage_config=storage,
-            hosted_episode_provider_factory=provider_factory,
-            hosted_activity_lease_seconds=300,
+            **_physical_ai_extension(provider_factory),
         ),
     ]
     monkeypatch.setattr(
@@ -267,7 +360,7 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
     # running.
     clock = [time.time()]
     monkeypatch.setattr(
-        "archetype.wiring.SqliteActivityCatalog",
+        "archetype.physical_ai._extension.SqliteActivityCatalog",
         lambda path: SqliteActivityCatalog(path, now_seconds=lambda: clock[0]),
     )
 
@@ -278,7 +371,7 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
         parent_id = str((await world.info()).world_id)
         state.world_id = parent_id
         with pytest.raises(RuntimeError, match="before generic result"):
-            await world.run_hosted_episode(
+            await PhysicalAI(world).run_hosted_episode(
                 [_request()],
                 provider=provider_config,
                 activity_id=activity_id,
@@ -291,7 +384,7 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
     async with ArchetypeRuntime() as runtime:
         parent = await runtime.resume(parent_id, storage=storage)
         state.world_id = parent_id
-        observation = await parent.run_hosted_episode(
+        observation = await PhysicalAI(parent).run_hosted_episode(
             [_request()],
             provider=provider_config,
             activity_id=activity_id,
@@ -301,7 +394,7 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
 
         child = await parent.fork("hosted-child")
         state.world_id = str(child.world_id)
-        child_observation = await child.run_hosted_episode(
+        child_observation = await PhysicalAI(child).run_hosted_episode(
             [_request()],
             provider=provider_config,
             activity_id=activity_id,
@@ -337,8 +430,7 @@ def _single_bootstrap(
         control_catalog_config=catalog,
         world_registry=registry,
         audit_storage_config=storage,
-        hosted_episode_provider_factory=provider_factory,
-        hosted_activity_lease_seconds=30,
+        **_physical_ai_extension(provider_factory, lease_seconds=30),
     )
     monkeypatch.setattr(
         "archetype.runtime.runtime._bootstrap_config",
@@ -365,12 +457,12 @@ async def test_concurrent_hosted_episodes_each_complete_their_own_activity(
         world = runtime.world("hosted-concurrent", storage=storage)
         state.world_id = str((await world.info()).world_id)
         first, second = await asyncio.gather(
-            world.run_hosted_episode(
+            PhysicalAI(world).run_hosted_episode(
                 [_request()],
                 provider=provider_config,
                 activity_id="episode-one",
             ),
-            world.run_hosted_episode(
+            PhysicalAI(world).run_hosted_episode(
                 [_request()],
                 provider=provider_config,
                 activity_id="episode-two",
@@ -406,13 +498,13 @@ async def test_stale_unsettled_episode_does_not_fail_a_completed_operation(
         world = runtime.world("hosted-stale", storage=storage)
         state.world_id = str((await world.info()).world_id)
         with pytest.raises(RuntimeError, match="before generic result"):
-            await world.run_hosted_episode(
+            await PhysicalAI(world).run_hosted_episode(
                 [_request()],
                 provider=provider_config,
                 activity_id="episode-stale",
             )
 
-        observation = await world.run_hosted_episode(
+        observation = await PhysicalAI(world).run_hosted_episode(
             [_request()],
             provider=provider_config,
             activity_id="episode-fresh",

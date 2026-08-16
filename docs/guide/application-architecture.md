@@ -10,6 +10,11 @@ Behavior-specific specifications remain authoritative for lifecycle,
 durability, authorization, and execution semantics. This document owns where
 those behaviors live and which dependencies may implement them.
 
+Distribution discovery and compatibility are specified by
+[World Libraries](world-libraries.md). Package-family ownership remains
+normative here whether a family ships in the framework wheel or a world-library
+wheel.
+
 ## 1. Authority and notation
 
 Written ownership rules and dependency tables are normative. Diagrams are
@@ -35,6 +40,7 @@ rejects fragments that declare anything else or duplicate a rule name.
 | Concrete family services | Internal | No direct compatibility promise |
 | `archetype.wiring` | Internal composition root | Sole concrete cross-family construction transaction |
 | `RuntimeResources` | Internal process owner | Admission drain, supervised work, handle lifetime, audit, and storage teardown |
+| `WorldLibraryManifest` and typed library adapters | Supported integration and extension surfaces | Deterministic trusted installation plus family-owned application APIs |
 | Core engine types retained at top level | Compatibility or extension surface | Classification is owned by API Stability |
 
 Concrete family services, `RuntimeResources`, and wiring helpers are absent from
@@ -80,7 +86,7 @@ callbacks, and local lifetime therefore do not leak into the server.
 
 ## 4. Package direction and family layout
 
-Repository package ownership is normative:
+Repository package ownership is normative across every workspace source root:
 
 | Kind | Canonical location |
 |---|---|
@@ -177,7 +183,7 @@ the `archetype` root.
 The current authority layout is:
 
 ```text
-src/archetype/
+packages/archetype-ecs/src/archetype/
   errors.py          stable shared boundary-error bases
   storage/           physical rows, catalogs, commits, scans and app tables
   world/             lifecycle, mutation, simulation, query and exact operation models
@@ -501,16 +507,25 @@ on a protocol when substitution is intentional. Prefer a narrow callable or
 data port for one interaction. Unused or incomplete protocols are completed,
 narrowed, or removed.
 
-`archetype.wiring` is the only module allowed to import concrete
-implementations across families. It constructs one process graph:
+`archetype.wiring` is the only framework module allowed to construct concrete
+implementations across framework families. It constructs one process graph and
+then installs resolved world-library manifests:
 
 ```text
 build_runtime_resources(...)
   -> OperationRegistry + Policy + CommandScheduler + CommandDispatcher
   -> WorldRegistry + WorldLifecycle + AuditLog + StorageService
-  -> named family services and Activity bindings
+  -> deterministic WorldLibraryContext installation transaction
   -> RuntimeResources
 ```
+
+The framework composition root never imports a world library by package name.
+Each library's private `_extension.py` is its reviewed concrete composition
+root for family internals over the context's framework capabilities. It may
+register process-owned handles through `RuntimeResources`; it may not construct
+a second dispatcher, registry, process owner, storage authority, or world
+authority. Duplicate or incompatible manifests fail before any library
+installer runs. See [World Libraries](world-libraries.md).
 
 Runtime construction and API lifespan code may call the wiring transaction.
 Ordinary runtime and route modules retain only `RuntimeResources` or its
@@ -606,8 +621,9 @@ co-located protocols are implemented. Runtime calls do not fabricate
 `ActorCtx`; API routes depend directly on the lifespan-owned dispatcher;
 concrete services and process wiring are not top-level exports.
 
-Agent Missions V1 is implemented under `archetype.missions` and
-`archetype.runtime.missions`. The
+Agent Missions V1 is implemented by the separately installed
+`archetype.missions` library; its typed runtime adapter is
+`archetype.missions.Missions`. The
 top-level mission-family edge to `archetype.graph` is machine-declared and
 supports temporal `DependsOn` and `PartOfMission` entities plus previous-tick
 `GraphView` joins. Coding-agent and sandbox implementations remain subordinate
@@ -615,9 +631,9 @@ resources within the mission family.
 
 `quality/architecture.toml` contains the scalar policy and family
 DAG. Per-family fragments under `quality/architecture.d/` register the
-top-level dispositions for `activities`, `artifacts`, `commands`, `episodes`,
-`evaluation`, `graph`, `migration`, `missions`, `physical_ai`, `projections`,
-`redaction`, `research`, `storage`, and `world`.
+top-level dispositions for `activities`, `artifacts`, `commands`, `evaluation`,
+`graph`, `migration`, `missions`, `physical_ai`, `projections`, `redaction`,
+`research`, `storage`, and `world`.
 `scripts/check_architecture.py` enforces their package direction, protocol
 imports, concrete construction, concrete inheritance, and persistent
 Component placement.
@@ -707,9 +723,8 @@ dependency. `errors` is the exact common-family module; `runtime`, `api`,
 | `evaluation` | `storage`, `world` |
 | `research` | `storage`, `world` |
 | `physical_ai` | `activities`, `storage`, `world` |
-| `episodes` | `artifacts`, `evaluation` |
 | `graph` | none |
-| `missions` | `activities`, `artifacts`, `episodes`, `evaluation`, `graph`, `projections`, `redaction`, `storage`, `world` |
+| `missions` | `activities`, `artifacts`, `evaluation`, `graph`, `projections`, `redaction`, `storage`, `world` |
 | `projections` | `graph` |
 
 The Activity slice is landed: `activities -> storage` is a reviewed top-level
@@ -733,22 +748,17 @@ projections; the workflow does not import or delegate report authority to
 The current package ownership is:
 
 ```text
-src/archetype/
+packages/archetype-ecs/src/archetype/
   core/          kernel; only the approved tick/run-identity changes
   errors.py      stable shared boundary-error bases
   storage/       Daft execution, catalogs, commits, scans, signatures, session
   activities/    generic durable between-tick delivery over storage catalog
   world/         registry, lifecycle, simulation, mutation, query, handlers
   commands/      operation registry, dispatch, policy, scheduler, access audit
-  activities/
-  graph/
-  evaluation/
-  research/
-  physical_ai/
   artifacts/
+  evaluation/
+  graph/
   migration/
-  episodes/
-  missions/
   redaction/
   projections/
   runtime/
@@ -756,6 +766,16 @@ src/archetype/
   cli/
   runtime_resources.py
   wiring.py      constructs and returns RuntimeResources
+
+packages/archetype-missions/src/archetype/missions/
+  coding_agents/ sandboxes/ sessions/ trajectories/
+  components, processors, relations, workflows, typed runtime adapter
+
+packages/archetype-physical-ai/src/archetype/physical_ai/
+  physical state, policies, provider adapters, hosted episodes
+
+packages/archetype-research/src/archetype/research/
+  AutoResearch values, ledger, views, workflow, typed runtime adapter
 ```
 
 Historical note (superseded): before PR4, the design used
@@ -810,7 +830,7 @@ attempts every independent cleanup in the current phase, aggregates labelled
 errors, retains failed ownership and its dependencies, and retries that phase
 on a later serialized call. Only successful finalization is idempotent.
 
-The complete `RuntimeMissions.run()` operation is inside that admission and
+The complete `Missions.run()` operation is inside that admission and
 ownership boundary. Its dispatcher registration is direct-only unless the
 missions family explicitly supplies a portable durable encoding; calling the
 mission service directly is not a second entry path. Admission reserves the

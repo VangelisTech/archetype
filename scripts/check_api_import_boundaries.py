@@ -32,6 +32,13 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY = ROOT / "quality" / "api_import_boundaries.toml"
 SUPPORTED_POLICY_VERSION = 1
+WORKSPACE_SOURCE_ROOTS = (
+    Path("packages/archetype-ecs/src"),
+    Path("packages/archetype-missions/src"),
+    Path("packages/archetype-physical-ai/src"),
+    Path("packages/archetype-research/src"),
+)
+LEGACY_SOURCE_ROOT = Path("src")
 
 
 class BoundaryPolicyError(ValueError):
@@ -318,10 +325,32 @@ def _expand_targets(root: Path, patterns: tuple[str, ...], coordinate: str) -> l
 
 
 def _source_module(path: Path, root: Path) -> tuple[str, bool]:
-    try:
-        relative = path.relative_to(root / "src").with_suffix("")
-    except ValueError as exc:
-        raise BoundaryPolicyError(f"source target is outside {root / 'src'}: {path}") from exc
+    """Resolve a source target against the workspace or legacy fixture root.
+
+    Production modules are distributed across four package-local ``src``
+    trees. Tests and downstream policy fixtures retain the historical
+    repository-local ``src`` layout, so the fallback stays deliberate rather
+    than making module identity depend on whichever ancestor happens to be
+    named ``src``.
+    """
+
+    candidates = tuple(root / relative for relative in WORKSPACE_SOURCE_ROOTS) + (
+        root / LEGACY_SOURCE_ROOT,
+    )
+    matches: list[tuple[Path, Path]] = []
+    for source_root in candidates:
+        try:
+            matches.append((source_root, path.relative_to(source_root).with_suffix("")))
+        except ValueError:
+            continue
+    if len(matches) != 1:
+        configured = ", ".join(str(candidate) for candidate in candidates)
+        detail = (
+            "matches multiple source roots" if matches else "is outside configured source roots"
+        )
+        raise BoundaryPolicyError(f"source target {path} {detail}: {configured}")
+
+    _, relative = matches[0]
     parts = list(relative.parts)
     is_package = bool(parts and parts[-1] == "__init__")
     if is_package:

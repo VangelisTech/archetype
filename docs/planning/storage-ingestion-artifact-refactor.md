@@ -220,7 +220,7 @@ remain supported Pydantic contracts under `archetype.artifacts`.
 ## Target files
 
 ```text
-src/archetype/
+packages/archetype-ecs/src/archetype/
   storage/
     service.py      # execution, visibility, envelopes, table I/O, ordering, retry
     config.py       # immutable control-catalog bootstrap snapshot
@@ -253,8 +253,8 @@ src/archetype/
       interfaces.py
 ```
 
-`src/archetype/app/storage/iceberg.py`,
-`src/archetype/ingestion/contracts.py`, and the one-wrapper-per-media modules
+`packages/archetype-ecs/src/archetype/app/storage/iceberg.py`,
+`packages/archetype-ecs/src/archetype/ingestion/contracts.py`, and the one-wrapper-per-media modules
 are removed after their behavior moves to the owning files above.
 
 ## Coordination semantics
@@ -344,7 +344,7 @@ reuses verified content bytes.
 6. Migrate transcript, evaluation, audit, application query, and mission
    artifact paths.
 7. Admit application-driven ticks through the same local execution boundary
-   without changing `src/archetype/core`.
+   without changing `packages/archetype-ecs/src/archetype/core`.
 8. Add architecture and static checks for materialization, direct Iceberg
    access, table registration, and storage-lock ownership.
 9. Reconcile normative docs, contract registry, generated references, and

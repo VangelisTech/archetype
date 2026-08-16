@@ -78,6 +78,24 @@ PAGES: tuple[ReferencePage, ...] = (
         ),
     ),
     ReferencePage(
+        "missions",
+        "Agent Missions",
+        "Recommended API",
+        "Run coding-agent missions and inspect mission-owned transcript and trajectory evidence.",
+        (
+            "Missions",
+            "MissionWorld",
+            "AgentMissionConfig",
+            "AgentTask",
+            "CommandValidator",
+            "CriticPolicy",
+            "RepositoryPublicationPolicy",
+            "SubmittedMission",
+            "MissionResult",
+            "TaskResult",
+        ),
+    ),
+    ReferencePage(
         "transcripts",
         "Coding-agent transcripts",
         "Recommended API",
@@ -127,6 +145,7 @@ PAGES: tuple[ReferencePage, ...] = (
         "Extension API",
         "Configure optimization loops and persist evaluation evidence with explicit identities.",
         (
+            "Research",
             "AutoResearchConfig",
             "AutoResearchResult",
             "ResearchCandidateContext",
@@ -144,6 +163,7 @@ PAGES: tuple[ReferencePage, ...] = (
         "Recommended API",
         "Run or recover complete Modal-hosted episode batches through a World.",
         (
+            "PhysicalAI",
             "HostedEpisodeRequest",
             "HostedEpisodeObservation",
             "ModalHostedEpisodeConfig",
@@ -201,7 +221,6 @@ PAGES: tuple[ReferencePage, ...] = (
 )
 
 ALIASES: dict[str, str] = {
-    "CandidateContext": "ResearchCandidateContext",
     "Processor": "SyncProcessor",
     "World": "SyncWorld",
     "System": "SyncSystem",
@@ -230,7 +249,41 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
         "archetype.missions.trajectories",
         "TranscriptIngestionResult",
     ),
-    "IterationResult": ("archetype.research.models", "IterationResult"),
+    "Missions": ("archetype.missions", "Missions"),
+    "MissionWorld": ("archetype.missions", "MissionWorld"),
+    "AgentMissionConfig": ("archetype.missions", "AgentMissionConfig"),
+    "AgentTask": ("archetype.missions", "AgentTask"),
+    "CommandValidator": ("archetype.missions", "CommandValidator"),
+    "CriticPolicy": ("archetype.missions", "CriticPolicy"),
+    "RepositoryPublicationPolicy": (
+        "archetype.missions",
+        "RepositoryPublicationPolicy",
+    ),
+    "SubmittedMission": ("archetype.missions", "SubmittedMission"),
+    "MissionResult": ("archetype.missions", "MissionResult"),
+    "TaskResult": ("archetype.missions", "TaskResult"),
+    "Research": ("archetype.research", "Research"),
+    "AutoResearchConfig": ("archetype.research", "AutoResearchConfig"),
+    "AutoResearchResult": ("archetype.research", "AutoResearchResult"),
+    "ResearchCandidateContext": (
+        "archetype.research",
+        "ResearchCandidateContext",
+    ),
+    "EvaluationResult": ("archetype.research", "EvaluationResult"),
+    "IterationResult": ("archetype.research", "IterationResult"),
+    "PhysicalAI": ("archetype.physical_ai", "PhysicalAI"),
+    "HostedEpisodeRequest": (
+        "archetype.physical_ai",
+        "HostedEpisodeRequest",
+    ),
+    "HostedEpisodeObservation": (
+        "archetype.physical_ai",
+        "HostedEpisodeObservation",
+    ),
+    "ModalHostedEpisodeConfig": (
+        "archetype.physical_ai",
+        "ModalHostedEpisodeConfig",
+    ),
     "EnvClient": ("archetype.physical_ai.interfaces", "EnvClient"),
     "OptimizationResult": ("archetype.physical_ai.optimization", "OptimizationResult"),
     "PerturbationStrategy": (
@@ -280,6 +333,14 @@ RECORDS = frozenset(
         "ArtifactStoreConfig",
         "ClaudeTranscriptSource",
         "TranscriptIngestionResult",
+        "AgentMissionConfig",
+        "AgentTask",
+        "CommandValidator",
+        "CriticPolicy",
+        "RepositoryPublicationPolicy",
+        "SubmittedMission",
+        "MissionResult",
+        "TaskResult",
         "ProcessorInfo",
         "HookInfo",
         "ResourceInfo",
@@ -336,9 +397,20 @@ def _validate_coverage() -> dict[str, tuple[str, str]]:
     """Return export locations after checking classification and alias coverage."""
     import archetype
 
+    framework_locations = dict(archetype._EXPORTS)
+    framework_exports = set(archetype.__all__)
+    if framework_exports != set(framework_locations):
+        raise RuntimeError("framework __all__ and _EXPORTS disagree")
+    supplemental_collisions = sorted(set(SUPPLEMENTAL) & framework_exports)
+    if supplemental_collisions:
+        raise RuntimeError(
+            "supplemental locations collide with root exports: "
+            + ", ".join(supplemental_collisions)
+        )
+
     documented = {name for page in PAGES for name in page.names}
     top_level_documented = (documented - set(SUPPLEMENTAL)) | set(ALIASES)
-    actual = set(archetype.__all__)
+    actual = framework_exports
     missing = sorted(actual - top_level_documented)
     stale = sorted(top_level_documented - actual)
     duplicates = sorted(
@@ -356,7 +428,7 @@ def _validate_coverage() -> dict[str, tuple[str, str]]:
             problems.append(f"exports assigned more than once: {', '.join(duplicates)}")
         raise RuntimeError("; ".join(problems))
 
-    return {**archetype._EXPORTS, **SUPPLEMENTAL}
+    return {**framework_locations, **SUPPLEMENTAL}
 
 
 def _type_name(annotation: object) -> str:
@@ -502,7 +574,7 @@ def _render_index() -> str:
         "# Python API",
         "",
         "Archetype's Python reference inventories and classifies the supported "
-        "top-level surface. Most "
+        "framework and world-library surfaces. Most "
         "applications only need the runtime, world-handle, and building-block pages.",
         "",
         "| Surface | Use it for |",
@@ -519,6 +591,11 @@ def _render_index() -> str:
             "on each reference page and the focused specifications classify its stability. "
             "Types exposed by supported "
             "signatures are part of those contracts even when they are not top-level exports.",
+            "",
+            "World-library APIs are family-qualified and remain deliberately absent from the "
+            "domain-free framework `archetype.__all__`. Import `Missions` and `MissionWorld` "
+            "from `archetype.missions`, `PhysicalAI` from `archetype.physical_ai`, and "
+            "`Research` from `archetype.research`.",
             "",
             "The container and concrete application services are internal and are not "
             "top-level exports. Repository wiring imports them from their owning family "

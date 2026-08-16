@@ -13,7 +13,7 @@ from uuid_utils import uuid7
 import archetype
 from archetype.artifacts import ArtifactContext, ArtifactRef, ArtifactSource, ArtifactStoreConfig
 
-_SRC = Path(__file__).resolve().parents[2] / "src" / "archetype"
+_SRC = Path(__file__).resolve().parents[2] / "packages" / "archetype-ecs" / "src" / "archetype"
 
 
 def test_root_exports_are_the_family_contracts() -> None:

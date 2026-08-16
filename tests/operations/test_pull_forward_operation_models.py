@@ -42,13 +42,17 @@ _MODEL_BOUNDARIES = (
         "run_hosted_episode",
     ),
     (
-        "archetype.episodes.models",
+        "archetype.missions.trajectories.models",
         "IngestClaudeTranscript",
         "ingest_claude_transcript",
     ),
-    ("archetype.episodes.models", "QueryTranscriptRows", "query_transcript_rows"),
-    ("archetype.episodes.models", "QueryTrajectory", "query_trajectory"),
-    ("archetype.episodes.models", "GradeTrajectory", "grade_trajectory"),
+    (
+        "archetype.missions.trajectories.models",
+        "QueryTranscriptRows",
+        "query_transcript_rows",
+    ),
+    ("archetype.missions.trajectories.models", "QueryTrajectory", "query_trajectory"),
+    ("archetype.missions.trajectories.models", "GradeTrajectory", "grade_trajectory"),
     ("archetype.missions.models", "SubmitMission", "submit_mission"),
     ("archetype.missions.models", "RunMission", "run_mission"),
     (
@@ -402,26 +406,8 @@ def test_family_models_import_no_app_commands_runtime_api_cli_or_wiring() -> Non
         assert forbidden == set(), f"{model.__module__}: {sorted(forbidden)}"
 
 
-def test_old_supported_contract_paths_preserve_object_identity() -> None:
+def test_supported_contract_aliases_preserve_object_identity() -> None:
     identity_pairs = (
-        (
-            "archetype.missions.trajectories",
-            "ClaudeTranscriptSource",
-            "archetype.episodes.contracts",
-            "ClaudeTranscriptSource",
-        ),
-        (
-            "archetype.missions.trajectories",
-            "TrajectorySelection",
-            "archetype.episodes.contracts",
-            "TrajectorySelection",
-        ),
-        (
-            "archetype.missions.trajectories",
-            "TranscriptIngestionResult",
-            "archetype.episodes.contracts",
-            "TranscriptIngestionResult",
-        ),
         (
             "archetype.physical_ai.manipulation",
             "EnvClient",

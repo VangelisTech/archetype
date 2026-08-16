@@ -33,7 +33,6 @@ from typing import Any
 import pytest
 
 from archetype import ArchetypeRuntime
-from archetype import wiring as wiring_module
 from archetype.core.config import StorageConfig
 from archetype.errors import RuntimeShutdownError
 from archetype.missions import (
@@ -42,10 +41,12 @@ from archetype.missions import (
     AgentTask,
     CommandValidator,
     Commit,
+    Missions,
     Sandbox,
     TaskState,
     ValidationResult,
 )
+from archetype.missions import _extension as missions_extension
 from archetype.missions.activities import AuthorExecutionObservation, AuthorRecovered
 from archetype.missions.coding_agents.contracts import (
     AgentExecutionResult,
@@ -433,7 +434,8 @@ async def test_runtime_shutdown_drains_admitted_run_blocked_in_external_executio
     scheduled_reentries: list[asyncio.Task[object]] = []
 
     runtime = ArchetypeRuntime()
-    missions = runtime.missions(
+    missions = Missions(
+        runtime,
         "runtime-drain",
         config=_config(_modal_backend()),
         storage=storage,
@@ -552,7 +554,8 @@ async def test_runtime_shutdown_preserves_factual_failure_of_admitted_run(
         namespace="mission_factual_failure_contract",
     )
     runtime = ArchetypeRuntime()
-    missions = runtime.missions(
+    missions = Missions(
+        runtime,
         "factual-failure",
         config=_config(_modal_backend()),
         storage=storage,
@@ -603,7 +606,8 @@ async def test_public_close_and_runtime_shutdown_race_admitted_run(
     author = _DrainAuthorExecutor(remote, tmp_path / "author")
     critic = _DrainCriticExecutor(remote, tmp_path / "critic")
     runtime = ArchetypeRuntime()
-    missions = runtime.missions(
+    missions = Missions(
+        runtime,
         "close-shutdown-race",
         config=_config(_modal_backend()),
         storage=StorageConfig(
@@ -649,7 +653,8 @@ async def test_cancelling_admitted_run_does_not_wedge_runtime_shutdown(
     author = _DrainAuthorExecutor(remote, tmp_path / "author")
     critic = _DrainCriticExecutor(remote, tmp_path / "critic")
     runtime = ArchetypeRuntime()
-    missions = runtime.missions(
+    missions = Missions(
+        runtime,
         "cancelled-run",
         config=_config(_modal_backend()),
         storage=StorageConfig(
@@ -703,7 +708,7 @@ async def test_replacement_runtime_recovers_cancelled_mission_without_provider_r
 
     clock = [0.0]
     monkeypatch.setattr(
-        wiring_module,
+        missions_extension,
         "SqliteActivityCatalog",
         lambda path: SqliteActivityCatalog(path, now_seconds=lambda: clock[0]),
     )
@@ -715,7 +720,8 @@ async def test_replacement_runtime_recovers_cancelled_mission_without_provider_r
         namespace="mission_cold_resume_contract",
     )
     first_runtime = ArchetypeRuntime()
-    first = first_runtime.missions(
+    first = Missions(
+        first_runtime,
         "cold-resume",
         config=_config(_modal_backend()),
         storage=storage,
@@ -737,17 +743,18 @@ async def test_replacement_runtime_recovers_cancelled_mission_without_provider_r
     # run a second time for the author Activity.
     clock[0] = 301.0
     monkeypatch.setattr(
-        wiring_module,
+        missions_extension,
         "ModalMissionAuthorExecutor",
         lambda **kwargs: author,
     )
     monkeypatch.setattr(
-        wiring_module,
+        missions_extension,
         "ModalMissionCriticExecutor",
         lambda **kwargs: critic,
     )
     replacement = ArchetypeRuntime()
-    resumed_handle = replacement.missions(
+    resumed_handle = Missions(
+        replacement,
         "cold-resume",
         config=_config(_modal_backend()),
         storage=storage,
@@ -776,7 +783,8 @@ async def test_runtime_shutdown_drains_each_admitted_mission_operation(
     remote = _remote(tmp_path)
     backend = _modal_backend()
     runtime = ArchetypeRuntime()
-    missions = runtime.missions(
+    missions = Missions(
+        runtime,
         f"drain-{operation}",
         config=_config(backend),
         storage=StorageConfig(
@@ -862,7 +870,8 @@ async def test_closed_mission_handle_rejects_new_operations_by_contract(
     with the handle's own closed contract, not an internal registry error."""
 
     runtime = ArchetypeRuntime()
-    missions = runtime.missions(
+    missions = Missions(
+        runtime,
         "released-handle",
         config=_config(_modal_backend()),
         storage=StorageConfig(

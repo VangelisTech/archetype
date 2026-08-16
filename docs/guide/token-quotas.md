@@ -114,10 +114,10 @@ untrusted code violate the boundary.
 
 ## Source reference
 
-- policy and role grants: `src/archetype/commands/policy.py`
-- per-operation costs and quota scopes: `src/archetype/wiring.py`
-- enforcement order and batches: `src/archetype/commands/dispatch.py`
-- durable options: `src/archetype/commands/models.py`
+- policy and role grants: `packages/archetype-ecs/src/archetype/commands/policy.py`
+- per-operation costs and quota scopes: `packages/archetype-ecs/src/archetype/wiring.py`
+- enforcement order and batches: `packages/archetype-ecs/src/archetype/commands/dispatch.py`
+- durable options: `packages/archetype-ecs/src/archetype/commands/models.py`
 - executable policy contracts:
   `tests/commands/test_dispatch_policy_contracts.py` and
   `tests/app/test_tick_quota_reset.py`

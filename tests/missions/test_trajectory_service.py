@@ -10,13 +10,15 @@ from daft import DataFrame
 
 from archetype import ArchetypeRuntime
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from archetype.episodes.models import GradeTrajectory, QueryTrajectory
+from archetype.missions._extension import get_manifest
+from archetype.missions.runtime import MissionWorld
 from archetype.missions.trajectories import (
     TrajectoryReward,
     TrajectorySelection,
     TrajectoryTurn,
     trajectory,
 )
+from archetype.missions.trajectories.models import GradeTrajectory, QueryTrajectory
 from archetype.world.models import CreateWorld, Run, Spawn
 from evals.graders import exact_match, state_check
 from evals.types import GraderResult
@@ -29,7 +31,7 @@ def _rows(frame: DataFrame) -> list[dict]:
 
 @pytest.mark.asyncio
 async def test_service_filters_one_persisted_evidence_table(tmp_path) -> None:
-    resources = build_test_runtime(tmp_path)
+    resources = build_test_runtime(tmp_path, world_libraries=(get_manifest(),))
     dispatcher = resources.dispatcher
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="trajectory")
@@ -70,7 +72,7 @@ async def test_service_filters_one_persisted_evidence_table(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_service_composes_query_with_evaluation_graders(tmp_path) -> None:
-    resources = build_test_runtime(tmp_path)
+    resources = build_test_runtime(tmp_path, world_libraries=(get_manifest(),))
     dispatcher = resources.dispatcher
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="rewards")
@@ -123,7 +125,7 @@ async def test_service_composes_query_with_evaluation_graders(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_runtime_world_exposes_trajectory_query_and_grading(tmp_path) -> None:
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_trajectory")
-    async with ArchetypeRuntime() as runtime:
+    async with ArchetypeRuntime(world_libraries=(get_manifest(),)) as runtime:
         world = runtime.world("runtime-trajectory", storage=storage)
         await world.spawn(TrajectoryReward(episode_id="episode-a", seq=0, reward=0.25))
         await world.spawn(TrajectoryReward(episode_id="episode-a", seq=1, reward=1.0))
@@ -131,7 +133,8 @@ async def test_runtime_world_exposes_trajectory_query_and_grading(tmp_path) -> N
         await world.run(steps=1)
         selection = TrajectorySelection(episode_ids=("episode-a",))
 
-        frame = await world.query_trajectory(TrajectoryReward, selection=selection)
+        missions = MissionWorld(world)
+        frame = await missions.query_trajectory(TrajectoryReward, selection=selection)
 
         def grade_reward(rows: DataFrame) -> GraderResult:
             return state_check(
@@ -142,7 +145,7 @@ async def test_runtime_world_exposes_trajectory_query_and_grading(tmp_path) -> N
                 name="runtime_trajectory",
             )
 
-        results = await world.grade_trajectory(
+        results = await missions.grade_trajectory(
             TrajectoryReward,
             selection=selection,
             graders=[grade_reward],
@@ -155,7 +158,7 @@ async def test_runtime_world_exposes_trajectory_query_and_grading(tmp_path) -> N
 @pytest.mark.asyncio
 async def test_derived_trajectory_view_orders_persisted_evidence(tmp_path) -> None:
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="derived_view")
-    async with ArchetypeRuntime() as runtime:
+    async with ArchetypeRuntime(world_libraries=(get_manifest(),)) as runtime:
         world = runtime.world("derived-view", storage=storage)
         # Spawn out of seq order; the derived view must restore evidence order.
         await world.spawn(TrajectoryTurn(episode_id="episode-a", seq=1, role="assistant"))
@@ -163,24 +166,9 @@ async def test_derived_trajectory_view_orders_persisted_evidence(tmp_path) -> No
         await world.spawn(TrajectoryTurn(episode_id="episode-b", seq=0, role="user"))
         await world.run(steps=1)
 
-        frame = await world.query_trajectory(TrajectoryTurn)
+        frame = await MissionWorld(world).query_trajectory(TrajectoryTurn)
         view = trajectory(frame, TrajectoryTurn, episode_id="episode-a")
         rows = _rows(view)
 
         assert [row["trajectoryturn__seq"] for row in rows] == [0, 1]
         assert [row["trajectoryturn__role"] for row in rows] == ["user", "assistant"]
-
-
-def test_sync_runtime_world_mirrors_trajectory_query(tmp_path) -> None:
-    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="sync_trajectory")
-    with ArchetypeRuntime.sync() as runtime:
-        world = runtime.world("sync-trajectory", storage=storage)
-        world.spawn(TrajectoryReward(episode_id="episode-a", seq=0, reward=2.0))
-        world.run(steps=1)
-
-        frame = world.query_trajectory(
-            TrajectoryReward,
-            selection=TrajectorySelection(episode_ids=("episode-a",)),
-        )
-
-        assert _rows(frame)[0]["trajectoryreward__reward"] == 2.0

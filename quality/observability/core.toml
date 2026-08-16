@@ -3,7 +3,7 @@ owner = "core"
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_lancedb_store.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_lancedb_store.py"
 qualified_scope = "archetype.core.aio.async_lancedb_store.AsyncLancedbStore._ensure_table"
 target = "log:error:f'Error creating LanceDB table {table_name}: {e}':interpolation"
 owner = "core"
@@ -13,7 +13,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "unsafe_log_value"
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 qualified_scope = "archetype.core.aio.async_world.AsyncWorld._debug_log"
 target = "log:debug:f'[archetype] {json.dumps(payload)}':sensitive-value"
 owner = "core"
@@ -23,7 +23,7 @@ expiry_condition = "Remove when #530 replaces payload export with bounded event 
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/core/aio/async_lancedb_store.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_lancedb_store.py"
 qualified_scope = "archetype.core.aio.async_lancedb_store.AsyncLancedbStore._ensure_table"
 target = "log:error:f'Error creating LanceDB table {table_name}: {e}':exception"
 owner = "core"
@@ -33,7 +33,7 @@ expiry_condition = "Remove when #530 replaces exception content with a bounded e
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/core/aio/async_lancedb_store.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_lancedb_store.py"
 qualified_scope = "archetype.core.aio.async_lancedb_store.AsyncLancedbStore.get_existing_table_df"
 target = "log:error:'Error reading existing table %s: %s':exception"
 owner = "core"
@@ -43,7 +43,7 @@ expiry_condition = "Remove when #530 replaces exception content with a bounded e
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_lancedb_store.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_lancedb_store.py"
 qualified_scope = "archetype.core.aio.async_lancedb_store.AsyncLancedbStore.get_archetype_df"
 target = "log:error:f'Error reading archetype table {table_name}: {e}':interpolation"
 owner = "core"
@@ -53,7 +53,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/core/aio/async_lancedb_store.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_lancedb_store.py"
 qualified_scope = "archetype.core.aio.async_lancedb_store.AsyncLancedbStore.get_archetype_df"
 target = "log:error:f'Error reading archetype table {table_name}: {e}':exception"
 owner = "core"
@@ -63,7 +63,7 @@ expiry_condition = "Remove when #530 replaces exception content with a bounded e
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_lancedb_store.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_lancedb_store.py"
 qualified_scope = "archetype.core.aio.async_lancedb_store.AsyncLancedbStore.append"
 target = "log:info:f'Append skipped (lancedb): archetype={table_id} empty schema':interpolation"
 owner = "core"
@@ -73,7 +73,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_store.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_store.py"
 qualified_scope = "archetype.core.aio.async_store.AsyncStore.append"
 target = "log:info:f'Append skipped (store): archetype={table_id} empty schema':interpolation"
 owner = "core"
@@ -83,7 +83,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_system.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_system.py"
 qualified_scope = "archetype.core.aio.async_system.AsyncSystem.execute"
 target = "log:debug:f'[archetype] processor_start: {proc_name} (priority={proc_instance.priority}, archetype={archetype_name})':interpolation"
 owner = "core"
@@ -93,7 +93,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_system.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_system.py"
 qualified_scope = "archetype.core.aio.async_system.AsyncSystem.execute"
 target = "log:error:f'Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}':interpolation"
 owner = "core"
@@ -103,7 +103,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/core/aio/async_system.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_system.py"
 qualified_scope = "archetype.core.aio.async_system.AsyncSystem.execute"
 target = "log:error:f'Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}':exception"
 owner = "core"
@@ -113,7 +113,7 @@ expiry_condition = "Remove when #530 replaces exception content with a bounded e
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_updater.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_updater.py"
 qualified_scope = "archetype.core.aio.async_updater.AsyncUpdateManager.update"
 target = "log:info:f'Update skipped (empty schema): archetype={Archetype.get_name(sig)}':interpolation"
 owner = "core"
@@ -123,7 +123,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_updater.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_updater.py"
 qualified_scope = "archetype.core.aio.async_updater.AsyncUpdateManager.update"
 target = "log:info:f'Append committed: archetype={Archetype.get_name(sig)} world_id={world_id} run_id={run_id} tick={tick} duration_ms={duration_ms:.3f}':interpolation"
 owner = "core"
@@ -133,7 +133,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_updater.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_updater.py"
 qualified_scope = "archetype.core.aio.async_updater.AsyncUpdateManager.update"
 target = "log:error:f'Error updating table {Archetype.get_name(sig)}: {e}':interpolation"
 owner = "core"
@@ -143,7 +143,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/core/aio/async_updater.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_updater.py"
 qualified_scope = "archetype.core.aio.async_updater.AsyncUpdateManager.update"
 target = "log:error:f'Error updating table {Archetype.get_name(sig)}: {e}':exception"
 owner = "core"
@@ -153,7 +153,7 @@ expiry_condition = "Remove when #530 replaces exception content with a bounded e
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 qualified_scope = "archetype.core.aio.async_world.AsyncWorld._move_entity"
 target = "log:warning:f'World {self.name} ({self.world_id}): Entity Migration Failed: No entity: {entity_id}':interpolation"
 owner = "core"
@@ -163,7 +163,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 qualified_scope = "archetype.core.aio.async_world.AsyncWorld._move_entity"
 target = "log:warning:f'World {self.name} ({self.world_id}): Entity Migration Failed: Multiple entities: {entity_id}':interpolation"
 owner = "core"
@@ -173,7 +173,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 qualified_scope = "archetype.core.aio.async_world.AsyncWorld._debug_log"
 target = "log:debug:f'[archetype] {json.dumps(payload)}':interpolation"
 owner = "core"
@@ -183,7 +183,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/core/hooks.py"
+path = "packages/archetype-ecs/src/archetype/core/hooks.py"
 qualified_scope = "archetype.core.hooks.HookRegistry.fire"
 target = "log:warning:'Hook %s failed on %s: %s':exception"
 owner = "core"
@@ -193,7 +193,7 @@ expiry_condition = "Remove when #530 replaces exception content with a bounded e
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/core/hooks.py"
+path = "packages/archetype-ecs/src/archetype/core/hooks.py"
 qualified_scope = "archetype.core.hooks.SyncHookRegistry.fire"
 target = "log:warning:'Hook %s failed on %s: %s':exception"
 owner = "core"
@@ -203,7 +203,7 @@ expiry_condition = "Remove when #530 replaces exception content with a bounded e
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/core/hooks.py"
+path = "packages/archetype-ecs/src/archetype/core/hooks.py"
 qualified_scope = "archetype.core.hooks._fire_detached"
 target = "log:warning:'Detached hook %s failed on %s: %s':exception"
 owner = "core"
@@ -213,7 +213,7 @@ expiry_condition = "Remove when #530 replaces exception content with a bounded e
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/sync/system.py"
+path = "packages/archetype-ecs/src/archetype/core/sync/system.py"
 qualified_scope = "archetype.core.sync.system.SyncSystem.execute"
 target = "log:exception:f'Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}':interpolation"
 owner = "core"
@@ -223,7 +223,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/core/sync/system.py"
+path = "packages/archetype-ecs/src/archetype/core/sync/system.py"
 qualified_scope = "archetype.core.sync.system.SyncSystem.execute"
 target = "log:exception:f'Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}':exception"
 owner = "core"
@@ -233,7 +233,7 @@ expiry_condition = "Remove when #530 replaces exception content with a bounded e
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/sync/updater.py"
+path = "packages/archetype-ecs/src/archetype/core/sync/updater.py"
 qualified_scope = "archetype.core.sync.updater.UpdateManager.update"
 target = "log:info:f'Update skipped (empty schema): archetype={Archetype.get_name(sig)}':interpolation"
 owner = "core"
@@ -243,7 +243,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/sync/updater.py"
+path = "packages/archetype-ecs/src/archetype/core/sync/updater.py"
 qualified_scope = "archetype.core.sync.updater.UpdateManager.update"
 target = "log:error:f'Error updating table {Archetype.get_name(sig)}: {e}':interpolation"
 owner = "core"
@@ -253,7 +253,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/core/sync/updater.py"
+path = "packages/archetype-ecs/src/archetype/core/sync/updater.py"
 qualified_scope = "archetype.core.sync.updater.UpdateManager.update"
 target = "log:error:f'Error updating table {Archetype.get_name(sig)}: {e}':exception"
 owner = "core"
@@ -263,7 +263,7 @@ expiry_condition = "Remove when #530 replaces exception content with a bounded e
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/sync/world.py"
+path = "packages/archetype-ecs/src/archetype/core/sync/world.py"
 qualified_scope = "archetype.core.sync.world.SyncWorld._move_entity"
 target = "log:warning:f'World {self.name} ({self.world_id}): Entity Migration ambiguous: {len(rows)} rows for entity {entity_id} at tick {self.tick - 1}':interpolation"
 owner = "core"
@@ -273,7 +273,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/sync/world.py"
+path = "packages/archetype-ecs/src/archetype/core/sync/world.py"
 qualified_scope = "archetype.core.sync.world.SyncWorld.remove_entity"
 target = "log:warning:f'World {self.name} ({self.world_id}): Entity Removal Failed: No entity: {entity_id}':interpolation"
 owner = "core"
@@ -283,7 +283,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/sync/world.py"
+path = "packages/archetype-ecs/src/archetype/core/sync/world.py"
 qualified_scope = "archetype.core.sync.world.SyncWorld.add_components"
 target = "log:warning:f'add_components: entity {entity_id} not found':interpolation"
 owner = "core"
@@ -293,7 +293,7 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/sync/world.py"
+path = "packages/archetype-ecs/src/archetype/core/sync/world.py"
 qualified_scope = "archetype.core.sync.world.SyncWorld.add_components"
 target = "log:debug:f'add_components: components already in archetype for entity {entity_id}':interpolation"
 owner = "core"

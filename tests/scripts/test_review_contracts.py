@@ -28,6 +28,9 @@ _ROOT = Path(__file__).resolve().parents[2]
 _SCRIPTS = _ROOT / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
+_TEST_SUPPORT = Path(__file__).resolve().parent
+if str(_TEST_SUPPORT) not in sys.path:
+    sys.path.insert(0, str(_TEST_SUPPORT))
 
 from review_contracts import (  # noqa: E402
     DESIGN_BRIEF_PROMPT_CHAR_LIMIT,
@@ -452,7 +455,10 @@ def test_design_brief_renderer_selects_only_whole_relevant_guidance_under_budget
 
 
 def test_design_brief_projects_real_size_lens_evidence_under_budget():
-    files = [f"src/archetype/missions/path_{index:03}.py" for index in range(91)]
+    files = [
+        f"packages/archetype-missions/src/archetype/missions/path_{index:03}.py"
+        for index in range(91)
+    ]
     lenses = [
         {
             "lens": "authority",
@@ -640,7 +646,7 @@ def test_adjudication_evidence_paths_must_be_real():
         "recommended_severity": "advisory",
         "evidence": [
             {
-                "path": "src/archetype/definitely_not_a_real_module.py",
+                "path": "packages/archetype-ecs/src/archetype/definitely_not_a_real_module.py",
                 "explanation": (
                     "This confidently cited file does not exist anywhere in the "
                     "repository or the scoped diff."

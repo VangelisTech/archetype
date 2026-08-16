@@ -6,7 +6,7 @@ Archetype has two evaluation surfaces with opposite dependency directions.
 
 | Surface | Location | What it evaluates |
 |---|---|---|
-| Product evaluation | `src/archetype/` | Work performed inside Archetype: persisted trajectories, dataset episodes, graders, and receipts |
+| Product evaluation | `packages/archetype-ecs/src/archetype/` | Work performed inside Archetype: persisted trajectories, dataset episodes, graders, and receipts |
 | Repository harness | `tests/`, `evals/`, `bench/`, and development tooling | Archetype itself: correctness, architecture, robustness, and cost |
 
 The product surface ships in the wheel. The repository harness does not. It is
@@ -14,7 +14,7 @@ an outer consumer of the library and MAY exercise any public boundary needed
 to prove a contract. Production code MUST NOT import it.
 
 This is why the self-harness stays at the repository root. Moving it into
-`src/archetype/core/` would reverse the dependency graph: the lowest engine
+`packages/archetype-ecs/src/archetype/core/` would reverse the dependency graph: the lowest engine
 layer would own code that depends on the whole stack, developer tooling, and
 test-only infrastructure. “Harness” is the composition of the evidence below,
 not one runtime package.
@@ -175,13 +175,36 @@ execution and receipt retention land with the owning release-gate slices. A
 declared cadence MUST NOT be reported as satisfied until its workflow invokes
 the scenario and retains the resulting receipt.
 
-The operator-dispatched tag workflow builds one wheel after the source profile,
-records its digest, and runs every credential-free release scenario against
-that exact installed artifact. OpenAI, Docker, R2, Apple Container, and the
-Modal Agent Mission execute in mandatory platform/provider lanes that download
-the same immutable distribution. Publication is gated by an aggregate receipt
-check: every release-required scenario must have passed, every receipt must name
-the release commit and wheel digest, and no result may be `not_run`.
+The operator-dispatched tag workflow builds the exact 0.6 distribution matrix
+after the source profile: one wheel and one source distribution for each of
+`archetype-ecs`, `archetype-missions`, `archetype-physical-ai`, and
+`archetype-research`. It validates and package-smokes the four wheels, rebuilds
+all four source distributions through isolated PEP 517, probes the rebuilt
+full stack, records every digest, and runs every
+credential-free release scenario against an isolated install of the exact
+four-wheel set. OpenAI, Docker, R2, Apple Container, and the Modal lanes
+download the same immutable distribution matrix. Publication is gated by
+an aggregate receipt check: every release-required scenario must have passed,
+every receipt must name the release commit and all four wheel digests, and no
+result may be `not_run`. The publish job uploads the recorded eight files
+without rebuilding them.
+
+Before the first coordinated release, both registries need the complete OIDC
+publisher matrix. Configure or verify these identities for each of
+`archetype-ecs`, `archetype-missions`, `archetype-physical-ai`, and
+`archetype-research`:
+
+| Registry | Repository | Workflow | GitHub environment |
+|---|---|---|---|
+| TestPyPI | `VangelisTech/archetype` | `release.yml` | `release-testpypi` |
+| PyPI | `VangelisTech/archetype` | `release.yml` | `release-pypi` |
+
+Use pending Trusted Publishers to reserve project names that do not yet exist.
+Both GitHub environments permit only `v*` tags and require approval from
+`everettVT`. The publisher action emits PEP 740 attestations by default. Index
+preflight permits an exact partial retry only when every existing file has the
+expected publisher identity and digest-bound publish attestation; token or
+manual uploads cannot satisfy that recovery path.
 
 Release execution is operator-only. The `Release tags — everettVT only`
 repository ruleset permits only `everettVT` to create `v*` tags; the separate
@@ -211,11 +234,11 @@ For each release, use this order:
 ```bash
 # 1. Create the reviewed tag. The ruleset rejects every other GitHub actor.
 git fetch origin main
-git tag -a v0.5.0 origin/main -m "Release v0.5.0"
-git push origin refs/tags/v0.5.0
+git tag -a v0.6.0 origin/main -m "Release v0.6.0"
+git push origin refs/tags/v0.6.0
 
 # 2. Before registering any runner, pin its group to the immutable tag.
-uv run python scripts/configure_release_runner_group.py v0.5.0
+uv run python scripts/configure_release_runner_group.py v0.6.0
 
 # 3. In a fresh disposable runner directory, use the current organization-runner
 #    package and a one-hour registration token. The current macOS account is OK.
@@ -237,12 +260,13 @@ unset ARCHETYPE_RUNNER_TOKEN
 # 4. From a second terminal, dispatch only at the same immutable tag.
 gh workflow run release.yml \
   --repo VangelisTech/archetype \
-  --ref v0.5.0 \
-  -f tag=v0.5.0
+  --ref v0.6.0 \
+  -f tag=v0.6.0
 ```
 
-Approve `release-apple-macos`, then approve `release-pypi` only after its
-evidence gate succeeds. The ephemeral runner deregisters after the Apple job;
+Approve `release-apple-macos`, then `release-testpypi`, and finally
+`release-pypi` after the TestPyPI installed-distribution matrix succeeds. The
+ephemeral runner deregisters after the Apple job;
 discard its working directory before preparing a rerun or future release.
 
 Release-lane authentication is explicit and provider-scoped:

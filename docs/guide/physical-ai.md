@@ -39,14 +39,14 @@ graph TB
 ## Run a hosted episode
 
 Create a world from `ArchetypeRuntime`, supply explicit durable storage, and
-call `RuntimeWorld.run_hosted_episode`:
+wrap it with the typed `PhysicalAI` adapter:
 
 ```python
-from archetype import (
-    ArchetypeRuntime,
+from archetype import ArchetypeRuntime, StorageConfig
+from archetype.physical_ai import (
     HostedEpisodeRequest,
     ModalHostedEpisodeConfig,
-    StorageConfig,
+    PhysicalAI,
 )
 
 storage = StorageConfig(uri="./data", namespace="physical-evals")
@@ -73,7 +73,7 @@ request = HostedEpisodeRequest(
 
 async with ArchetypeRuntime() as runtime:
     world = runtime.world("physical-eval", storage=storage)
-    observation = await world.run_hosted_episode(
+    observation = await PhysicalAI(world).run_hosted_episode(
         [request],
         provider=provider,
         activity_id="evaluation-7-seed-100",
@@ -81,7 +81,8 @@ async with ArchetypeRuntime() as runtime:
     print(observation.result_ref, observation.success_count)
 ```
 
-The sync world handle exposes the same method without `await`.
+Installing `archetype-physical-ai` registers the operation; it does not add a
+method to generic async or sync world handles. The typed adapter is async.
 
 `activity_id` is caller-stable within a World. Repeating it with the same
 canonical request reconciles the same durable Activity. Reusing it with
@@ -145,7 +146,8 @@ identity.
 
 | Location | Responsibility |
 |---|---|
-| `archetype.physical_ai.models` | Public request, Modal configuration, observation, and exact operation model |
+| `archetype.physical_ai` | Public `PhysicalAI` adapter, request, Modal configuration, and observation values |
+| `archetype.physical_ai.models` | Definitions for those values plus the internal exact operation model |
 | `archetype.physical_ai.hosted_episode` | Canonical Arrow schemas, codecs, identities, digests, and completeness validation |
 | `archetype.physical_ai.hosted_activity_contracts` | Intent/observation Components, bounded references, and provider reconciliation protocol |
 | `archetype.physical_ai.hosted_activities` | Exact-receipt projector, Activity adapter, fenced worker, redelivery, and settlement |

@@ -46,6 +46,9 @@ def test_pull_request_workflow_has_only_two_jobs() -> None:
     assert "merge_group:" not in workflow
     assert "make static" in _job(workflow, "static")
     assert "make test" in _job(workflow, "tests")
+    assert "make package-smoke" in _job(workflow, "tests")
+    assert "Distribution matrix" not in workflow
+    assert "uv build --all-packages" in MAKEFILE.read_text(encoding="utf-8")
     assert "make test-cov" not in workflow
     assert "R2_" not in workflow
     assert "codecov" not in workflow.lower()
@@ -57,7 +60,7 @@ def test_local_pr_profile_matches_the_two_ci_jobs() -> None:
     verify_full = re.search(r"^verify-full:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
 
     assert verify_pr is not None
-    assert verify_pr.group("dependencies").split() == ["static", "test"]
+    assert verify_pr.group("dependencies").split() == ["static", "test", "package-smoke"]
     assert verify_full is not None
     full = verify_full.group("dependencies").split()
     for target in (
@@ -163,6 +166,7 @@ def test_operational_receipts_cover_commands_and_runtime_from_source_and_wheel()
     assert wheel.group("body").count("--scenario dogfood.commands.local") == 1
     assert source_runtime.group("body").count("--scenario dogfood.runtime.loopback") == 1
     assert wheel.group("body").count("--scenario dogfood.runtime.loopback") == 1
+    assert '--wheel-dir "$(OPERATIONAL_DIST_DIR)"' in wheel.group("body")
     dependencies = verify_full.group("dependencies").split()
     assert "operational-commands" in dependencies
     assert "operational-runtime" in dependencies
@@ -198,7 +202,7 @@ def test_required_release_execution_cannot_accept_not_run(
     assert "release cadence requires execution" in result["reason"]
 
 
-def test_release_profile_builds_and_tests_one_exact_artifact() -> None:
+def test_release_profile_builds_and_tests_one_exact_artifact_matrix() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
     verify_release = re.search(r"^verify-release:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
     release_artifact = re.search(
@@ -217,10 +221,46 @@ def test_release_profile_builds_and_tests_one_exact_artifact() -> None:
     assert release_artifact is not None
     assert operational_release is not None
     artifact_body = release_artifact.group("body")
+    build = re.search(r"^build:[^\n]*\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE)
+    assert build is not None
+    assert "uv build --all-packages --no-sources --clear --out-dir dist" in build.group("body")
     assert artifact_body.count("scripts/package_smoke.py") == 1
     assert artifact_body.count("scripts/release_artifact.py record") == 1
     assert operational_release.group("dependencies").split() == ["release-artifact"]
     assert "--min-tier 0 --max-tier 4" in operational_release.group("body")
+    release_runner = re.search(
+        r"^define RUN_RELEASE_SCENARIOS\n(?P<body>.*?)^endef$",
+        makefile,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert release_runner is not None
+    assert '--wheel-dir "$(OPERATIONAL_DIST_DIR)"' in release_runner.group("body")
+
+
+def test_manual_publish_targets_upload_only_the_recorded_artifact_matrix() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    for target in ("publish-test", "publish"):
+        match = re.search(
+            rf"^{target}:(?P<dependencies>[^\n]*)\n(?P<body>(?:\t.*\n)+)",
+            makefile,
+            re.MULTILINE,
+        )
+        assert match is not None
+        assert match.group("dependencies").strip() == ""
+        body = match.group("body")
+        assert "scripts/release_artifact.py publish" in body
+        assert '--dist "$(OPERATIONAL_DIST_DIR)"' in body
+        assert '--manifest "$(RELEASE_ARTIFACT_MANIFEST)"' in body
+        assert "make build" not in body
+        assert "uv publish" not in body
+
+    test_target = re.search(
+        r"^publish-test:[^\n]*\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+    assert test_target is not None
+    assert "--publish-url https://test.pypi.org/legacy/" in test_target.group("body")
 
 
 def test_every_release_scenario_is_installed_wheel_applicable() -> None:
@@ -306,6 +346,8 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     publish = _job(workflow, "publish")
 
     assert "make verify-release" in profile
+    assert "uv sync --all-packages --all-extras --group dev --group docs" in profile
+    assert "uv sync --all-packages --all-extras --group dev" in external
     assert "release-artifact.json" in profile
     assert "operational-release-results.json" in profile
     for target in (
@@ -337,16 +379,21 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert "environment: release-apple-macos" in apple
     assert "- uses: actions/setup-python@" not in apple
     assert 'UV_PYTHON: "3.12"' in apple
-    assert 'uv sync --python "3.12" --group dev --extra coding-agent' in apple
+    assert 'uv sync --python "3.12" --all-packages --all-extras --group dev' in apple
     assert "sys.version_info[:2] == (3, 12)" in apple
     assert 'test "$(uname -m)" = "arm64"' in apple
     assert "container system status" in apple
     assert "make operational-release-apple" in apple
     assert "needs: [release-profile, external-evidence, apple-evidence]" in gate
     assert 'UV_PYTHON: "3.13"' in compatibility
-    assert 'uv sync --python "3.13" --group dev' in compatibility
+    assert 'uv sync --python "3.13" --all-packages --all-extras --group dev' in compatibility
     assert "sys.version_info[:2] == (3, 13)" in compatibility
     assert "needs: [release-evidence-gate, python-compatibility]" in publish
+    assert "name: dist" in publish
+    assert "pypa/gh-action-pypi-publish@" in publish
+    assert "actions/checkout@" not in publish
+    assert "uv build" not in publish
+    assert "make build" not in publish
 
 
 def test_release_workflow_is_operator_dispatched_from_an_immutable_tag() -> None:
@@ -424,4 +471,4 @@ def test_operational_wheel_failures_still_emit_a_receipt(tmp_path: Path) -> None
         receipt = json.loads(output.read_text(encoding="utf-8"))
         assert receipt["schema"] == "archetype.operational-results/v1"
         assert receipt["outcome"] == "failed"
-        assert "--wheel must name one built wheel" in receipt["error"]
+        assert "--wheel must name the built archetype-ecs wheel" in receipt["error"]

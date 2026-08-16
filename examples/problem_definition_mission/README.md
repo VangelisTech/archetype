@@ -265,7 +265,7 @@ uv run \
   pytest -q tests/examples/problem_definition
 
 git diff --exit-code HEAD -- \
-  src/archetype mkdocs.yml docs/guide
+  packages/*/src/archetype mkdocs.yml docs/guide
 ```
 
 The second command is the implementation-boundary acceptance test: this

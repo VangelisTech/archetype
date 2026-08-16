@@ -1,7 +1,7 @@
 # Rust Core HTN Plan
 
 **Document type:** Implementation plan.
-**Scope:** `crates/`, `src/archetype/core/aio/`, and the Python adapter layer that
+**Scope:** `crates/`, `packages/archetype-ecs/src/archetype/core/aio/`, and the Python adapter layer that
 will bridge them.
 
 This plan describes the migration from the current Python async core prototype
@@ -232,7 +232,7 @@ stay free of storage engine, Python, and catalog policy.
 
 ### Tasks
 
-1. Inventory the async core contracts from `src/archetype/core/aio/`.
+1. Inventory the async core contracts from `packages/archetype-ecs/src/archetype/core/aio/`.
 2. Add contract tests for any behavior currently covered only implicitly.
 3. Mark sync/async divergences as migration risks, not Rust requirements.
 4. Decide which current behaviors are bugs before porting them.
@@ -381,7 +381,7 @@ execute between `arct_step_begin` and `arct_step_commit`.
 
 ### Tasks
 
-1. Add an internal adapter under `src/archetype/core/native/`.
+1. Add an internal adapter under `packages/archetype-ecs/src/archetype/core/native/`.
 2. Convert Daft/PyArrow batches to Arrow C.
 3. Call `archetype-ffi`.
 4. Convert returned Arrow C data back into PyArrow/Daft.

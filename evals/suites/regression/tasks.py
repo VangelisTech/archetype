@@ -751,13 +751,22 @@ def _task_quota_boundaries() -> list[GraderResult]:
 def task_runtime_contracts() -> list[GraderResult]:
     """Compose the public runtime's activation and lifecycle boundaries."""
     activation, shutdown = asyncio.run(_task_runtime_contracts())
+    async_methods = _public_methods(RuntimeWorld)
+    sync_methods = _public_methods(SyncRuntimeWorld)
     return [
         state_check(activation, name="lazy_single_flight_activation"),
         state_check(shutdown, name="wait_then_close_shutdown"),
         exact_match(
-            _public_methods(SyncRuntimeWorld),
-            _public_methods(RuntimeWorld),
+            sync_methods,
+            async_methods - {"library"},
             name="sync_async_world_surface",
+        ),
+        state_check(
+            {
+                "async_dynamic_library_lookup": "library" in async_methods,
+                "no_sync_async_adapter_escape_hatch": "library" not in sync_methods,
+            },
+            name="async_only_world_library_lookup",
         ),
     ]
 

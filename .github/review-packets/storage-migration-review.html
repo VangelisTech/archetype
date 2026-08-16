@@ -412,7 +412,7 @@
       <p class="rail-label">Primary sources</p>
       <nav>
         <a href="../../docs/guide/storage-migration.md">Normative contract</a>
-        <a href="../../src/archetype/migration/handlers.py">Orchestrator</a>
+        <a href="../../packages/archetype-ecs/src/archetype/migration/handlers.py">Orchestrator</a>
         <a href="../../tests/integration/test_storage_migration.py">Local acceptance</a>
       </nav>
       <div class="rail-note">
@@ -578,13 +578,13 @@ evidence = await verify_storage_migration(
           <p class="eyebrow">15-minute code trail</p>
           <h2>Read in this order</h2>
           <div class="trail">
-            <div class="trail-item"><a href="../../src/archetype/migration/contracts.py">migration/contracts.py</a><span>Frozen endpoint, plan, cold evidence, and durable receipt values.</span></div>
-            <div class="trail-item"><a href="../../src/archetype/migration/handlers.py">migration/handlers.py</a><span>Preflight, ordering, drift checks, activation barrier, cold verification, exact recovery.</span></div>
-            <div class="trail-item"><a href="../../src/archetype/storage/transfer.py">storage/transfer.py</a><span>Logical schema comparison and deterministic duplicate-sensitive Arrow digest.</span></div>
-            <div class="trail-item"><a href="../../src/archetype/storage/service.py">storage/service.py</a><span>Namespace inventory, pinned reads, exact import, uncertain-commit reconciliation, historical lookup.</span></div>
-            <div class="trail-item"><a href="../../src/archetype/storage/catalog/migration.py">catalog/migration.py</a><span>Typed control snapshot and reservation administration protocol.</span></div>
-            <div class="trail-item"><a href="../../src/archetype/storage/catalog/sqlite.py">catalog/sqlite.py</a><span>Atomic staging, activation, fence floors, receipt persistence, additive schema v11.</span></div>
-            <div class="trail-item"><a href="../../src/archetype/artifacts/migration.py">artifacts/migration.py</a><span>Authority-bound source reads, copy-once regular files, readback, exact URI relocation.</span></div>
+            <div class="trail-item"><a href="../../packages/archetype-ecs/src/archetype/migration/contracts.py">migration/contracts.py</a><span>Frozen endpoint, plan, cold evidence, and durable receipt values.</span></div>
+            <div class="trail-item"><a href="../../packages/archetype-ecs/src/archetype/migration/handlers.py">migration/handlers.py</a><span>Preflight, ordering, drift checks, activation barrier, cold verification, exact recovery.</span></div>
+            <div class="trail-item"><a href="../../packages/archetype-ecs/src/archetype/storage/transfer.py">storage/transfer.py</a><span>Logical schema comparison and deterministic duplicate-sensitive Arrow digest.</span></div>
+            <div class="trail-item"><a href="../../packages/archetype-ecs/src/archetype/storage/service.py">storage/service.py</a><span>Namespace inventory, pinned reads, exact import, uncertain-commit reconciliation, historical lookup.</span></div>
+            <div class="trail-item"><a href="../../packages/archetype-ecs/src/archetype/storage/catalog/migration.py">catalog/migration.py</a><span>Typed control snapshot and reservation administration protocol.</span></div>
+            <div class="trail-item"><a href="../../packages/archetype-ecs/src/archetype/storage/catalog/sqlite.py">catalog/sqlite.py</a><span>Atomic staging, activation, fence floors, receipt persistence, additive schema v11.</span></div>
+            <div class="trail-item"><a href="../../packages/archetype-ecs/src/archetype/artifacts/migration.py">artifacts/migration.py</a><span>Authority-bound source reads, copy-once regular files, readback, exact URI relocation.</span></div>
             <div class="trail-item"><a href="../../tests/integration/test_storage_migration.py">integration acceptance</a><span>Fastest executable tour of the complete behavior and fresh-process proof.</span></div>
           </div>
         </section>

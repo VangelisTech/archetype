@@ -2258,6 +2258,40 @@ def test_stale_or_colliding_legacy_exceptions_fail_policy(tmp_path: Path) -> Non
     _assert_rejected(_audit(tmp_path))
 
 
+def test_workspace_source_roots_are_unioned_and_duplicate_modules_fail_closed(
+    tmp_path: Path,
+) -> None:
+    _write_fixture(tmp_path)
+    original_family = tmp_path / "src" / "archetype" / "app" / "probe"
+    plugin_family = tmp_path / "packages" / "probe" / "src" / "archetype" / "app" / "probe"
+    plugin_family.parent.mkdir(parents=True)
+    original_family.rename(plugin_family)
+    (tmp_path / "quality" / "architecture.toml").write_text(
+        """
+version = 3
+source_roots = ["src", "packages/probe/src"]
+""",
+        encoding="utf-8",
+    )
+
+    clean = _audit(tmp_path)
+
+    assert clean.ok
+    assert clean.files_scanned == 3
+
+    duplicate = plugin_family.parents[1] / "_obs.py"
+    duplicate.write_text(dedent(OBS_VOCABULARY).lstrip(), encoding="utf-8")
+    collided = _audit(tmp_path)
+
+    assert not collided.ok
+    assert any(
+        "duplicate first-party module identity archetype._obs" in error
+        and "src/archetype/_obs.py" in error
+        and "packages/probe/src/archetype/_obs.py" in error
+        for error in collided.policy_errors
+    )
+
+
 def test_repository_observability_policy_passes_for_all_protocol_operations() -> None:
     completed = subprocess.run(
         [sys.executable, str(CHECKER_PATH)],

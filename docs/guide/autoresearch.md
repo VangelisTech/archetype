@@ -2,20 +2,22 @@
 
 ## Purpose and Scope
 
-AutoResearch is autonomous software optimization on Archetype's ledger: track
-a branch head, evaluate candidate commits against it, and advance the head
-only when a run improves a user-defined metric. The shape — experiment, run,
-result, keep / discard / crash — follows Andrej Karpathy's framing of
-autonomous software optimization as a research direction.
+AutoResearch is a minimal world-library pattern for autonomous optimization:
+track one candidate frontier, evaluate forked world lines against it, and
+advance the head only when a run improves a user-defined metric. The shape —
+experiment, run, result, keep / discard / fail — applies whether the candidate
+is code, a policy, a prompt, or another world-library configuration.
 
-It is an [application-layer](app-overview.md) loop. Experiments and runs are
-ordinary components in a world; scoring stays in user code.
+It is a separately installed [application-layer](app-overview.md) loop.
+Experiments and runs are ordinary components in a world; scoring stays in user
+code. Coding-agent sessions, transcripts, and trajectories remain owned by
+[Agent Missions](agent-missions.md).
 
 **Document type:** Contract and user guide.
 
 **Status: attempts run on the ledger.** The research-family handler records a
-`RUNNING` row before candidate preparation or rollout, then records `STOPPED`
-with an evaluation or `CRASHED` with failure metadata. The loop is itself an
+`RUNNING` row before candidate preparation or rollout, then records `SUCCEEDED`
+with an evaluation or `FAILED` with failure metadata. The loop is itself an
 archetype simulation.
 
 ```mermaid
@@ -41,31 +43,44 @@ graph TB
 | Capability | Implementation |
 |---|---|
 | **Worlds as save states** | Fork / attach episode worlds; inspect any attempt afterward |
-| **Ledgered attempts** | `RUNNING` → `STOPPED` / `CRASHED` rows before and after work |
+| **Ledgered attempts** | `RUNNING` → `SUCCEEDED` / `FAILED` rows before and after work |
 | **User-defined better** | `Result` and `BranchHead` stay opaque; your eval scores |
-| **Runtime entry** | `world.autoresearch(...)` — not assembling internal services |
+| **Runtime entry** | `Research(world).autoresearch(...)` — not assembling internal services |
 | **Governed admission** | Registered `AutoResearch` model through `CommandDispatcher` |
 
 ## Runtime quick path
 
-Think of worlds as save states. `world.autoresearch(...)` replays candidate lines from a base save, scores each one, and keeps the best route; every attempt — including crashes — lands on the experiment's own ledger. Episode worlds are kept by default so you can load any of them afterward and inspect what actually happened.
+Install the Research world library with `uv add archetype-research` (or
+`pip install archetype-research`). Think of worlds as save states.
+`Research(world).autoresearch(...)` replays candidate lines from a base save,
+scores each one, and keeps the best route; every attempt — including crashes —
+lands on the experiment's own ledger. Episode worlds are kept by default so
+you can load any of them afterward and inspect what actually happened.
+
+The 0.6 ledger is a clean generic schema. Pre-0.6 Research ledgers are not
+migrated or opened as 0.6 experiments; see [Archetype 0.6](release-0.6.md).
 
 ```python
-from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
+from archetype import ArchetypeRuntime
+from archetype.research import AutoResearchConfig, EvaluationResult, Research
 
 async with ArchetypeRuntime() as runtime:
     base = runtime.world("base", storage="./data")
     # ... spawn initial state, run once ...
 
-    result = await base.autoresearch(config, evaluate, prepare_candidate=prepare)
+    result = await Research(base).autoresearch(
+        config,
+        evaluate,
+        prepare_candidate=prepare,
+    )
 
     lab = runtime.attach(result.lab_world_id)     # the experiment's ledger
     episode = runtime.attach(result.iterations[0].rollout.episodes[0].world_id)
     outputs = await episode.grade(MyComponent, graders=[my_grader])
 ```
 
-`examples/10_autoresearch.py` is the full runnable version. The runtime path is
-the supported interface. Process wiring registers the frozen
+`examples/10_autoresearch.py` is the full runnable version. The typed Research
+adapter is the supported interface. Its installed manifest registers the frozen
 `archetype.research.models.AutoResearch` model once under the exact name
 `autoresearch`. Trusted `CommandDispatcher.apply` and actor-aware immediate
 `apply_as` reach the same family-owned free handler. The actor-aware
@@ -80,39 +95,30 @@ control-catalog write.
 `archetype.research` models lifecycle state as ordinary Components, so runs
 become entities in an archetype world—forkable, time-travelable, and queryable
 with the same tools as any other simulation state. It owns the reusable ledger
-schema, configuration and result values, storage-backed views, pure
-runner-registry decoder, experiment admission, and directly awaited free
-workflow handler. Its reviewed family edges are `research → storage, world`;
+schema, configuration and result values, storage-backed views, experiment
+admission, and directly awaited free workflow handler. Its reviewed family
+edges are `research → storage, world`;
 there is no application research facade, service protocol, or missions-owned
 research state.
 
 | Component | Role |
 |---|---|
-| `Experiment` | The setup for a family of runs: repo, branch, metadata. No scoring fields. |
-| `Run` | A single attempt: one VM, one agent, one task, one commit. Mirrors `archetype-runner`'s record shape. |
+| `Experiment` | Stable identity and semantic configuration for a family of candidate runs. |
+| `Run` | One candidate preparation, rollout, and evaluation attempt. |
 | `Result` | Opaque eval envelope attached to a `Run`. User code decides the metric. |
-| `BranchHead` | Persisted "current best commit" for an experiment, advanced by the user's loop. |
+| `BranchHead` | Persisted current-best descriptor and score, advanced by the loop. |
 
 The library deliberately does not define what "better" means. `Result.outputs_json` and `BranchHead.descriptor_json` are free-form — a scalar metric, a Pareto point, an LLM judge verdict, a pytest report, a tournament record. The library persists; the user's eval code scores.
 
-### Ingesting from archetype-runner
+### Coding-agent evidence is not Research state
 
-`archetype-runner` is a separate tool that executes coding agents in VMs and records agent runs to SQLite. Its records can be ingested into an archetype world row-for-row:
-
-```python
-from archetype.research import load_runner_state_db
-
-runs = load_runner_state_db("/path/to/runner/state.db")
-for run in runs:
-    await world.spawn(run)
-await world.run(steps=1)  # publish the imported state at one tick boundary
-```
-
-Decoding has no world authority: it only returns `Run` Components. The caller
-submits those values through the same runtime boundary as any other spawn, so
-ingestion does not need a second container- or service-shaped API.
-
-After ingestion, runs are queryable as entities in the world — filter by `experiment_name`, join with `Result`, time-travel to a historical snapshot, or fork the world to explore "what if run X had won instead."
+Repository sessions, VM and harness identity, workspaces, transcripts,
+trajectories, and produced commits belong to Agent Missions. Research may use a
+Missions-backed evaluator or store a bounded evidence reference in an opaque
+result, but it does not ingest coding-agent session registries or duplicate
+their schema. This keeps the minimal optimization loop useful without Missions
+and lets a richer software-research application compose the two libraries
+above their public adapters.
 
 ## The Loop
 
@@ -140,8 +146,8 @@ storage:
   seed `BranchHead`, persisted as raw initial conditions
 - **first attempt tick** — a `Run` in `RUNNING` state, written before candidate
   preparation or rollout
-- **terminal attempt tick** — the same `Run` transitions to `STOPPED` or
-  `CRASHED`; a stopped attempt adds the typed `Result` and any `BranchHead`
+- **terminal attempt tick** — the same `Run` transitions to `SUCCEEDED` or
+  `FAILED`; a successful attempt adds the typed `Result` and any `BranchHead`
   advance
 - **resume validates identity** — the stored experiment id, base world, display
   name, evaluator contract, and semantic configuration must match before
@@ -150,7 +156,13 @@ storage:
   before resume
 
 ```python
-from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
+from archetype import ArchetypeRuntime
+from archetype.research import (
+    AutoResearchConfig,
+    BranchHead,
+    EvaluationResult,
+    Research,
+)
 
 def evaluate(rollout):
     return EvaluationResult(
@@ -170,6 +182,7 @@ config = AutoResearchConfig(
 
 async with ArchetypeRuntime() as runtime:
     base = runtime.attach(base_world_id)
+    research = Research(base)
 
     async def prepare_candidate(context):
         source = runtime.attach(context.base_world_id)
@@ -177,7 +190,7 @@ async with ArchetypeRuntime() as runtime:
         # Apply this iteration's candidate changes to the fork here.
         return candidate.world_id
 
-    result = await base.autoresearch(
+    result = await research.autoresearch(
         config,
         evaluate,
         prepare_candidate=prepare_candidate,
@@ -187,7 +200,7 @@ async with ArchetypeRuntime() as runtime:
     heads = await lab.query(BranchHead)  # append-only head history
 
     # Explicitly reattach the same lab instead of relying on name lookup.
-    resumed = await base.autoresearch(
+    resumed = await research.autoresearch(
         config,
         evaluate,
         lab_world_id=result.lab_world_id,
@@ -197,11 +210,10 @@ async with ArchetypeRuntime() as runtime:
 `prepare_candidate` receives a `ResearchCandidateContext` with deterministic
 experiment, iteration, and run identities. Returning `None` evaluates the
 original base world. Candidate worlds remain caller-owned.
-`CandidateContext` is a one-release import alias for that exact class; new
-code and documentation use the qualified name. The transient callback value
-is distinct from the persisted `archetype.missions.Candidate` review subject:
-it has no candidate/head/diff/validator/critic receipt identity and does not
-share the mission component schema or relations.
+The transient callback value is distinct from the persisted
+`archetype.missions.Candidate` review subject: it has no
+candidate/head/diff/validator/critic receipt identity and does not share the
+mission component schema or relations.
 
 Because the lab world is an ordinary world, the experiment itself is forkable:
 fork the lab at any tick and replay "what if a different run had advanced the
@@ -223,7 +235,7 @@ rollout name. Concurrent ledgerless calls cannot collide merely because they
 reuse an experiment ID.
 
 The task that owns a ledgered experiment cannot recursively admit that same
-experiment. A direct `await world.autoresearch(...)` from its `on_iteration`
+experiment. A direct `await Research(world).autoresearch(...)` from its `on_iteration`
 callback fails with `RuntimeError` instead of waiting on itself. The callback
 may use ordinary world operations or run an unrelated experiment. A separately
 scheduled same-experiment task remains an ordinary serialized waiter, so the
@@ -298,9 +310,9 @@ preserves the historical boundary and retained Archetype interfaces. The large b
 
 ## References
 
-- Andrej Karpathy's framing of autonomous software optimization and branch-frontier agent workflows
-- `src/archetype/research/` — research values, ledger Components, views, decoder, and free workflow handler
-- `archetype-runner` — the agent-in-VM runner whose registry feeds this schema
-- `src/archetype/physical_ai/` — supported models, state, views, provider contracts, free workflow handlers, and their internal provider processors
+- Autonomous optimization and branch-frontier research workflows
+- `packages/archetype-research/src/archetype/research/` — research values, ledger Components, views, and free workflow handler
+- [Agent Missions](agent-missions.md) — coding-agent sessions, transcripts, trajectories, and repository evidence
+- `packages/archetype-physical-ai/src/archetype/physical_ai/` — supported models, state, views, provider contracts, free workflow handlers, and their internal provider processors
 - `everettVT/robot-evals` — external LIBERO harness, GPU entrypoints, and run ledgers
 - `docs/reports/2026-07-16-robot-evals-extraction.md` — historical extraction boundary

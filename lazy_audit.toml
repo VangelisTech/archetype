@@ -12,7 +12,7 @@
 # rejected automatically by scripts/check_lazy_audit.py.
 #
 # Zero-exception ban (issue #538): `.count_rows()` under
-# `src/archetype/core/` cannot be allowlisted at all — core submits frames
+# `packages/archetype-ecs/src/archetype/core/` cannot be allowlisted at all — core submits frames
 # to their owning append/write boundary instead of counting rows to decide
 # whether work exists; an unknown receipt count is None, not a preflight.
 # scripts/check_lazy_audit.py rejects both the call site and any entry
@@ -42,602 +42,602 @@
 # the full detection logic.
 
 [[entries]]
-path = "src/archetype/api/models.py"
+path = "packages/archetype-ecs/src/archetype/api/models.py"
 symbol = "dataframe_to_rows"
 expr = "df.collect"
 method = "collect"
 reason = "HTTP JSON response boundary: FastAPI must receive concrete row dictionaries for response encoding; a Daft lazy DataFrame cannot be represented as JSON without executing the query."
 
 [[entries]]
-path = "src/archetype/api/models.py"
+path = "packages/archetype-ecs/src/archetype/api/models.py"
 symbol = "dataframe_to_rows"
 expr = "df.collect().to_pylist"
 method = "to_pylist"
 reason = "HTTP JSON response boundary: convert the already-collected Daft result into row dictionaries for FastAPI's JSON encoder at the terminal REST boundary."
 
 [[entries]]
-path = "src/archetype/physical_ai/views.py"
+path = "packages/archetype-physical-ai/src/archetype/physical_ai/views.py"
 symbol = "latest_rows"
 expr = "materialized.to_pylist"
 method = "to_pylist"
 reason = "Physical-evaluation grading boundary: StorageService admits and materializes latest-tick ledger rows before bounded success and episode-length values become typed task or sweep reports."
 
 [[entries]]
-path = "src/archetype/research/views.py"
+path = "packages/archetype-research/src/archetype/research/views.py"
 symbol = "next_iteration"
 expr = "materialized.to_pylist"
 method = "to_pylist"
 reason = "Bounded control-plane history extract: StorageService has already admitted and materialized the query; deterministic Run ids and statuses then enter Python control flow to reject ambiguous resume state."
 
 [[entries]]
-path = "src/archetype/research/views.py"
+path = "packages/archetype-research/src/archetype/research/views.py"
 symbol = "read_experiment"
 expr = "materialized.to_pylist"
 method = "to_pylist"
 reason = "Single-row experiment-contract extract: StorageService has already admitted and materialized the query; the persisted identity and JSON configuration digest then enter Python control flow for exact collision rejection before resume."
 
 [[entries]]
-path = "src/archetype/research/views.py"
+path = "packages/archetype-research/src/archetype/research/views.py"
 symbol = "read_head"
 expr = "materialized.to_pylist"
 method = "to_pylist"
 reason = "Single-row loop-state extract: StorageService has already admitted and materialized the query; the latest BranchHead then enters Python control flow for incumbent comparison and entity-id routing."
 
 [[entries]]
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 symbol = "AsyncWorld._move_entity"
 expr = "df.to_pylist"
 method = "to_pylist"
 reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 
 [[entries]]
-path = "src/archetype/core/lineage.py"
+path = "packages/archetype-ecs/src/archetype/core/lineage.py"
 symbol = "load_lineage"
 expr = "df.to_pylist"
 method = "to_pylist"
 reason = "Lineage metadata extract: a fork's ancestor segments (bounded by fork depth, typically 1-3 rows) must become Python (world_id, run_id, up_to_tick) tuples because they route subsequent per-tick store queries; the routing decision cannot be expressed inside a single Daft plan."
 
 [[entries]]
-path = "src/archetype/core/sync/world.py"
+path = "packages/archetype-ecs/src/archetype/core/sync/world.py"
 symbol = "SyncWorld._move_entity"
 expr = "df.to_pylist"
 method = "to_pylist"
 reason = "Cross-archetype entity migration (sync mirror of async_world): extract the latest tick row for component overlay before re-insertion."
 
 [[entries]]
-path = "src/archetype/graph/cascade.py"
+path = "packages/archetype-ecs/src/archetype/graph/cascade.py"
 symbol = "_plan"
 expr = "dangling_edges(edges, rel, population).select(col('entity_id'), col(f'{prefix}source').alias('source')).to_pylist"
 method = "to_pylist"
 reason = "Mutation-planning boundary for cascade: despawn takes concrete ids, so _plan materializes the (edge id, source) pairs of the dangling edges; the liveness union, anti-join, and filters all run in the lazy plan and only ids cross into Python."
 
 [[entries]]
-path = "src/archetype/graph/frames.py"
+path = "packages/archetype-ecs/src/archetype/graph/frames.py"
 symbol = "_ids_at"
 expr = "edges.where(at_latest).select('entity_id').to_pylist"
 method = "to_pylist"
 reason = "Mutation-planning boundary shared by async and sync unlink: despawn takes concrete entity ids, not a frame, so _ids_at (shared by unlink and exclusive link replacement) materializes the matching ids at the latest persisted tick; all filters run in the lazy plan and only ids cross into Python."
 
 [[entries]]
-path = "src/archetype/graph/prefab.py"
+path = "packages/archetype-ecs/src/archetype/graph/prefab.py"
 symbol = "_rows"
 expr = "frame.to_pylist"
 method = "to_pylist"
 reason = "Mutation-planning boundary for instantiation: spawning copies requires the template's concrete component values and child prefab ids; _rows is the single funnel and every entity filter runs in the lazy plan before it."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "project_critic_activity_intents"
 expr = "current.to_pylist"
 method = "to_pylist"
 reason = "Durable critic-Activity admission boundary: after Daft joins CANDIDATE tasks to candidates and keeps the current dispatch sequence, the finite current-candidate rows become immutable request fields that the generic Activity catalog and external provider cannot consume as a lazy DataFrame."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "project_complete_author_activity_observations"
 expr = "complete_markers.to_pylist"
 method = "to_pylist"
 reason = "Exact post-commit activity-settlement boundary: Daft has already joined the marker to its execution and verified related-row counts; surviving marker rows become scalar identities for digest verification and AuthorActivityObservation construction."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_component_facts"
 expr = "frame.to_pylist"
 method = "to_pylist"
 reason = "Exact post-commit Activity fact boundary: each already component-scoped committed frame becomes a bounded set of typed Mission facts so entity identities, provenance edges, and the v2 completion digest can be verified before settlement."
 
 [[entries]]
-path = "src/archetype/missions/activity_world.py"
+path = "packages/archetype-missions/src/archetype/missions/activity_world.py"
 symbol = "WorldMissionAuthorObservationStager._committed_bundle"
 expr = "materialized_markers.to_pylist"
 method = "to_pylist"
 reason = "Idempotent Activity-delivery boundary: the exact manifest-pinned AuthorActivityObservation frame becomes bounded marker identities so reconstruction can reject conflicting results or avoid duplicate world mutations."
 
 [[entries]]
-path = "src/archetype/missions/critic_activity_world.py"
+path = "packages/archetype-missions/src/archetype/missions/critic_activity_world.py"
 symbol = "WorldMissionCriticObservationStager._committed_bundle"
 expr = "materialized_markers.to_pylist"
 method = "to_pylist"
 reason = "Idempotent critic-Activity delivery boundary: the exact manifest-pinned completion-marker frame becomes bounded activity identities so durable-result reconstruction can reject conflicts or avoid duplicate world mutations after restart."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_critic_component_facts"
 expr = "frame.to_pylist"
 method = "to_pylist"
 reason = "Exact post-commit critic-Activity fact boundary: each already component-scoped committed frame becomes a bounded set of typed facts so entity identities, provenance edges, and the result-bound completion digest can be verified before settlement."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_current_candidate_frame"
 expr = "id_counts.where(ambiguous).count_rows"
 method = "count_rows"
 reason = "Fail-closed admission gate: after the Daft current-candidate join, a positive distinct-id count is the only way to raise the documented multi-current-candidate ValueError before any provider work is admitted."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "project_pending_review_exhaustion"
 expr = "current.to_pylist"
 method = "to_pylist"
 reason = "Committed run-boundary projection: after Daft selects the current candidate for this mission, its bounded identities and policy budget become the diagnostic returned instead of spending the caller's remaining tick budget."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "project_pending_review_exhaustion"
 expr = "attempts_frame.to_pylist"
 method = "to_pylist"
 reason = "Committed domain-budget boundary at the run boundary: Daft aggregates finite CriticExecution facts by candidate before their counts are compared with max_reviews."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "project_critic_activity_intents"
 expr = "author_latest.to_pylist"
 method = "to_pylist"
 reason = "Durable critic-Activity admission boundary: persisted author execution identities and sandbox ids become bounded scalar fields in the exact-candidate request admitted only after the source tick commits."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "project_critic_activity_intents"
 expr = "validator_latest.to_pylist"
 method = "to_pylist"
 reason = "Durable critic-Activity admission boundary: finite TaskValidator definitions become concrete command tuples in the immutable request; the generic catalog and external provider cannot consume a lazy DataFrame."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "project_critic_activity_intents"
 expr = "validation_latest.to_pylist"
 method = "to_pylist"
 reason = "Durable critic-Activity admission boundary: exact-revision ValidationResult observations become bounded immutable evidence in the request value after candidate state has committed."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "project_critic_activity_intents"
 expr = "attempts_frame.to_pylist"
 method = "to_pylist"
 reason = "Committed domain-budget boundary: finite CriticExecution facts are aggregated in Daft then materialized as attempt counts to assign the next semantic review attempt; generic Activity lease attempts cannot consume this budget."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection.on_post_tick"
 expr = "_daft_latest(task_frame, label='task dispatch state', allow_updates=True).to_pylist"
 method = "to_pylist"
 reason = "Post-commit branch-lineage boundary: Daft has reduced the component-scoped task history to one row per identity; those bounded identities bind a fresh external author sandbox to the latest accepted head on its serialized mission branch."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection.on_post_tick"
 expr = "mission_edges.select(f'{membership}source', f'{membership}target').distinct().to_pylist"
 method = "to_pylist"
 reason = "Post-commit external-author boundary: Daft selects distinct mission-membership identities before the finite index enters Python so each dispatched process hydrates the latest accepted head from its own serialized mission branch."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection.on_post_tick"
 expr = "_daft_latest(candidate_history, label='candidate').to_pylist"
 method = "to_pylist"
 reason = "Post-commit branch-lineage boundary: Daft validates immutable candidate history and retains one row per identity; their accepted head revisions become scalar checkout coordinates for the next external author sandbox."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection.on_post_tick"
 expr = "dispatched.to_pylist"
 method = "to_pylist"
 reason = "Post-commit external-I/O boundary: the lazy frame is restricted to committed DISPATCHED tasks and joined to mission identity before those bounded intents become Python requests for sandbox processes; an OS process invocation cannot remain a Daft expression."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection.on_post_tick"
 expr = "guarded_validators.to_pylist"
 method = "to_pylist"
 reason = "Post-commit validator-command boundary: Guards and TaskValidator entities are joined lazily first, then the finite validators attached to dispatchable tasks become argv tuples consumed by the repository harness; process argv cannot remain a DataFrame value."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "current_mission_status"
 expr = "frame.where(cast(Expression, col('entity_id') == mission_id)).select(f'{state}status').to_pylist"
 method = "to_pylist"
 reason = "Single-mission control-loop boundary: the frame is filtered to one submitted mission and only its persisted status enters Python to decide whether the application service should tick again or return; no mission payload rows are materialized."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "project_mission_result"
 expr = "mission_frame.where(cast(Expression, col('entity_id') == submitted.mission_id)).to_pylist"
 method = "to_pylist"
 reason = "Terminal mission result boundary: the frame is filtered to one terminal mission whose scalar repository, branch, status, and reason must become the immutable MissionResult returned by the public runtime API."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "project_mission_result"
 expr = "task_projection.to_pylist"
 method = "to_pylist"
 reason = "Terminal task result boundary: task state is filtered to the submitted ids and left-joined lazily to first-class commit entities before the finite scalar rows become immutable TaskResult values returned by the public runtime API."
 
 [[entries]]
-path = "src/archetype/physical_ai/_dataframe.py"
+path = "packages/archetype-physical-ai/src/archetype/physical_ai/_dataframe.py"
 symbol = "series_to_rows"
 expr = "s.to_pylist"
 method = "to_pylist"
 reason = "series_to_rows helper: converts each Series parameter to a Python list inside a list comprehension. This function is called exclusively from @daft.method.batch UDF bodies (MuJoCo C-library boundary, env RPC boundary, policy inference boundary) where the Daft executor has already materialised the batch. The AST checker auto-exempts to_pylist calls on named parameters of @daft.method.batch functions but cannot trace through this plain helper indirection; the call is semantically equivalent to an auto-sanctioned UDF-boundary access."
 
 [[entries]]
-path = "src/archetype/physical_ai/hosted_episode.py"
+path = "packages/archetype-physical-ai/src/archetype/physical_ai/hosted_episode.py"
 symbol = "_decode_rows"
 expr = "batches[0].to_pylist"
 method = "to_pylist"
 reason = "Canonical Arrow IPC codec boundary: the input is already one validated in-memory PyArrow RecordBatch, not a lazy Daft DataFrame, and exact Python values are required to validate cross-payload identities, terminal completeness, and canonical byte re-encoding before any Activity result reference can be recorded."
 
 [[entries]]
-path = "src/archetype/physical_ai/hosted_activities.py"
+path = "packages/archetype-physical-ai/src/archetype/physical_ai/hosted_activities.py"
 symbol = "_component_rows"
 expr = "selected.select(*columns).to_pylist"
 method = "to_pylist"
 reason = "Exact post-commit Activity boundary: the receipt-pinned reader has already admitted and materialized the committed snapshot, and only bounded HostedEpisodeIntent or HostedEpisodeObservation scalar fields cross into generic Activity admission or exact-digest settlement."
 
 [[entries]]
-path = "src/archetype/physical_ai/hosted_activity_world.py"
+path = "packages/archetype-physical-ai/src/archetype/physical_ai/hosted_activity_world.py"
 symbol = "WorldHostedEpisodeObservationStager._committed_observations"
 expr = "materialized.to_pylist"
 method = "to_pylist"
 reason = "Idempotent world-mutation boundary: StorageService has already admitted and materialized only HostedEpisodeObservation columns, whose bounded Activity identity and digest fields must enter Python to reject conflicts before staging one imperative world mutation."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "_AdmittedAsyncStore.append"
 expr = "df.to_arrow"
 method = "to_arrow"
 reason = "Managed-write boundary: the admitted world append materializes its plan exactly once so bounded Iceberg CAS retries resubmit the same physical Arrow payload via daft.from_arrow instead of re-executing the upstream DAG."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "_frame_fingerprint"
 expr = "frame.to_arrow"
 method = "to_arrow"
 reason = "Replay-detection boundary: the frame is the already-collected append_table payload, so this is an in-memory Arrow conversion hashed to recognize an identical batch resubmitted after a cancellation-landed commit; no plan re-executes."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "_AdmittedAsyncStore._payload_identities"
 expr = "unique['world_id'].to_pylist"
 method = "to_pylist"
 reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "_AdmittedAsyncStore._payload_identities"
 expr = "unique['run_id'].to_pylist"
 method = "to_pylist"
 reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "_AdmittedAsyncStore._payload_identities"
 expr = "unique['tick'].to_pylist"
 method = "to_pylist"
 reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "_AdmittedAsyncStore._payload_identities"
 expr = "unique['commit_token'].to_pylist"
 method = "to_pylist"
 reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "_AdmittedAsyncStore._payload_identities"
 expr = "unique['writer_epoch'].to_pylist"
 method = "to_pylist"
 reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.append_missing"
 expr = "aligned.collect"
 method = "collect"
 reason = "Conditional producer boundary: StorageService freezes the aligned candidate plan once so duplicate-key validation and optimistic Iceberg retries cannot re-run external or nondeterministic expressions."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.append_missing"
 expr = "pending.collect"
 method = "collect"
 reason = "Conditional append boundary: StorageService materializes the anti-join after each refreshed Iceberg snapshot so a conflicting writer cannot cause a stale retry to duplicate an existing logical key."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.append_table"
 expr = "aligned.collect"
 method = "collect"
 reason = "Conflict-safe append boundary: StorageService materializes producer rows exactly once so optimistic Iceberg retries can reuse the same payload instead of re-running external or nondeterministic expressions."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.materialize"
 expr = "frame.collect"
 method = "collect"
 reason = "Central application execution boundary: StorageService admits the caller's lazy Daft plan through its shared execution gate, materializes it off the event loop, and returns the completed frame."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.capture_table_snapshot"
 expr = "frame.collect"
 method = "collect"
 reason = "Offline whole-storage migration boundary: StorageService pins one Iceberg snapshot and materializes its complete local-v1 contents exactly once so the immutable plan can bind an exact schema, row count, and order-independent duplicate-preserving digest; those durable facts cannot be recovered from an unexecuted lazy plan."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.capture_table_snapshot"
 expr = "frozen.to_arrow"
 method = "to_arrow"
 reason = "Offline migration evidence boundary: the pinned frame was already collected under StorageService admission, and its in-memory Arrow values are required by the versioned schema-bound row-multiset digest without executing a second plan."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.export_table_snapshot"
 expr = "frame.collect"
 method = "collect"
 reason = "Offline migration transfer boundary: StorageService executes the exact plan-pinned Iceberg snapshot once and freezes the full local-v1 payload so source drift validation and destination commit retries cannot re-read a different snapshot."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.export_table_snapshot"
 expr = "frozen.to_arrow"
 method = "to_arrow"
 reason = "Offline migration transfer boundary: the pinned source frame is already collected and must cross as an exact Arrow table for Artifact URI relocation, deterministic digest verification, and one destination Iceberg commit."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.import_table_snapshot"
 expr = "aligned.collect"
 method = "collect"
 reason = "Conflict-safe migration commit boundary: the caller supplied one already-materialized Arrow snapshot; StorageService freezes its schema-aligned Daft wrapper once so optimistic Iceberg retries never re-evaluate or change the exact destination payload."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.import_table_snapshot"
 expr = "frozen.to_arrow"
 method = "to_arrow"
 reason = "Empty-table migration verification boundary: the aligned payload is already collected in memory and must be converted back to Arrow to prove the created zero-snapshot table has the exact planned schema and logical digest."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.import_table_snapshot"
 expr = "frozen.write_iceberg"
 method = "write_iceberg"
 reason = "Physical migration commit boundary: the exact verified full-table payload must enter the destination Iceberg authority as one optimistic append; commit failures retry the same frozen frame and unknown outcomes are reconciled by digest before any replay."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService._capture_native_table"
 expr = "frame.collect"
 method = "collect"
 reason = "Migration read-back boundary: StorageService materializes one exact current or historical Iceberg snapshot to prove a destination commit, reconcile an unknown outcome, or recover the imported snapshot after a cold-verification tick advanced the table."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService._capture_native_table"
 expr = "frozen.to_arrow"
 method = "to_arrow"
 reason = "Migration read-back evidence boundary: the selected Iceberg snapshot is already collected, and its in-memory Arrow values are required to compare exact schema, count, and multiset digest without executing another plan."
 
 [[entries]]
-path = "src/archetype/world/resume.py"
+path = "packages/archetype-ecs/src/archetype/world/resume.py"
 symbol = "_merge_visible_segment"
 expr = "materialized.to_pylist"
 method = "to_pylist"
 reason = "Resume-time entity-directory extract (issue #273 A1-resume): StorageService admits and materializes the groupby-max result before bounded live-entity rows become the imperative entity2sig registry and next_entity_id counter."
 
 [[entries]]
-path = "src/archetype/world/simulation.py"
+path = "packages/archetype-ecs/src/archetype/world/simulation.py"
 symbol = "_entities_terminal"
 expr = "materialized.to_pylist"
 method = "to_pylist"
 reason = "Episode-termination boundary: StorageService admits and materializes the one-row (n_done, n_total) reduction before its all/any values enter Python control flow to stop the episode loop."
 
 [[entries]]
-path = "src/archetype/api/routes/query.py"
+path = "packages/archetype-ecs/src/archetype/api/routes/query.py"
 symbol = "get_components"
 expr = "frame.count_rows"
 method = "count_rows"
 reason = "Explicit HTTP count operation: the caller requested a scalar count instead of row output, so the API route owns this terminal query boundary."
 
 [[entries]]
-path = "src/archetype/artifacts/handlers.py"
+path = "packages/archetype-ecs/src/archetype/artifacts/handlers.py"
 symbol = "ingest_artifacts"
 expr = "discovered.to_pydict"
 method = "to_pydict"
 reason = "Artifact discovery validation boundary: StorageService has already materialized the occurrence frame once; bounded source identities enter Python validation before any durable publication."
 
 [[entries]]
-path = "src/archetype/artifacts/handlers.py"
+path = "packages/archetype-ecs/src/archetype/artifacts/handlers.py"
 symbol = "ingest_artifacts"
 expr = "stored.to_pydict"
 method = "to_pydict"
 reason = "Artifact index-routing boundary: StorageService has already materialized the persisted occurrence frame once; bounded media families and logical paths select the required typed indexes."
 
 [[entries]]
-path = "src/archetype/core/aio/async_cached_store.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_cached_store.py"
 symbol = "AsyncCachedStore.append"
 expr = "df.to_arrow_iter"
 method = "to_arrow_iter"
 reason = "Cached-store append boundary: stream the incoming Daft plan once into bounded Arrow record batches retained until the owning durable flush."
 
 [[entries]]
-path = "src/archetype/core/aio/async_lancedb_store.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_lancedb_store.py"
 symbol = "AsyncLancedbStore.get_existing_table_df"
 expr = "table.query().where(where_str).to_arrow"
 method = "to_arrow"
 reason = "LanceDB SDK query boundary: the async SDK returns an Arrow table for the exact durable table identity; the receiver is not a lazy Daft DataFrame."
 
 [[entries]]
-path = "src/archetype/core/aio/async_lancedb_store.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_lancedb_store.py"
 symbol = "AsyncLancedbStore.get_archetype_df"
 expr = "async_table.query().where(where_str).to_arrow"
 method = "to_arrow"
 reason = "LanceDB SDK query boundary: execute the backend-filtered async query once and convert its Arrow result into the lazy Daft frame returned to core."
 
 [[entries]]
-path = "src/archetype/core/aio/async_lancedb_store.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_lancedb_store.py"
 symbol = "AsyncLancedbStore._legacy_df"
 expr = "table.query().where(where_str).to_arrow"
 method = "to_arrow"
 reason = "LanceDB SDK legacy-read boundary: execute the backend-filtered frozen-history query once before aligning its Arrow result to the current lazy Daft schema."
 
 [[entries]]
-path = "src/archetype/core/aio/async_lancedb_store.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_lancedb_store.py"
 symbol = "AsyncLancedbStore.append"
 expr = "df.to_arrow"
 method = "to_arrow"
 reason = "LanceDB append boundary: materialize the incoming Daft plan exactly once as the Arrow table required by the backend add operation and its returned row metadata."
 
 [[entries]]
-path = "src/archetype/core/aio/async_store.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_store.py"
 symbol = "AsyncStore._append_table"
 expr = "df.write_iceberg"
 method = "write_iceberg"
 reason = "Iceberg storage sink: explicit IO configuration requires the native Daft write at the store-owned append boundary."
 
 [[entries]]
-path = "src/archetype/core/sync/store.py"
+path = "packages/archetype-ecs/src/archetype/core/sync/store.py"
 symbol = "SyncStore._append_table"
 expr = "df.write_iceberg"
 method = "write_iceberg"
 reason = "Synchronous Iceberg storage sink: explicit IO configuration requires the native Daft write at the store-owned append boundary."
 
 [[entries]]
-path = "src/archetype/evaluation/views.py"
+path = "packages/archetype-ecs/src/archetype/evaluation/views.py"
 symbol = "read_result"
 expr = "(await storage.materialize(matched)).to_pydict"
 method = "to_pydict"
 reason = "Single-row evaluation receipt boundary: StorageService admits and materializes the exact identity match before its bounded scalar values become the typed return value."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.scan_visible_world_rows"
 expr = "tick_frame.to_pydict"
 method = "to_pydict"
 reason = "Single-row physical tick reduction: StorageService has already materialized the aggregate, whose bounded maximum tick routes visibility metadata for the returned table frame."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.append_table"
 expr = "frozen.count_rows"
 method = "count_rows"
 reason = "Owned append receipt boundary: the producer plan is already collected exactly once, and the concrete row count controls the write no-op and returned scalar without replay."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.append_table"
 expr = "frozen.write_iceberg"
 method = "write_iceberg"
 reason = "StorageService-owned Iceberg sink: write the single frozen producer result while retaining it across bounded optimistic commit retries."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.append_missing"
 expr = "candidates.count_rows"
 method = "count_rows"
 reason = "Conditional-write validation boundary: the candidate plan is already collected once, and its concrete row count is compared with the key projection before persistence."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.append_missing"
 expr = "candidates.where(null_key_filter).limit(1).count_rows"
 method = "count_rows"
 reason = "Conditional-write validation boundary: execute a bounded one-row null-key probe over frozen candidates before admitting them to the Iceberg sink."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.append_missing"
 expr = "candidates.distinct(*key_columns).count_rows"
 method = "count_rows"
 reason = "Conditional-write validation boundary: count distinct keys over frozen candidates to reject ambiguous same-batch identities before persistence."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.append_missing"
 expr = "pending.count_rows"
 method = "count_rows"
 reason = "Owned append receipt boundary: the anti-joined pending frame is already collected once, and its concrete row count controls the write no-op and returned scalar."
 
 [[entries]]
-path = "src/archetype/storage/service.py"
+path = "packages/archetype-ecs/src/archetype/storage/service.py"
 symbol = "StorageService.append_missing"
 expr = "pending.write_iceberg"
 method = "write_iceberg"
 reason = "StorageService-owned conditional Iceberg sink: write the frozen anti-joined rows under the execution gate and bounded optimistic commit retry."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_critic_subject_bounds"
 expr = "bounds.to_pylist"
 method = "to_pylist"
 reason = "Durable critic-Activity admission boundary: after Daft reduces the committed policy history to one row per task, the bounded integer becomes part of the immutable exact-subject request value rather than provider process state."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_outputs_by_activity"
 expr = "kept.to_pylist"
 method = "to_pylist"
 reason = "Exact post-commit activity-settlement boundary: the semi-join has already discarded every output row no admitted marker names, and the survivors must become typed Component values because the family-owned bundle digest is computed over their canonical JSON, which no Daft expression reproduces."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_reject_ambiguous_history"
 expr = "values.count_rows"
 method = "count_rows"
 reason = "Fail-closed immutability gate: comparing the distinct committed values against the identities that index them is the only way to raise on an entity that committed two values before any projection consumes the snapshot."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection._previous_executions"
 expr = "winners.to_pylist"
 method = "to_pylist"
 reason = "Repair-turn boundary: Daft has already reduced the execution history to the one row each dispatched task ran most recently, and the surviving starting revision and agent session id become concrete fields of an external coding-agent request that cannot consume a lazy frame."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection._previous_validations"
 expr = "settled.to_pylist"
 method = "to_pylist"
 reason = "Repair-turn boundary: the join to each task's previous dispatch sequence has already discarded every unrelated observation, and the remaining validator outcomes become typed prompt input for the next author process."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection._prior_candidates"
 expr = "winners.to_pylist"
 method = "to_pylist"
 reason = "Repair-dispatch boundary: Daft selects the single immediately superseded candidate per task, whose entity identity and candidate id are required as scalar fields of the next coding-agent request."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection._prior_candidates"
 expr = "kept.to_pylist"
 method = "to_pylist"
 reason = "Repair-dispatch boundary: the semi-join keeps only findings owned by the superseded candidates, and those bounded redacted values must become concrete typed prompt input because an external coding-agent request cannot consume a lazy Daft frame."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
+path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_settled_candidate_ids"
 expr = "settled.select('_candidate_entity_id').distinct().to_pylist"
 method = "to_pylist"

@@ -70,7 +70,7 @@ physical_ai.hosted_workflow
   -> archetype.world mutation/simulation
 AuditLog           -> iStorageService + CommandScheduler outbox callbacks
 
-RuntimeMissions -> CommandDispatcher -> registered mission handler
+missions.Missions -> CommandDispatcher -> registered mission handler
 registered mission handler -> reservation-owned missions.MissionService
 missions.MissionService
   -> missions.SandboxService -> missions.SandboxBackend
@@ -264,7 +264,7 @@ The registered submit handler takes the backend configured by
 `AgentMissionConfig`, constructs `SandboxService`, and constructs
 `MissionService` once inside the pre-reserved workflow owner. It injects that
 owner with the combined Activity binding plus a narrow exact-world cleanup factory.
-`RuntimeMissions` supplies only supported configuration and exact operations;
+`Missions` supplies only supported configuration and exact operations;
 it never receives the service. No Component, processor, relation, harness
 value, or sandbox implementation moves into process composition.
 

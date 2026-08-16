@@ -541,17 +541,45 @@ def test_unreadable_module_is_not_silently_clean(tmp_path):
 
 
 def test_core_count_rows_is_banned():
-    """count_rows under src/archetype/core/ has no allowlist path at all."""
+    """count_rows under packages/archetype-ecs/src/archetype/core/ has no allowlist path at all."""
     from check_lazy_audit import is_banned
 
-    assert is_banned("src/archetype/core/aio/async_store.py", "count_rows")
-    assert is_banned("src/archetype/core/sync/store.py", "count_rows")
+    assert is_banned("packages/archetype-ecs/src/archetype/core/aio/async_store.py", "count_rows")
+    assert is_banned("packages/archetype-ecs/src/archetype/core/sync/store.py", "count_rows")
 
 
 def test_ban_is_scoped_to_core_and_count_rows():
     """The ban covers exactly (core path, count_rows) — not other layers or methods."""
     from check_lazy_audit import is_banned
 
-    assert not is_banned("src/archetype/evaluation/views.py", "count_rows")
-    assert not is_banned("src/archetype/core/aio/async_store.py", "collect")
+    assert not is_banned("packages/archetype-ecs/src/archetype/evaluation/views.py", "count_rows")
+    assert not is_banned("packages/archetype-ecs/src/archetype/core/aio/async_store.py", "collect")
     assert not is_banned("tests/aio/test_store.py", "count_rows")
+
+
+def test_workspace_scan_unions_all_distribution_source_roots(tmp_path: Path) -> None:
+    import check_lazy_audit as mod
+
+    for index, relative in enumerate(mod.WORKSPACE_SOURCE_ROOTS):
+        source = tmp_path / relative / "archetype" / f"probe_{index}.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("rows = frame.to_pylist()\n", encoding="utf-8")
+
+    sites = mod.scan(tmp_path)
+
+    assert {site.path for site in sites} == {
+        f"{relative}/archetype/probe_{index}.py"
+        for index, relative in enumerate(mod.WORKSPACE_SOURCE_ROOTS)
+    }
+
+
+def test_workspace_scan_fails_closed_when_one_distribution_root_is_missing(
+    tmp_path: Path,
+) -> None:
+    import check_lazy_audit as mod
+
+    first = tmp_path / mod.WORKSPACE_SOURCE_ROOTS[0]
+    first.mkdir(parents=True)
+
+    with pytest.raises(FileNotFoundError, match="workspace source roots are incomplete"):
+        mod.scan(tmp_path)

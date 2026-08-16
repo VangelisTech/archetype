@@ -489,7 +489,8 @@ async def test_autoresearch_continues_across_processes(tmp_path):
 
         from daft import col
 
-        from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
+        from archetype import ArchetypeRuntime
+        from archetype.research import AutoResearchConfig, EvaluationResult, Research
         from archetype.world.models import EpisodeConfig
         from archetype.core.component import Component
         from archetype.core.config import StorageConfig
@@ -541,7 +542,7 @@ async def test_autoresearch_continues_across_processes(tmp_path):
                         score=score, evaluator="knob-distance-v1", evidence={"xs": xs}
                     )
 
-                result = await base.autoresearch(
+                result = await Research(base).autoresearch(
                     config(2), evaluate, prepare_candidate=prepare
                 )
                 print(json.dumps({
@@ -567,7 +568,8 @@ async def test_autoresearch_continues_across_processes(tmp_path):
 
     from daft import col
 
-    from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
+    from archetype import ArchetypeRuntime
+    from archetype.research import AutoResearchConfig, EvaluationResult, Research
     from archetype.world.models import EpisodeConfig
 
     class Knob(Component):
@@ -609,7 +611,7 @@ async def test_autoresearch_continues_across_processes(tmp_path):
             num_episodes=1,
             max_iterations=2,  # the per-invocation budget: two MORE attempts
         )
-        result = await base.autoresearch(
+        result = await Research(base).autoresearch(
             config,
             evaluate,
             prepare_candidate=prepare,

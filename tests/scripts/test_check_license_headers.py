@@ -12,6 +12,8 @@ correctly headered files under a green exit.
 import sys
 from pathlib import Path
 
+import pytest
+
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
@@ -109,3 +111,21 @@ def test_fix_run_that_repairs_everything_exits_green(tmp_path: Path, monkeypatch
 def test_empty_file_is_skipped_by_fix(tmp_path: Path) -> None:
     path = _write(tmp_path, "\n")
     assert not checker.add_license_header(path)
+
+
+def test_default_scan_includes_every_workspace_source_root(tmp_path: Path) -> None:
+    expected: set[Path] = set()
+    for index, relative in enumerate(checker.WORKSPACE_SOURCE_ROOTS):
+        path = tmp_path / relative / "archetype" / f"module_{index}.py"
+        path.parent.mkdir(parents=True)
+        path.write_text(COMPACT_HEADER, encoding="utf-8")
+        expected.add(path)
+
+    assert set(checker.default_python_files(tmp_path)) == expected
+
+
+def test_default_scan_fails_closed_for_partial_workspace(tmp_path: Path) -> None:
+    (tmp_path / checker.WORKSPACE_SOURCE_ROOTS[0]).mkdir(parents=True)
+
+    with pytest.raises(FileNotFoundError, match="workspace source roots are incomplete"):
+        checker.default_python_files(tmp_path)

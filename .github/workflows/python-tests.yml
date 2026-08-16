@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+  # Every PR base is intentional: dependent/stacked PRs need their own evidence.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -31,7 +31,7 @@ jobs:
           version: "latest"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uv sync --group dev
+      - run: uv sync --all-packages --all-extras --group dev
       - run: make static
 
   tests:
@@ -47,5 +47,6 @@ jobs:
           version: "latest"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uv sync --group dev
+      - run: uv sync --all-packages --all-extras --group dev
       - run: make test
+      - run: make package-smoke

@@ -269,7 +269,7 @@ async def test_loop_records_genesis_and_iterations(tmp_path):
             f"head advances on improvement, holds otherwise: {head_scores}"
         )
 
-        # Run rows transition in place from RUNNING to STOPPED.
+        # Run rows transition in place from RUNNING to SUCCEEDED.
         for iteration in range(3):
             run_id = f"exp-id:iter{iteration}"
             running_rows = (
@@ -284,7 +284,7 @@ async def test_loop_records_genesis_and_iterations(tmp_path):
             "exp-id:iter1",
             "exp-id:iter2",
         ]
-        assert all(r["run__status"] == RunStatus.STOPPED.value for r in run_rows)
+        assert all(r["run__status"] == RunStatus.SUCCEEDED.value for r in run_rows)
 
         # Result rows preserve scores and use the configured evaluator id.
         result_rows = (await lab.query_archetype(sig=(Result,), ticks=[lab.tick - 1])).to_pylist()
@@ -592,11 +592,11 @@ async def test_candidate_preparation_failure_records_crashed_terminal_state(tmp_
             )
 
         lab = await _world_by_name(dispatcher, "autoresearch:crash-exp-id")
-        assert lab.tick == 3  # genesis, RUNNING, CRASHED
+        assert lab.tick == 3  # genesis, RUNNING, FAILED
         running_rows = (await lab.query_archetype(sig=(Run,), ticks=[1])).to_pylist()
         assert running_rows[0]["run__status"] == RunStatus.RUNNING.value
         terminal_rows = (await lab.query_archetype(sig=(Run,), ticks=[2])).to_pylist()
-        assert terminal_rows[0]["run__status"] == RunStatus.CRASHED.value
+        assert terminal_rows[0]["run__status"] == RunStatus.FAILED.value
         result_rows = (await lab.query_archetype(sig=(Result,), ticks=[2])).to_pylist()
         assert result_rows[0]["result__evaluator"] == "autoresearch:lifecycle"
         crash = json.loads(result_rows[0]["result__outputs_json"])
@@ -663,7 +663,7 @@ async def test_non_finite_evaluation_is_rejected_and_recorded_as_crashed(tmp_pat
 
         lab = await _world_by_name(dispatcher, "autoresearch:nonfinite-id")
         rows = (await lab.query_archetype(sig=(Run,), ticks=[lab.tick - 1])).to_pylist()
-        assert rows[0]["run__status"] == RunStatus.CRASHED.value
+        assert rows[0]["run__status"] == RunStatus.FAILED.value
         heads = (await lab.query_archetype(sig=(BranchHead,), ticks=[lab.tick - 1])).to_pylist()
         assert json.loads(heads[0]["branchhead__descriptor_json"])["score"] is None
     finally:
@@ -721,7 +721,7 @@ async def test_evaluator_contract_mismatch_crashes_without_advancing_head(tmp_pa
 
         lab = await _world_by_name(dispatcher, "autoresearch:evaluator-mismatch-id")
         runs = (await lab.query_archetype(sig=(Run,), ticks=[lab.tick - 1])).to_pylist()
-        assert runs[0]["run__status"] == RunStatus.CRASHED.value
+        assert runs[0]["run__status"] == RunStatus.FAILED.value
         heads = (await lab.query_archetype(sig=(BranchHead,), ticks=[lab.tick - 1])).to_pylist()
         assert json.loads(heads[0]["branchhead__descriptor_json"])["score"] is None
     finally:
@@ -800,7 +800,6 @@ async def test_resume_rejects_unknown_run_status(tmp_path):
                             run_id="unknown-status-id:iter0",
                             experiment_name="unknown-status",
                             status="foreign-status",
-                            task="rollout",
                         )
                     ),
                 ),
@@ -841,8 +840,7 @@ async def test_resume_rejects_non_contiguous_iteration_history(tmp_path):
                     Run(
                         run_id="gapped-history-id:iter2",
                         experiment_name="gapped-history",
-                        status=RunStatus.CRASHED.value,
-                        task="rollout",
+                        status=RunStatus.FAILED.value,
                     )
                 ],
             )

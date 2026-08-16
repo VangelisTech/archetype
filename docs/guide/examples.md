@@ -168,8 +168,8 @@ Requires an OpenAI API key (or any provider via `daft.set_provider()`).
 ## 6. Mission Trajectory Analysis
 
 Persist normalized turn and reward rows keyed by `episode_id`, then select
-and grade one episode's evidence through the runtime-owned application
-service. The example is deterministic and requires no model credentials.
+and grade one episode's evidence through `MissionWorld`. The example is
+deterministic and requires no model credentials.
 
 ```bash
 uv run python examples/06_trajectory_analysis.py
@@ -182,7 +182,7 @@ Source: [`examples/06_trajectory_analysis.py`](https://github.com/VangelisTech/a
 - **Normalized evidence**: turn and reward rows remain independently queryable per episode.
 - **Typed selection**: `TrajectorySelection` filters one evidence table by `episode_id`.
 - **Derived view**: `trajectory(...)` reconstructs one episode's seq-ordered evidence lazily.
-- **Application composition**: `query_trajectory()` uses persisted query access; `grade_trajectory()` delegates graders to evaluation.
+- **Typed composition**: `MissionWorld.query_trajectory()` uses persisted query access; `MissionWorld.grade_trajectory()` delegates graders to evaluation.
 - **No duplicate trajectory model**: the example consumes `archetype.missions.trajectories` directly.
 
 ---
@@ -263,10 +263,10 @@ implement the fix only after that predecessor is accepted.
 
 ```bash
 # Inspect the typed graph without creating Modal resources.
-uv run --extra coding-agent python examples/11_coding_agent_mission.py --dry-run
+uv run python examples/11_coding_agent_mission.py --dry-run
 
 # Run the credentialed dogfood.
-uv run --extra coding-agent python examples/11_coding_agent_mission.py
+uv run python examples/11_coding_agent_mission.py
 ```
 
 Source: [`examples/11_coding_agent_mission.py`](https://github.com/VangelisTech/archetype/blob/main/examples/11_coding_agent_mission.py)

@@ -20,8 +20,9 @@ Execution-capable terminals such as ``.collect()``, ``.count_rows()``,
 the lazy plan. Conversion terminals may also force the frame through Python
 memory and stop scaling at in-memory size.
 
-Every such reference inside ``src/`` is a contract exception against
-Archetype's lazy execution model. This includes bound callables such as
+Every such reference inside a workspace package's production ``src`` tree is
+a contract exception against Archetype's lazy execution model. This includes
+bound callables such as
 ``await blocking(frame.collect)``. This script enumerates production sites and
 gates them against ``lazy_audit.toml``. New, undocumented sites cause a
 non-zero exit; stale entries (allowlisted keys that no longer hold a matching
@@ -63,8 +64,9 @@ batch-UDF scope, still requires an entry.
 
 **Zero-exception ban — core row counting (issue #538)**
 
-``.count_rows()`` under ``src/archetype/core/`` has no diagnostic or
-empty-check exception and cannot be allowlisted. Core submits a lazy frame to
+``.count_rows()`` under
+``packages/archetype-ecs/src/archetype/core/`` has no diagnostic or empty-check
+exception and cannot be allowlisted. Core submits a lazy frame to
 its owning terminal append/write boundary; it never runs a count first to
 decide whether the work exists, and a receipt whose count the write did not
 naturally produce reports ``None``. The checker fails both the call site and
@@ -86,7 +88,13 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOTS: tuple[str, ...] = ("src",)
+WORKSPACE_SOURCE_ROOTS: tuple[str, ...] = (
+    "packages/archetype-ecs/src",
+    "packages/archetype-missions/src",
+    "packages/archetype-physical-ai/src",
+    "packages/archetype-research/src",
+)
+LEGACY_SOURCE_ROOT = "src"
 ALLOWLIST_FILENAME = "lazy_audit.toml"
 SELF_RELATIVE = "scripts/check_lazy_audit.py"
 
@@ -132,7 +140,9 @@ _MATERIALIZATION_METHODS = frozenset(
 # whether work exists. Each pair is (path prefix, method); a matching site
 # fails the audit even with an allowlist entry, and a matching entry is
 # itself rejected.
-_BANNED_TERMINALS: tuple[tuple[str, str], ...] = (("src/archetype/core/", "count_rows"),)
+_BANNED_TERMINALS: tuple[tuple[str, str], ...] = (
+    ("packages/archetype-ecs/src/archetype/core/", "count_rows"),
+)
 
 
 def is_banned(path: str, method: str) -> bool:
@@ -323,12 +333,27 @@ def _scan_file(path: Path, rel: str) -> list[Site]:
     return sorted(sites, key=lambda site: (site.line, site.method))
 
 
+def _production_source_roots(root: Path) -> tuple[Path, ...]:
+    """Resolve the complete workspace layout or one legacy fixture tree."""
+
+    workspace = tuple(root / relative for relative in WORKSPACE_SOURCE_ROOTS)
+    present = tuple(path for path in workspace if path.is_dir())
+    if present:
+        missing = tuple(path for path in workspace if not path.is_dir())
+        if missing:
+            rendered = ", ".join(str(path.relative_to(root)) for path in missing)
+            raise FileNotFoundError(f"workspace source roots are incomplete; missing: {rendered}")
+        return workspace
+
+    legacy = root / LEGACY_SOURCE_ROOT
+    if legacy.is_dir():
+        return (legacy,)
+    raise FileNotFoundError(f"no production source roots found under {root}")
+
+
 def scan(root: Path) -> list[Site]:
     sites: list[Site] = []
-    for top in ROOTS:
-        base = root / top
-        if not base.exists():
-            continue
+    for base in _production_source_roots(root):
         for path in sorted(base.rglob("*.py")):
             rel = path.relative_to(root).as_posix()
             if rel == SELF_RELATIVE:

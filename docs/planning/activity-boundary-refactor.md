@@ -395,7 +395,7 @@ a provider path that treats lease expiry as replay permission.
 
 1. Keep each PR responsible for one contract change and list its exact
    executable oracle.
-2. Do not edit `src/archetype/core/` for this migration.
+2. Do not edit `packages/archetype-ecs/src/archetype/core/` for this migration.
 3. Required projectors persist deterministic intent only; provider I/O remains
    outside the world lock.
 4. Activity results stage facts. Processors retain every semantic transition.

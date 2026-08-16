@@ -5,7 +5,7 @@
 """Query OSV for known vulnerabilities in the pinned execution inventory.
 
 The daily security audit runs this against
-``src/archetype/missions/sandboxes/versions.toml`` so advisory coverage includes
+``packages/archetype-missions/src/archetype/missions/sandboxes/versions.toml`` so advisory coverage includes
 the pinned coding-agent CLIs and SDKs, not only the Python dependency graph.
 The script is stdlib-only: it parses the inventory directly and reports one
 machine-readable result per scannable artifact. Artifacts without an OSV
@@ -23,7 +23,16 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-INVENTORY = ROOT / "src" / "archetype" / "missions" / "sandboxes" / "versions.toml"
+INVENTORY = (
+    ROOT
+    / "packages"
+    / "archetype-missions"
+    / "src"
+    / "archetype"
+    / "missions"
+    / "sandboxes"
+    / "versions.toml"
+)
 OSV_ENDPOINT = "https://api.osv.dev/v1/querybatch"
 _ECOSYSTEMS = {"npm-package": "npm", "python-package": "PyPI"}
 

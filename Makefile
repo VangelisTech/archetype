@@ -6,9 +6,12 @@ SHELL := /bin/bash
 # Archetype dev workflow (uv + ruff + pre-commit)
 # ==============================================================================
 
-PYTHONPATH ?= src
-VERSION := $(shell grep -m1 'version = ' pyproject.toml | cut -d'"' -f2)
-RUFF_PATHS := src tests evals bench scripts quality experiments examples
+SOURCE_ROOTS := packages/archetype-ecs/src packages/archetype-missions/src packages/archetype-physical-ai/src packages/archetype-research/src
+PYTHONPATH ?= packages/archetype-ecs/src:packages/archetype-missions/src:packages/archetype-physical-ai/src:packages/archetype-research/src
+VERSION := $(shell grep -m1 'version = ' packages/archetype-ecs/pyproject.toml | cut -d'"' -f2)
+RUFF_PATHS := packages tests evals bench scripts quality experiments examples
+SYNC_FLAGS := --all-packages --all-extras
+FRAMEWORK_WHEEL := $(shell find dist -maxdepth 1 -name 'archetype_ecs-*.whl' -print -quit 2>/dev/null)
 
 .PHONY: help
 help:
@@ -62,22 +65,22 @@ help:
 	@echo "  make eval-capability  Blocking architectural capability profile"
 	@echo "  make examples-local  Run Tier-1 semantic examples in isolated storage"
 	@echo "  make operational-runtime  Run the shipped runtime/API/CLI loopback scenario"
-	@echo "  make operational-wheel  Run representative scenarios against the built wheel"
+	@echo "  make operational-wheel  Run representative scenarios against the built wheel matrix"
 	@echo "  make operational-mission  Run the credential-free exact-head mission scenario"
 	@echo "  make operational-external  Require selected Tier-5/6 provider evidence"
-	@echo "  make operational-release  Run credential-free release evidence against one wheel"
+	@echo "  make operational-release  Run credential-free release evidence against the wheel matrix"
 	@echo "  make operational-release-modal  Run the paid live Modal/Codex wheel evidence"
 	@echo "  make test-infra     Run external-infrastructure tests (requires configured service)"
 	@echo ""
 	@echo "Build & Release:"
-	@echo "  make build          Build sdist + wheel"
-	@echo "  make package-smoke  Install and probe the built wheel outside the checkout"
+	@echo "  make build          Build all four sdists and wheels"
+	@echo "  make package-smoke  Install and probe the built distribution matrix outside the checkout"
 	@echo "  make verify-pr      Complete pull-request profile"
 	@echo "  make verify-full    Main-branch profile"
 	@echo "  make verify-release Source profile plus exact installed-artifact release evidence"
 	@echo "  make release-check  Full pre-release validation"
-	@echo "  make publish-test   Publish to TestPyPI"
-	@echo "  make publish        Publish to PyPI"
+	@echo "  make publish-test   Verify and publish the recorded artifacts to TestPyPI"
+	@echo "  make publish        Verify and publish the recorded artifacts to PyPI"
 	@echo "  make version        Show current version"
 	@echo ""
 	@echo "Docs:"
@@ -95,11 +98,11 @@ help:
 
 .PHONY: sync
 sync:
-	@uv sync
+	@uv sync $(SYNC_FLAGS)
 
 .PHONY: sync-dev
 sync-dev:
-	@uv sync --group dev
+	@uv sync $(SYNC_FLAGS) --group dev
 
 # ------------------------------------------------------------------------------
 # Quality
@@ -197,13 +200,13 @@ gate-coverage-audit:
 .PHONY: complexity
 complexity:
 	@echo "=== Cyclomatic complexity (functions ranked C or worse) ==="
-	@uvx radon cc src -n C -s -a --total-average || true
+	@uvx radon cc $(SOURCE_ROOTS) -n C -s -a --total-average || true
 	@echo ""
 	@echo "=== Maintainability index (files ranked B or worse) ==="
-	@uvx radon mi src -n B -s || true
+	@uvx radon mi $(SOURCE_ROOTS) -n B -s || true
 	@echo ""
 	@echo "=== Raw line counts ==="
-	@uvx radon raw src -s
+	@uvx radon raw $(SOURCE_ROOTS) -s
 
 # ------------------------------------------------------------------------------
 # Tests
@@ -363,7 +366,7 @@ refresh-quarantine:
 .PHONY: build
 build: clean
 	@echo "Building archetype v$(VERSION)..."
-	@uv build
+	@uv build --all-packages --no-sources --clear --out-dir dist
 	@echo ""
 	@echo "Built:"
 	@ls -lh dist/
@@ -410,7 +413,7 @@ operational-wheel:
 		$(OPERATIONAL_BUILD_COMMAND) || build_status=$$?; \
 		wheel=""; \
 		if [ "$$build_status" -eq 0 ]; then \
-			wheel=$$(find "$(OPERATIONAL_DIST_DIR)" -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null); \
+			wheel=$$(find "$(OPERATIONAL_DIST_DIR)" -maxdepth 1 -name 'archetype_ecs-*.whl' -print -quit 2>/dev/null); \
 		fi; \
 		if [ -z "$$wheel" ]; then \
 			wheel="$(OPERATIONAL_DIST_DIR)/.missing-operational-wheel.whl"; \
@@ -428,7 +431,8 @@ operational-wheel:
 			--scenario dogfood.commands.local \
 			--scenario dogfood.evaluation.durable_receipt \
 			--scenario dogfood.artifacts.local \
-			--wheel "$$wheel" --out "$(OPERATIONAL_WHEEL_RESULTS)" || runner_status=$$?; \
+			--wheel "$$wheel" --wheel-dir "$(OPERATIONAL_DIST_DIR)" \
+			--out "$(OPERATIONAL_WHEEL_RESULTS)" || runner_status=$$?; \
 		if [ "$$build_status" -ne 0 ]; then \
 			exit "$$build_status"; \
 		fi; \
@@ -448,7 +452,8 @@ operational-external:
 		--out operational-external-results.json
 
 # The release workflow builds once after the source profile, package-smokes
-# those exact bytes, records both digests, and never rebuilds before upload.
+# those exact eight artifacts, records every digest, and never rebuilds before
+# upload.
 .PHONY: release-artifact
 release-artifact:
 	@$(MAKE) --no-print-directory build
@@ -462,14 +467,14 @@ verify-release-artifact:
 		--dist "$(OPERATIONAL_DIST_DIR)" --manifest "$(RELEASE_ARTIFACT_MANIFEST)"
 
 define RUN_RELEASE_SCENARIOS
-	@wheel=$$(find "$(OPERATIONAL_DIST_DIR)" -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null); \
+	@wheel=$$(find "$(OPERATIONAL_DIST_DIR)" -maxdepth 1 -name 'archetype_ecs-*.whl' -print -quit 2>/dev/null); \
 		if [ -z "$$wheel" ]; then \
-			echo "release evidence requires one wheel in $(OPERATIONAL_DIST_DIR)"; \
+			echo "release evidence requires the archetype-ecs wheel anchor in $(OPERATIONAL_DIST_DIR)"; \
 			exit 1; \
 		fi; \
 		$(2) PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
 			--mode wheel --cadence release --require-run --require-clean \
-			--wheel "$$wheel" $(1)
+			--wheel "$$wheel" --wheel-dir "$(OPERATIONAL_DIST_DIR)" $(1)
 endef
 
 .PHONY: operational-release
@@ -501,7 +506,7 @@ operational-release-physical-modal-r2: verify-release-artifact
 	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.physical_ai.modal_r2_live --out operational-release-physical-modal-r2-results.json,ARCHETYPE_MODAL_PHYSICAL_R2_LIVE=1)
 
 .PHONY: verify-pr
-verify-pr: static test
+verify-pr: static test package-smoke
 	@echo "PR verification profile passed"
 
 .PHONY: verify-full
@@ -522,17 +527,21 @@ release-check: sync-dev verify-release
 	@echo "Next steps:"
 	@echo "  1. git tag v$(VERSION)"
 	@echo "  2. git push origin v$(VERSION)"
-	@echo "  3. make publish (or let CI handle it)"
+	@echo "  3. Dispatch the Release workflow for v$(VERSION) (preferred)"
+	@echo "     or run make publish to upload these exact recorded artifacts"
 
 .PHONY: publish-test
-publish-test: build
-	@echo "Publishing to TestPyPI..."
-	@uv publish --publish-url https://test.pypi.org/legacy/
+publish-test:
+	@echo "Verifying and publishing the recorded artifacts to TestPyPI..."
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/release_artifact.py publish \
+		--dist "$(OPERATIONAL_DIST_DIR)" --manifest "$(RELEASE_ARTIFACT_MANIFEST)" \
+		--publish-url https://test.pypi.org/legacy/
 
 .PHONY: publish
-publish: build
-	@echo "Publishing to PyPI..."
-	@uv publish
+publish:
+	@echo "Verifying and publishing the recorded artifacts to PyPI..."
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/release_artifact.py publish \
+		--dist "$(OPERATIONAL_DIST_DIR)" --manifest "$(RELEASE_ARTIFACT_MANIFEST)"
 
 # ------------------------------------------------------------------------------
 # Docs (Material for MkDocs)
@@ -550,7 +559,7 @@ docs-gen:
 .PHONY: docs
 docs: docs-gen
 	@rm -rf site
-	@uv run --extra docs mkdocs build
+	@uv run --group docs mkdocs build
 	@uv run python scripts/assemble_docs_site.py
 
 .PHONY: docs-serve
@@ -596,7 +605,7 @@ docs-lint:
 .PHONY: clean
 clean:
 	@rm -rf dist build
-	@rm -rf src/*.egg-info src/*/*.egg-info
+	@find packages -type d -name '*.egg-info' -prune -exec rm -rf {} + 2>/dev/null || true
 	@find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 .PHONY: clean-all

@@ -146,9 +146,9 @@ This repository is opinionated about where changes should land.
 
 | Area | Guidance |
 |---|---|
-| `src/archetype/core/` | Treat as curated and effectively read-only unless the change has been explicitly approved |
-| `src/archetype/<family>/` | Domain state, behavior, resources, and family-owned workflows; obey the declared top-level family DAG |
-| `src/archetype/api/`, `src/archetype/cli/`, `docs/`, `examples/`, `tests/` | Good contribution targets |
+| `packages/archetype-ecs/src/archetype/core/` | Treat as curated and effectively read-only unless the change has been explicitly approved |
+| `packages/archetype-ecs/src/archetype/<family>/` | Domain state, behavior, resources, and family-owned workflows; obey the declared top-level family DAG |
+| `packages/archetype-ecs/src/archetype/api/`, `packages/archetype-ecs/src/archetype/cli/`, `docs/`, `examples/`, `tests/` | Good contribution targets |
 
 If you are proposing a core behavior change, you should document the contract
 first and only then change the implementation.
@@ -370,7 +370,7 @@ Open an issue first if:
 - the change would alter command semantics
 - the change crosses runtime or world lifetime boundaries
 - the change affects multi-world behavior
-- the change touches `src/archetype/core/`
+- the change touches `packages/archetype-ecs/src/archetype/core/`
 - the change conflicts with a documented contract
 
 That discussion should happen before code lands.

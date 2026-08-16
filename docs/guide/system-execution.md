@@ -198,7 +198,7 @@ fail-fast processor errors. When a caller supplies `resources`, both pass that
 same container to every matching processor. The differences are in keyword
 forwarding and in how their worlds schedule table execution.
 
-### SyncSystem (`src/archetype/core/sync/system.py`)
+### SyncSystem (`packages/archetype-ecs/src/archetype/core/sync/system.py`)
 
 Straightforward loop:
 
@@ -212,7 +212,7 @@ Passes all input kwargs directly, including `resources` when supplied. A
 processor exception is logged and re-raised, so the execution fails rather
 than continuing with a partial processor chain.
 
-### AsyncSystem (`src/archetype/core/aio/async_system.py`)
+### AsyncSystem (`packages/archetype-ecs/src/archetype/core/aio/async_system.py`)
 
 Same subset check, plus:
 
@@ -313,10 +313,10 @@ following step.
 
 | File | What to Look For |
 |------|-----------------|
-| `src/archetype/core/archetype.py` | Signature construction, storage schema, and table naming |
-| `src/archetype/core/component.py` | Component prefixes and Arrow schemas |
-| `src/archetype/core/sync/system.py` | Synchronous subset matching and failure behavior |
-| `src/archetype/core/aio/async_system.py` | Async subset matching and keyword filtering |
-| `src/archetype/core/aio/async_world.py` | Signature interning and two-phase per-table scheduling |
-| `src/archetype/core/resources.py` | Mutable world-shared resource container |
+| `packages/archetype-ecs/src/archetype/core/archetype.py` | Signature construction, storage schema, and table naming |
+| `packages/archetype-ecs/src/archetype/core/component.py` | Component prefixes and Arrow schemas |
+| `packages/archetype-ecs/src/archetype/core/sync/system.py` | Synchronous subset matching and failure behavior |
+| `packages/archetype-ecs/src/archetype/core/aio/async_system.py` | Async subset matching and keyword filtering |
+| `packages/archetype-ecs/src/archetype/core/aio/async_world.py` | Signature interning and two-phase per-table scheduling |
+| `packages/archetype-ecs/src/archetype/core/resources.py` | Mutable world-shared resource container |
 | `examples/04_messaging.py` | Application-local mailbox and message-realization composition |

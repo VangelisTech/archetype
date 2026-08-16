@@ -332,6 +332,6 @@ For normative lifecycle semantics, see [World Lifecycle](world-lifecycle.md).
 
 ## Source Reference
 
-- World: `src/archetype/core/aio/async_world.py`
-- Managed world lifecycle: `src/archetype/world/lifecycle.py`
-- Managed world behavior and durable reads: `src/archetype/world/`
+- World: `packages/archetype-ecs/src/archetype/core/aio/async_world.py`
+- Managed world lifecycle: `packages/archetype-ecs/src/archetype/world/lifecycle.py`
+- Managed world behavior and durable reads: `packages/archetype-ecs/src/archetype/world/`

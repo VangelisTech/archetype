@@ -2,18 +2,39 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Record and verify the immutable distribution used by release evidence."""
+"""Record, verify, and publish the immutable distribution matrix used by releases."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import re
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "archetype.release-artifact/v1"
+from packaging.utils import canonicalize_name, parse_sdist_filename, parse_wheel_filename
+from packaging.version import InvalidVersion, Version
+
+SCHEMA = "archetype.release-artifact/v2"
+DISTRIBUTIONS = (
+    "archetype-ecs",
+    "archetype-missions",
+    "archetype-physical-ai",
+    "archetype-research",
+)
+FRAMEWORK_DISTRIBUTION = "archetype-ecs"
+_PACKAGE_PREFIXES = {
+    "archetype-ecs": "archetype_ecs",
+    "archetype-missions": "archetype_missions",
+    "archetype-physical-ai": "archetype_physical_ai",
+    "archetype-research": "archetype_research",
+}
+_KINDS = ("wheel", "sdist")
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+Run = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def _sha256(path: Path) -> str:
@@ -34,36 +55,139 @@ def _git(root: Path, *arguments: str) -> str:
     ).stdout.strip()
 
 
-def _distribution_files(dist: Path) -> tuple[Path, Path]:
-    wheels = sorted(dist.glob("*.whl"))
-    sdists = sorted(dist.glob("*.tar.gz"))
-    if len(wheels) != 1 or len(sdists) != 1:
-        raise RuntimeError(
-            "release artifact requires exactly one wheel and one sdist; "
-            f"found wheels={[path.name for path in wheels]}, "
-            f"sdists={[path.name for path in sdists]}"
+def _one(paths: list[Path], label: str) -> Path:
+    if len(paths) != 1:
+        raise RuntimeError(f"release requires exactly one {label}; found {[p.name for p in paths]}")
+    return paths[0]
+
+
+def _distribution_files(dist: Path) -> dict[tuple[str, str], Path]:
+    """Return the exact four-wheel/four-sdist release matrix."""
+
+    artifacts: dict[tuple[str, str], Path] = {}
+    for distribution in DISTRIBUTIONS:
+        prefix = _PACKAGE_PREFIXES[distribution]
+        artifacts[(distribution, "wheel")] = _one(
+            sorted(dist.glob(f"{prefix}-*.whl")),
+            f"{distribution} wheel",
         )
-    return wheels[0], sdists[0]
+        artifacts[(distribution, "sdist")] = _one(
+            sorted(dist.glob(f"{prefix}-*.tar.gz")),
+            f"{distribution} sdist",
+        )
+
+    discovered = set(dist.glob("*.whl")) | set(dist.glob("*.tar.gz"))
+    unexpected = discovered - set(artifacts.values())
+    if unexpected:
+        raise RuntimeError(
+            "release contains unexpected distribution artifacts: "
+            + ", ".join(sorted(path.name for path in unexpected))
+        )
+    if len(artifacts) != len(DISTRIBUTIONS) * len(_KINDS):  # pragma: no cover - invariant
+        raise RuntimeError("release distribution matrix is incomplete")
+    return artifacts
+
+
+def _artifact_record(distribution: str, kind: str, path: Path) -> dict[str, Any]:
+    return {
+        "distribution": distribution,
+        "kind": kind,
+        "name": path.name,
+        "sha256": _sha256(path),
+        "size_bytes": path.stat().st_size,
+    }
+
+
+def _filename_coordinate(name: str, kind: str) -> tuple[str, str]:
+    try:
+        if kind == "wheel":
+            distribution, version, _build, _tags = parse_wheel_filename(name)
+        else:
+            distribution, version = parse_sdist_filename(name)
+    except ValueError as exc:
+        raise ValueError(f"invalid {kind} filename {name!r}") from exc
+    return str(distribution), str(version)
+
+
+def _artifact_version(artifacts: dict[tuple[str, str], Path]) -> str:
+    versions: set[str] = set()
+    for (distribution, kind), path in artifacts.items():
+        parsed_distribution, version = _filename_coordinate(path.name, kind)
+        if parsed_distribution != canonicalize_name(distribution):
+            raise ValueError(
+                f"release {distribution} {kind} filename identifies {parsed_distribution!r}"
+            )
+        versions.add(version)
+    if len(versions) != 1:
+        raise ValueError(f"release artifacts do not share one version: {sorted(versions)!r}")
+    return versions.pop()
 
 
 def record(root: Path, dist: Path) -> dict[str, Any]:
-    wheel, sdist = _distribution_files(dist)
+    artifacts = _distribution_files(dist)
     dirty = bool(_git(root, "status", "--porcelain", "--untracked-files=all"))
-    artifacts = [
-        {
-            "kind": kind,
-            "name": path.name,
-            "sha256": _sha256(path),
-            "size_bytes": path.stat().st_size,
-        }
-        for kind, path in (("wheel", wheel), ("sdist", sdist))
+    records = [
+        _artifact_record(distribution, kind, artifacts[(distribution, kind)])
+        for distribution in DISTRIBUTIONS
+        for kind in _KINDS
     ]
     return {
         "schema": SCHEMA,
+        "version": _artifact_version(artifacts),
         "commit": _git(root, "rev-parse", "HEAD"),
         "clean_checkout": not dirty,
-        "artifacts": artifacts,
+        "artifacts": records,
     }
+
+
+def artifact_records(manifest: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    """Validate and index the exact manifest record inventory."""
+
+    version = manifest.get("version")
+    if not isinstance(version, str) or not version:
+        raise ValueError("release artifact manifest must name one version")
+    try:
+        parsed_version = str(Version(version))
+    except InvalidVersion as exc:
+        raise ValueError("release artifact manifest has an invalid version") from exc
+    if parsed_version != version:
+        raise ValueError("release artifact manifest version must be canonical")
+
+    raw_records = manifest.get("artifacts")
+    expected = {(distribution, kind) for distribution in DISTRIBUTIONS for kind in _KINDS}
+    if not isinstance(raw_records, list) or len(raw_records) != len(expected):
+        raise ValueError("release artifact manifest must contain four wheel and four sdist records")
+
+    records: dict[tuple[str, str], dict[str, Any]] = {}
+    for value in raw_records:
+        if not isinstance(value, dict):
+            raise TypeError("release artifact record must be an object")
+        distribution = value.get("distribution")
+        kind = value.get("kind")
+        if not isinstance(distribution, str) or not isinstance(kind, str):
+            raise ValueError("release artifact distribution and kind must be strings")
+        key = (distribution, kind)
+        if key not in expected or key in records:
+            raise ValueError(f"invalid or duplicate release artifact coordinate: {key!r}")
+        name = value.get("name")
+        sha256 = value.get("sha256")
+        size_bytes = value.get("size_bytes")
+        if not isinstance(name, str) or not name or Path(name).name != name:
+            raise ValueError(f"release artifact {key!r} has an invalid filename")
+        parsed_distribution, filename_version = _filename_coordinate(name, kind)
+        if parsed_distribution != canonicalize_name(distribution) or filename_version != version:
+            raise ValueError(
+                f"release artifact {key!r} filename is not bound to manifest version {version}"
+            )
+        if not isinstance(sha256, str) or _SHA256.fullmatch(sha256) is None:
+            raise ValueError(f"release artifact {key!r} has an invalid sha256")
+        if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0:
+            raise ValueError(f"release artifact {key!r} has an invalid size_bytes")
+        records[key] = value
+    if records.keys() != expected:
+        missing = sorted(expected - records.keys())
+        raise ValueError(f"release artifact manifest is missing coordinates: {missing!r}")
+    return records
 
 
 def verify(
@@ -81,20 +205,12 @@ def verify(
             "release artifact commit mismatch: "
             f"manifest={manifest.get('commit')!r}, checkout={expected_commit!r}"
         )
-    wheel, sdist = _distribution_files(dist)
-    actual = {"wheel": wheel, "sdist": sdist}
-    records = manifest.get("artifacts")
-    if not isinstance(records, list) or len(records) != 2:
-        raise ValueError("release artifact manifest must contain wheel and sdist records")
-    seen: set[str] = set()
-    for value in records:
-        if not isinstance(value, dict):
-            raise TypeError("release artifact record must be an object")
-        kind = str(value.get("kind", ""))
-        if kind not in actual or kind in seen:
-            raise ValueError(f"invalid or duplicate release artifact kind: {kind!r}")
-        seen.add(kind)
-        path = actual[kind]
+
+    actual = _distribution_files(dist)
+    records = artifact_records(manifest)
+    for coordinate, path in actual.items():
+        distribution, kind = coordinate
+        value = records[coordinate]
         expected = {
             "name": path.name,
             "sha256": _sha256(path),
@@ -103,10 +219,35 @@ def verify(
         for field, observed in expected.items():
             if value.get(field) != observed:
                 raise ValueError(
-                    f"release {kind} {field} mismatch: "
+                    f"release {distribution} {kind} {field} mismatch: "
                     f"manifest={value.get(field)!r}, actual={observed!r}"
                 )
     return manifest
+
+
+def publish_verified(
+    manifest: dict[str, Any],
+    dist: Path,
+    *,
+    expected_commit: str,
+    publish_url: str | None = None,
+    run: Run = subprocess.run,
+) -> dict[str, Any]:
+    """Verify and upload only the eight immutable files named by the manifest."""
+
+    verified = verify(manifest, dist, expected_commit=expected_commit)
+    records = artifact_records(verified)
+    paths = [
+        (dist / str(records[(distribution, kind)]["name"])).resolve()
+        for distribution in DISTRIBUTIONS
+        for kind in _KINDS
+    ]
+    command = ["uv", "publish"]
+    if publish_url is not None:
+        command.extend(("--publish-url", publish_url))
+    command.extend(str(path) for path in paths)
+    run(command, check=True)
+    return verified
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -118,10 +259,11 @@ def _load(path: Path) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("record", "verify"))
+    parser.add_argument("command", choices=("record", "verify", "publish"))
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--dist", type=Path, default=Path("dist"))
     parser.add_argument("--manifest", type=Path, default=Path("release-artifact.json"))
+    parser.add_argument("--publish-url")
     args = parser.parse_args(argv)
     root = args.root.resolve()
     dist = args.dist.resolve()
@@ -132,14 +274,21 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(value, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    else:
+    elif args.command == "verify":
         value = verify(
             _load(manifest_path),
             dist,
             expected_commit=_git(root, "rev-parse", "HEAD"),
         )
-    wheel = next(item for item in value["artifacts"] if item["kind"] == "wheel")
-    print(f"Release wheel sha256:{wheel['sha256']}")
+    else:
+        value = publish_verified(
+            _load(manifest_path),
+            dist,
+            expected_commit=_git(root, "rev-parse", "HEAD"),
+            publish_url=args.publish_url,
+        )
+    framework_wheel = artifact_records(value)[(FRAMEWORK_DISTRIBUTION, "wheel")]
+    print(f"Release framework wheel sha256:{framework_wheel['sha256']}")
     return 0
 
 

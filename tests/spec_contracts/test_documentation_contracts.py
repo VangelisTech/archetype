@@ -137,3 +137,63 @@ def test_quickstart_variants_stage_initial_state_before_running() -> None:
         run = section.find("world.run(steps=3)", spawn)
         assert -1 not in (spawn, step, run), f"{name} quickstart lifecycle is incomplete"
         assert spawn < step < run, f"{name} quickstart must persist spawns before its run"
+
+
+def test_world_library_installation_and_native_boundary_are_explicit() -> None:
+    """The split must be understandable without reading workspace metadata."""
+    readme = Path("README.md").read_text()
+    guide = (_GUIDE_ROOT / "world-libraries.md").read_text()
+
+    for package_specifier in (
+        "uv add archetype-ecs",
+        "uv add archetype-missions",
+        "uv add archetype-physical-ai",
+        "uv add archetype-research",
+        'uv add "archetype-ecs[all]"',
+        'uv add "archetype-ecs[missions,research]"',
+    ):
+        assert package_specifier in readme
+        assert package_specifier in guide
+
+    assert "archetype.world_libraries" in guide
+    assert "trusted Python manifest" in guide
+    assert "`archetype-ffi` v1" in guide
+    assert "Arrow `RecordBatch`" in guide
+    assert "not the native processor ABI" in guide
+    assert re.search(r"not\s+the discovery or lifecycle protocol", guide)
+
+
+def test_world_library_examples_use_typed_adapters() -> None:
+    """Current examples teach library-owned adapters, not migration aliases."""
+    paths = (
+        _GUIDE_ROOT / "autoresearch.md",
+        _GUIDE_ROOT / "agent-missions.md",
+        _GUIDE_ROOT / "runtime.md",
+        Path("examples/10_autoresearch.py"),
+        Path("examples/11_coding_agent_mission.py"),
+    )
+    text = "\n".join(path.read_text() for path in paths)
+
+    assert "Research(base).autoresearch(" in text
+    assert "Missions(\n" in text
+    assert "runtime.missions(" not in text
+    assert "base.autoresearch(" not in text
+    assert "Research(world).run(" not in text
+    assert "--extra coding-agent" not in text
+
+
+def test_mkdocs_resolves_all_distribution_source_roots() -> None:
+    """Generated API references must merge the split import-package trees."""
+    config = Path("mkdocs.yml").read_text()
+    extension = Path("scripts/griffe_world_libraries.py").read_text()
+
+    assert "packages/archetype-ecs/src" in config
+    assert "scripts/griffe_world_libraries.py:WorldLibraryPackages" in config
+    for library_source_root in (
+        "packages/archetype-missions/src",
+        "packages/archetype-physical-ai/src",
+        "packages/archetype-research/src",
+    ):
+        assert library_source_root in extension
+
+    assert "- Install World Libraries: guide/world-libraries.md" in config

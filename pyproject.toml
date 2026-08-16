@@ -1,98 +1,27 @@
 [project]
-name = "archetype-ecs"
-version = "0.5.0"
-description = "Dataframe-first, append-only ECS runtime for simulations and AI agents. Built on Daft with LanceDB time-travel storage."
-readme = "README.md"
+name = "archetype-workspace"
+version = "0.6.0"
+description = "Development workspace for the Archetype framework and first-party world libraries."
 requires-python = ">=3.12"
-license = "Apache-2.0"
-license-files = ["LICENSE"]
-authors = [
-    { name = "Vangelis Technologies Inc.", email = "everett@vangelis.tech" },
-]
-keywords = ["simulation", "ecs", "reinforcement-learning", "llm", "daft", "lancedb"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Typing :: Typed",
-]
 dependencies = [
-    # Daft 0.7.19's openai/video extras pin vulnerable Pillow 12.2.0.
-    # Declare those extras' dependencies directly until Daft admits 12.3.0.
-    "daft[lance,iceberg,audio]>=0.7.19",
-    "openai<2.39.0",
-    "numpy<2.4.0",
-    "av>=15.0.0,<17.1.0",
-    "pillow>=12.3.0",
-    "msgpack>=1.2.1",
-    "lancedb>=0.22.0",
-    "pyiceberg[daft,sql-sqlite]",
-    "uuid-utils>=0.11.0",
-    "xxhash>=3.5",
-    "pypdf>=6.14.2",
-    "psutil>=5.9",
-    "pydantic>=2.0",
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.29",
-    "typer>=0.9",
-    # Keep Typer's runtime Click resolution past PYSEC-2026-2132.
-    "click>=8.3.3",
-    "httpx>=0.27",
-    # Observability is vendor-neutral: archetype emits through the OTel API
-    # only (archetype._obs). The SDK ships so ARCHETYPE_LOG=debug works out
-    # of the box; exporters and vendors are extras.
-    "opentelemetry-api>=1.20",
-    "opentelemetry-sdk>=1.20",
+    "archetype-ecs[all,coding-agent,logfire,sim]==0.6.0",
 ]
-
-[project.scripts]
-archetype = "archetype.cli.main:app"
-
-[project.optional-dependencies]
-benchmark  = ["esper>=2.45"]
-sim        = ["mujoco>=3.2"]
-otlp       = ["opentelemetry-exporter-otlp-proto-http>=1.20"]
-logfire    = ["logfire[fastapi]>=4.32.0"]
-coding-agent = ["modal==1.5.2"]
-dev        = [
-    "pytest>=8.3", "pytest-asyncio>=0.26", "pytest-cov>=5.0",
-    "ruff>=0.15,<0.16",  # pinned: 0.15 introduced I001/B007 rule changes; keep local == CI
-    "httpx>=0.27",
-    "matplotlib>=3.9",
-    "viztracer>=1.0.4",
-    "ipykernel",
-    "mutmut>=3.5",
-]
-docs       = [
-    "mkdocs>=1.6,<2",
-    "mkdocs-material>=9.6,<10",
-    "mkdocs-mermaid2-plugin",
-    "mkdocstrings[python]>=0.27",
-    "pymdown-extensions>=11.0",
-]
-
-[build-system]
-requires = ["setuptools>=83.0.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools]
-package-dir = { "" = "src" }
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-# The pinned execution-environment inventory ships with the package so
-# installed adapters resolve immutable versions fail-closed (#507).
-"archetype.missions.sandboxes" = ["versions.toml"]
-
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+addopts = ["--import-mode=importlib"]
+testpaths = [
+    "tests",
+    "packages/archetype-ecs/tests",
+    "packages/archetype-missions/tests",
+    "packages/archetype-physical-ai/tests",
+    "packages/archetype-research/tests",
+]
 python_files = ["test_*.py"]
 pythonpath = [
-    "src",
+    "packages/archetype-ecs/src",
+    "packages/archetype-missions/src",
+    "packages/archetype-physical-ai/src",
+    "packages/archetype-research/src",
     ".",
 ]
 asyncio_default_fixture_loop_scope = "function"
@@ -114,7 +43,7 @@ source = ["archetype"]
 omit = [
     "tests/*",
     # Re-export stubs
-    "src/archetype/core/storage/storage.py",
+    "packages/archetype-ecs/src/archetype/core/storage/storage.py",
 ]
 disable_warnings = [
     "module-not-measured",
@@ -153,6 +82,18 @@ dev = [
     # Blocking quality gate for the complete uv lock projection.
     "pip-audit==2.10.1",
 ]
+docs = [
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.6,<10",
+    "mkdocs-mermaid2-plugin",
+    "mkdocstrings[python]>=0.27",
+    "pymdown-extensions>=11.0",
+]
+benchmark = [
+    "esper>=2.45",
+    "matplotlib>=3.9",
+    "viztracer>=1.0.4",
+]
 
 # Mutation testing. Scoped narrowly: mutmut runs each mutation as a full
 # test process, so a whole-codebase sweep can take hours. The pilot scope
@@ -160,8 +101,8 @@ dev = [
 # See docs/guide/mutation-testing.md for usage and the rationale.
 [tool.mutmut]
 paths_to_mutate = [
-    "src/archetype/core/component.py",
-    "src/archetype/core/archetype.py",
+    "packages/archetype-ecs/src/archetype/core/component.py",
+    "packages/archetype-ecs/src/archetype/core/archetype.py",
 ]
 tests_dir = [
     "tests/core/test_component_core.py",
@@ -173,7 +114,7 @@ tests_dir = [
 # other packages. mutmut writes the mutated component.py *after*
 # also_copy runs, so the unmutated copy here is harmlessly overwritten.
 also_copy = [
-    "src/archetype",
+    "packages/archetype-ecs/src/archetype",
 ]
 # Run only the pilot's tests, quietly. The default test selection is
 # the whole tests/ tree, which would re-run the full suite per mutant.
@@ -183,6 +124,7 @@ do_not_mutate = [
 ]
 
 [tool.uv]
+package = false
 # Supply-chain guard: refuse packages released after this date (7-day quarantine).
 # Bump this manually as needed; uv 0.8.x doesn't support relative durations.
 exclude-newer = "2026-06-12T00:00:00Z"
@@ -198,23 +140,28 @@ synchronicity = "2026-07-11T00:00:00Z"
 # starlette 1.3.1 released 2026-06-12, 9h past the freeze; admitted for the
 # CVE-2026-54283 fix — dependabot alert #95 (security bumps, 2026-07-16).
 starlette = "2026-06-13T00:00:00Z"
-# Security releases admitted past the quarantine ceiling for the next release:
-# Dependabot alerts #116-117 (pypdf), #112 (msgpack), and #98-110 (Pillow).
-# PYSEC-2026-3655 and PYSEC-2026-3656.
-pypdf = "2026-08-07T00:00:00Z"
+# Security releases admitted past the quarantine ceiling for the next release.
+# Each ceiling is the day after the fixed release rather than a general
+# relaxation of the repository quarantine. This covers Dependabot alerts
+# #116-117 (pypdf), #112 (msgpack), and #98-110 (Pillow), plus the blocking
+# lockfile advisories recorded by the security audit.
 msgpack = "2026-06-19T00:00:00Z"
-# Security releases admitted for the blocking lockfile audit:
-# GHSA-9xwg-3r6f-jcx2 and PYSEC-2026-3447.
-# PYSEC-2026-3654.
+aiohttp = "2026-07-24T00:00:00Z"
+h2 = "2026-08-04T00:00:00Z"
+hpack = "2026-06-24T00:00:00Z"
 pymdown-extensions = "2026-07-03T00:00:00Z"
+pypdf = "2026-08-07T00:00:00Z"
 setuptools = "2026-07-05T00:00:00Z"
 pillow = "2026-07-02T00:00:00Z"
-# PYSEC-2026-3545, PYSEC-2026-3546, and PYSEC-2026-3547.
-aiohttp = "2026-07-24T00:00:00Z"
-# PYSEC-2026-3628.
-h2 = "2026-08-04T00:00:00Z"
-# Required by h2 4.4.1.
-hpack = "2026-06-24T00:00:00Z"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+archetype-ecs = { workspace = true }
+archetype-missions = { workspace = true }
+archetype-physical-ai = { workspace = true }
+archetype-research = { workspace = true }
 
 [tool.ruff]
 target-version = "py312"
@@ -231,8 +178,14 @@ ignore = [
     "E501",   # Line too long (handled by formatter)
 ]
 
+[tool.ruff.lint.isort]
+# The workspace root is intentionally not a Python package, so declare the
+# repository-owned import roots instead of relying on Ruff's single-src-root
+# inference.
+known-first-party = ["archetype", "bench", "evals", "scripts", "tests"]
+
 [tool.ruff.lint.per-file-ignores]
-"src/archetype/api/routes/*.py" = ["B008"]  # Depends() in defaults is standard FastAPI
+"packages/archetype-ecs/src/archetype/api/routes/*.py" = ["B008"]  # Depends() in defaults is standard FastAPI
 
 [tool.ruff.format]
 quote-style = "double"
@@ -245,7 +198,12 @@ python-version = "3.12"
 # ty follows imports from a project root rather than honoring pre-commit's
 # `files:` filter, so scope the checked source set here. This keeps ty off
 # bench/evals/experiments/examples/scripts and the vendored .venv/stdlib stubs.
-include = ["src"]
+include = [
+    "packages/archetype-ecs/src",
+    "packages/archetype-missions/src",
+    "packages/archetype-physical-ai/src",
+    "packages/archetype-research/src",
+]
 respect-ignore-files = true
 
 [tool.ty.rules]

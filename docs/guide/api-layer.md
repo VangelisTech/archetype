@@ -205,8 +205,8 @@ archetype query <world-id> Agent,Score --where "score__value > 0.5" --count
 
 ## Source Reference
 
-- App factory: `src/archetype/api/app.py`
-- Dependency injection: `src/archetype/api/deps.py`
-- Request/response models: `src/archetype/api/models.py`
-- Routes: `src/archetype/api/routes/`
-- CLI: `src/archetype/cli/main.py`
+- App factory: `packages/archetype-ecs/src/archetype/api/app.py`
+- Dependency injection: `packages/archetype-ecs/src/archetype/api/deps.py`
+- Request/response models: `packages/archetype-ecs/src/archetype/api/models.py`
+- Routes: `packages/archetype-ecs/src/archetype/api/routes/`
+- CLI: `packages/archetype-ecs/src/archetype/cli/main.py`

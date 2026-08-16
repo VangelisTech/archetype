@@ -30,7 +30,7 @@ from archetype.evaluation.contracts import (
     subject_digest,
 )
 
-_SRC = Path(__file__).resolve().parents[2] / "src" / "archetype"
+_SRC = Path(__file__).resolve().parents[2] / "packages" / "archetype-ecs" / "src" / "archetype"
 _FAMILY_DIR = _SRC / "evaluation"
 _APP_EVALUATION_DIR = _SRC / "app" / "evaluation"
 

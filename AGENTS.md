@@ -13,9 +13,11 @@ Choose the owning package before adding a type or behavior:
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
 | Generic Activity identity, claims, attempts, fences, result references, and settlement | `archetype.activities` |
 | Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
-| Legacy application modules awaiting the accepted family rehome | `archetype.app.<family>` (migration only; add no new authority) |
+| Offline whole-storage migration planning, transfer, verification, and receipts | `archetype.migration` |
 | Transport and authentication | `archetype.api` |
 | Concrete composition and process lifetime | `archetype.wiring` and `archetype.runtime_resources` |
+| Missions, Physical AI, or Research domain behavior | The owning distribution under `packages/archetype-<library>/src/archetype/<family>/` |
+| One library's trusted framework composition adapter | Its private `archetype.<family>._extension` module only |
 
 Top-level families may import `archetype.core`, themselves, third-party
 libraries, and only lower top-level family contracts declared in
@@ -28,7 +30,11 @@ consume their contracts in the other direction. Use
 roles. Every first-party top-level package or module must be classified as
 reserved infrastructure or a registered family, and the family graph must
 remain acyclic. Root-facade imports receive the disposition of their owning module.
-Package placement never makes a symbol public by itself.
+Package placement never makes a symbol public by itself. First-party world
+libraries depend on `archetype-ecs`, never on one another. Their ordinary
+domain modules follow the family DAG above; only the private `_extension.py`
+adapter may import framework composition contracts to register the exact
+operations declared by its manifest.
 
 `archetype.storage` is the reviewed physical-substrate family: it owns storage
 execution, control-catalog implementations and records, physical visibility,
@@ -36,17 +42,22 @@ commit coordination, and the generic durable world/run envelope. Workflow
 families consume that substrate through the narrow `iStorageService` port and
 retain the meaning and orchestration of their workflows.
 
-`archetype.research` is the concrete free-workflow example: it owns
+`archetype.migration` owns the offline whole-storage administrative workflow
+over the declared `artifacts` and `storage` families. Concrete local endpoint
+composition remains in `archetype.wiring`; migration does not gain process
+composition authority.
+
+The separately installed `archetype.research` library is the concrete
+free-workflow example: it owns
 AutoResearch values, ledger state, views, experiment-scoped admission, and the
 directly awaited handler over the declared storage and world-family ports. It
 does not require an application facade or service protocol.
 
 A reviewed family may own a capability-scoped resource adapter and workflows
-over declared lower-family ports without gaining concrete composition
-authority. Agent Missions is the concrete migration example: coding-agent
-state, processors, relations, sandbox resources, and Activity choreography
-belong under `archetype.missions`; the current `archetype.app.missions`
-workflow is rehomed and removed in A8.
+over declared lower-family ports without gaining framework composition
+authority. Agent Missions owns coding-agent state, processors, relations,
+sandbox resources, transcript/trajectory evidence, and Activity choreography
+under the separately installed `archetype.missions` namespace.
 
 The accepted Activity migration distinguishes tick-time capability from
 between-tick durable work. A Resource is available while executing a tick;
@@ -56,34 +67,42 @@ later committed tick. `archetype.activities` owns generic delivery mechanics
 only and consumes the lower `archetype.storage.activity_catalog`; recovery
 meaning stays with the owning family/provider adapter. Application choreography
 belongs to the owning top-level family over declared lower-family ports.
-Hosted-episode choreography is born under `archetype.physical_ai`; no
-`archetype.app.physical_ai` mirror is recreated. The current
-`archetype.app.missions` implementation is an interim migration source removed
-in A8. The `AsyncResources`/WorldHost spike is frozen and must not be merged
-into this path. See `docs/guide/activities.md`.
+Hosted-episode choreography belongs to the separately installed
+`archetype.physical_ai` library; no application mirror is recreated. The
+`AsyncResources`/WorldHost spike is frozen and must not be merged into this
+path. See `docs/guide/activities.md`.
 
 ## Layout
 
 ```text
 archetype/
-├── src/archetype/
-│   ├── core/           # ECS engine (Daft + Arrow + LanceDB)
-│   ├── storage/        # Physical rows, Catalogs, commits + control authority
-│   ├── world/          # Managed lifecycle, state behavior, reads + operation models
-│   ├── commands/       # Registry, policy, dispatch, scheduling + audit projection
-│   ├── evaluation/     # Grading, snapshot views, leases + durable receipts
-│   ├── artifacts/      # File ingestion, content objects + typed/common indexes
-│   ├── research/       # AutoResearch values, ledger views + free workflow handler
-│   ├── physical_ai/    # Physical state, models, views + free workflow handlers
-│   ├── <family>/       # Reusable domain state, behavior + declared workflows
-│   ├── app/            # Internal application families
-│   │   └── missions/    #   Coding-agent workflow authority
-│   ├── redaction/      # Canonical pre-durability redaction family
-│   ├── api/            # FastAPI REST layer
-│   ├── cli/            # Typer CLI (thin HTTP client)
-│   ├── runtime/        # Supported trusted scripting handles
-│   ├── runtime_resources.py # Explicit process-lifetime owner
-│   └── wiring.py       # Sole concrete cross-family composition root
+├── packages/
+│   ├── archetype-ecs/src/archetype/
+│   │   ├── core/           # ECS engine (Daft + Arrow + LanceDB)
+│   │   ├── storage/        # Physical rows, catalogs, commits + control authority
+│   │   ├── world/          # Managed lifecycle, behavior, reads + operations
+│   │   ├── commands/       # Registry, policy, dispatch, scheduling + audit
+│   │   ├── activities/     # Generic between-tick delivery mechanics
+│   │   ├── artifacts/      # File ingestion + typed/common indexes
+│   │   ├── evaluation/     # Grading, leases + durable receipts
+│   │   ├── migration/      # Offline whole-storage migration workflow
+│   │   ├── world_libraries/ # Manifest contracts + deterministic discovery
+│   │   ├── redaction/      # Canonical pre-durability redaction
+│   │   ├── api/            # Domain-free FastAPI host
+│   │   ├── cli/            # Domain-free HTTP client and server startup
+│   │   ├── runtime/        # Supported trusted scripting handles
+│   │   ├── runtime_resources.py
+│   │   └── wiring.py       # Framework composition + extension installation
+│   ├── archetype-missions/src/archetype/missions/
+│   │   ├── _extension.py   # Private manifest/installation adapter
+│   │   ├── runtime.py      # Missions + MissionWorld typed adapters
+│   │   └── ...             # Coding agents, sandboxes, transcripts, trajectories
+│   ├── archetype-physical-ai/src/archetype/physical_ai/
+│   │   ├── _extension.py   # Private manifest/installation adapter
+│   │   └── ...             # Physical state, policies + hosted episodes
+│   └── archetype-research/src/archetype/research/
+│       ├── _extension.py   # Private manifest/installation adapter
+│       └── ...             # AutoResearch values, ledger + workflow
 ├── examples/
 ├── tests/
 └── LEARNINGS.md        # Daft patterns and architectural notes
@@ -94,10 +113,11 @@ archetype/
 | Layer | Access |
 |-------|--------|
 | `core/` | Modify only after discussion. It holds the hard invariants; breakage there cascades everywhere. |
-| `<family>/` | Reusable domain contracts, behavior, and family-owned workflows. Follow the declared top-level family DAG. |
-| `app/` | Extend carefully. Internal authority, orchestration, service ports, and concrete implementations. |
-| `runtime/` | Recommended top-level API (`ArchetypeRuntime`). Contract changes require focused specs/tests. |
-| `api/`, `cli/` | Write freely, subject to the contracts they wrap. |
+| Framework families | Reusable contracts and generic behavior. Follow the declared top-level family DAG. |
+| World-library family | Domain state, behavior, adapters, providers, tests, and docs owned by one independently installable distribution. |
+| `_extension.py` | Trusted installation boundary. Keep it private, deterministic, and limited to declared manifest contributions. |
+| Framework `runtime/` | Recommended generic API (`ArchetypeRuntime`). Contract changes require focused specs/tests. |
+| Framework `api/`, `cli/` | Domain-free hosts; library routers arrive only through installed manifests. |
 
 ## Top-level runtime (recommended)
 
@@ -121,6 +141,19 @@ asyncio.run(main())
 ```
 
 Sync scripts use `with ArchetypeRuntime.sync() as runtime:` instead.
+
+Install domain behavior separately and use its typed adapter:
+
+```python
+from archetype.research import Research
+
+research = Research(world)
+result = await research.autoresearch(config, evaluator)
+```
+
+See `docs/guide/world-libraries.md` for base, selective, and full-stack
+installation commands. Installing a world library is authorization to run its
+trusted Python extension code in the process.
 
 ## Inspecting process wiring (maintainers only)
 
@@ -229,6 +262,9 @@ compatibility evidence runs at release cadence instead of blocking every PR.
 Trusted script → ArchetypeRuntime / RuntimeWorld
                  → CommandDispatcher.apply / defer
 
+Typed world-library adapter → exact library operation
+Installed entry point → manifest validation → private installer
+
 CLI → API authentication → CommandDispatcher.apply_as / defer_as
 
 CommandDispatcher → exact OperationRegistry handler or CommandScheduler
@@ -251,16 +287,18 @@ preceding row; no unknown permission is inferred from a role name.
 
 ## Change-safety quick reference
 
-- Keep dependencies pointing downward: runtime/API → commands and exact family
-  operation models; commands → world/storage; world → storage. `wiring.py` is
-  the only concrete cross-family composition root. CLI is an HTTP client of
-  API. Do not leak `AsyncWorld`, `RuntimeResources`, backend clients, or
-  concrete services across either supported boundary.
-- Treat `src/archetype/core/` as invariant-owned. Prefer an app or runtime
-  extension when it can meet the requirement; discuss any core behavior change
-  before implementing it.
+- Keep dependencies pointing downward: runtime/API → commands and framework
+  operation models; commands → world/storage; world → storage. A world library
+  depends only on `archetype-ecs`, never another world library. Framework
+  `wiring.py` owns the installation transaction; each library's private
+  `_extension.py` composes only that library through `WorldLibraryContext`.
+  CLI is an HTTP client of API. Do not leak `AsyncWorld`, `RuntimeResources`,
+  backend clients, or concrete services across a supported boundary.
+- Treat `packages/archetype-ecs/src/archetype/core/` as invariant-owned. Prefer
+  a family, world-library, or runtime extension when it can meet the
+  requirement; discuss any core behavior change before implementing it.
 - Preserve the lazy Daft DAG. Prefer expressions and DataFrame transforms;
-  `.collect()` or `.to_pylist()` in `src/` needs a documented
+  `.collect()` or `.to_pylist()` in any package `src/` needs a documented
   `lazy_audit.toml` exception at a real execution boundary. Application-owned
   terminal Daft work flows through `StorageService`; keep Catalog table
   registration/read/write, schema comparison, and Iceberg retry there.
@@ -316,7 +354,7 @@ change, and report the exact validation that ran. See
 - Use the `tmp_path` fixture for storage isolation.
 - Prefer contract tests over happy-path coverage: concurrent first-use activation, shutdown/fork races, multi-world lifetime isolation, spawn materialization timing, and example-script smoke execution. If a test feels "too specific," it is usually testing the real semantic boundary.
 - A reported bug gets one deterministic pytest regression first. Add a repository scenario only when a matrix of backends, entry points, lifecycle states, or concurrency schedules proves a broader invariant that the focused test cannot own alone.
-- The self-harness is repository-level: `tests/`, `evals/`, `bench/`, static audits, and mutation probes consume the shipped library. Do not move them into `src/archetype/core/` or import them from production code. Product-facing evaluation remains under `src/archetype/evaluation/` (free handlers, dataset identity, graders, and receipts).
+- The self-harness is repository-level: `tests/`, `evals/`, `bench/`, static audits, and mutation probes consume the shipped library. Do not move them into `packages/archetype-ecs/src/archetype/core/` or import them from production code. Product-facing evaluation remains under `packages/archetype-ecs/src/archetype/evaluation/` (free handlers, dataset identity, graders, and receipts).
 - Examples are part of the contract. Run them in CI; gate LLM-backed ones on credentials or degrade gracefully.
 - Mutation testing via `mutmut` (`make mutmut`) is on-demand, not in `make ci`. Scope is narrow by design — see `docs/guide/mutation-testing.md`.
 
@@ -331,18 +369,23 @@ change, and report the exact validation that ran. See
 |------|---------|
 | `docs/guide/specification.md` | Specification overview |
 | `docs/guide/application-architecture.md` | Normative dependency and encapsulation policy |
+| `docs/guide/world-libraries.md` | Distribution, manifest, adapter, and compatibility contract |
 | `docs/guide/runtime.md` | Runtime contract |
 | `docs/guide/service-protocols.md` | App service contracts |
 | `docs/guide/command-gate.md` | Roles, permissions, and audit gate |
 | `docs/guide/activities.md` | Resource/Activity boundary and crash-recovery contract |
 | `LEARNINGS.md` | Daft patterns, UDF rules, data-centric principle |
-| `src/archetype/runtime/` | `ArchetypeRuntime` — recommended top-level API |
-| `src/archetype/wiring.py` | Sole concrete composition transaction |
-| `src/archetype/runtime_resources.py` | Process lifetime, admission drain, and phased cleanup |
-| `src/archetype/commands/dispatch.py` | Governed direct and deferred command entry |
-| `src/archetype/commands/scheduler.py` | Durable scheduler and materializer |
-| `src/archetype/storage/service.py` | Daft execution and durable storage authority |
-| `src/archetype/artifacts/pipeline.py` | Cohesive reusable file-ingestion graph |
-| `src/archetype/core/aio/async_world.py` | World runtime |
+| `packages/archetype-ecs/src/archetype/runtime/` | `ArchetypeRuntime` — recommended top-level API |
+| `packages/archetype-ecs/src/archetype/wiring.py` | Sole concrete composition transaction |
+| `packages/archetype-ecs/src/archetype/runtime_resources.py` | Process lifetime, admission drain, and phased cleanup |
+| `packages/archetype-ecs/src/archetype/commands/dispatch.py` | Governed direct and deferred command entry |
+| `packages/archetype-ecs/src/archetype/commands/scheduler.py` | Durable scheduler and materializer |
+| `packages/archetype-ecs/src/archetype/storage/service.py` | Daft execution and durable storage authority |
+| `packages/archetype-ecs/src/archetype/artifacts/pipeline.py` | Cohesive reusable file-ingestion graph |
+| `packages/archetype-ecs/src/archetype/core/aio/async_world.py` | World runtime |
+| `packages/archetype-ecs/src/archetype/world_libraries/` | Trusted extension contracts and discovery |
+| `packages/archetype-missions/src/archetype/missions/_extension.py` | Missions manifest and installation |
+| `packages/archetype-physical-ai/src/archetype/physical_ai/_extension.py` | Physical-AI manifest and installation |
+| `packages/archetype-research/src/archetype/research/_extension.py` | Research manifest and installation |
 | `tests/app/test_runtime_contracts.py` | Executable runtime contracts |
 | `tests/sync/test_sync_stack_contracts.py` | Executable sync engine contracts |

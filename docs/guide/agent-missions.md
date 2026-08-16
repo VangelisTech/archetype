@@ -20,7 +20,7 @@ start, which observations may advance it, and why every transition occurred**.
 
 ```mermaid
 graph TB
-    Author["Mission author"] --> RT["RuntimeMissions"]
+    Author["Mission author"] --> RT["Missions"]
     RT --> App["MissionService"]
     App --> World["Mission world<br/>core ECS + relations"]
 
@@ -91,6 +91,8 @@ containing its dispatch has committed.
 
 Configuration happens once. Authors submit typed values; they do not construct
 Components, wire processors, manage `GraphView`, or serialize a plan.
+Install the library and its supported Modal provider with
+`uv add "archetype-missions[modal]"` (or the equivalent `pip install` command).
 
 ```python
 import asyncio
@@ -101,6 +103,7 @@ from archetype.missions import (
     AgentTask,
     CommandValidator,
     CriticPolicy,
+    Missions,
 )
 from archetype.missions.sandboxes import (
     MODAL_ACTIVITY_PROTOCOL_EPOCH,
@@ -156,7 +159,8 @@ TASKS = (
 
 async def main() -> None:
     async with ArchetypeRuntime() as runtime:
-        async with runtime.missions(
+        async with Missions(
+            runtime,
             "fix-bug",
             config=MISSION_CONFIG,
             storage=".context/agent-missions/data",
@@ -235,7 +239,7 @@ derived view.
 
 ```mermaid
 flowchart LR
-    Author[Mission author] --> Runtime[RuntimeMissions]
+    Author[Mission author] --> Runtime[Missions adapter]
     Runtime --> Service[MissionService]
     Service --> World[Mission world]
 
@@ -621,10 +625,11 @@ the selected runner account's local host authority plus the workflow-scoped,
 read-only GitHub token needed for checkout and artifact transfer. It receives
 no Modal, Codex, or Apple cloud credentials.
 
-For a live v0.5 Mission, set up Modal, Codex, and GitHub independently:
+For a live Mission, install the Modal extra, then set up Modal, Codex, and
+GitHub independently:
 
 ```bash
-uv sync --extra coding-agent
+uv add "archetype-missions[modal]"
 
 # Interactive workstation authentication. CI may instead provide
 # MODAL_TOKEN_ID and MODAL_TOKEN_SECRET directly to the process.
@@ -646,7 +651,7 @@ modal secret create -e "$CODING_AGENT_MODAL_ENVIRONMENT" \
 
 # Create the v2 auth Volume if it does not already exist. The lookup also
 # verifies that an existing Volume has the required version.
-if ! uv run --extra coding-agent python -c \
+if ! uv run python -c \
   'import modal, sys; modal.Volume.from_name(sys.argv[1], environment_name=sys.argv[2], version=2).hydrate()' \
   "$CODEX_AUTH_VOLUME" "$CODING_AGENT_MODAL_ENVIRONMENT"; then
   modal volume create -e "$CODING_AGENT_MODAL_ENVIRONMENT" \
@@ -654,10 +659,10 @@ if ! uv run --extra coding-agent python -c \
 fi
 
 # One-time Codex subscription device login into the named broker Volume.
-uv run --extra coding-agent python examples/11_coding_agent_mission.py --login
+uv run python examples/11_coding_agent_mission.py --login
 
 # Run, publish, and stream the live mission.
-uv run --extra coding-agent python examples/11_coding_agent_mission.py --follow
+uv run python examples/11_coding_agent_mission.py --follow
 ```
 
 The configured Modal workspace and Environment are checked against the SDK's
@@ -916,7 +921,7 @@ Component.
 | Prefab mission libraries | Direct materialization remains authoritative. | Author reusable graphs after generic prefab registry contracts settle. |
 
 `SubmittedMission.world_id` is the cold-recovery coordinate. After process
-loss, construct `runtime.missions(...)` with the same storage configuration and
+loss, construct `Missions(runtime, ...)` with the same storage configuration and
 pass the retained submission directly to `run()`. The replacement handle binds
 the required projector before resuming that exact World writer, then reinstalls
 the process-local Mission behavior. A provider-bound Activity is reconciled by
@@ -1020,7 +1025,7 @@ a failed phase, rejects new admission, and retries the retained phase before
 finalization. This replaces ambient cleanup authority without weakening the
 landed create/replace/close race guarantees.
 
-That reservation covers each entire `RuntimeMissions` operation — `submit`,
+That reservation covers each entire `Missions` operation — `submit`,
 `run`, explicitly rejected `restore_sandbox`, and `query` — not only individual world
 steps or provider subprocesses. The run enters through the registered
 dispatcher operation before it may construct or schedule work and remains

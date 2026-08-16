@@ -538,24 +538,95 @@ def _class_bindings(
     return result
 
 
-def _parse_sources(repo_root: Path, result: AuditResult) -> tuple[Path, list[SourceUnit]]:
-    source_root = repo_root / "src"
-    package_root = source_root / "archetype"
-    units: list[SourceUnit] = []
-    if not package_root.is_dir():
-        result.policy_errors.append("missing source package: src/archetype")
-        return source_root, units
-    for path in sorted(package_root.rglob("*.py")):
-        relative = path.relative_to(repo_root).as_posix()
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
-        except (OSError, SyntaxError) as error:
-            result.policy_errors.append(f"cannot parse {relative}: {error}")
+def _configured_source_roots(
+    repo_root: Path,
+    result: AuditResult,
+) -> tuple[Path, ...]:
+    """Read the architecture policy's legacy or workspace source-root shape."""
+
+    policy_path = repo_root / "quality" / "architecture.toml"
+    try:
+        policy = tomllib.loads(policy_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        result.policy_errors.append(f"cannot parse architecture source roots: {error}")
+        return ()
+
+    has_legacy = "source_root" in policy
+    has_workspace = "source_roots" in policy
+    if has_legacy and has_workspace:
+        result.policy_errors.append("declare architecture source_root or source_roots, not both")
+        return ()
+    if has_workspace:
+        raw_values = policy.get("source_roots")
+        if not isinstance(raw_values, list) or not raw_values:
+            result.policy_errors.append(
+                "architecture source_roots must be a non-empty array of paths"
+            )
+            return ()
+        label = "source_roots"
+    else:
+        raw_values = [policy.get("source_root", "src")]
+        label = "source_root"
+    if any(not isinstance(value, str) or not value.strip() for value in raw_values):
+        result.policy_errors.append(
+            f"architecture {label} must contain only non-empty path strings"
+        )
+        return ()
+    configured = [str(value).strip() for value in raw_values]
+    if len(configured) != len(set(configured)):
+        result.policy_errors.append(f"architecture {label} contains duplicate paths")
+        return ()
+
+    repository = repo_root.resolve()
+    roots: list[Path] = []
+    for value in configured:
+        source_root = (repo_root / value).resolve()
+        if not source_root.is_relative_to(repository):
+            result.policy_errors.append(
+                f"architecture {label} path escapes the repository: {value}"
+            )
             continue
-        module = _module_name(path, source_root)
-        units.append(SourceUnit(path, relative, module, tree, _bindings(tree, module)))
-    result.files_scanned = len(units)
-    return source_root, units
+        if not source_root.is_dir():
+            result.policy_errors.append(f"missing source root: {value}")
+            continue
+        package_root = source_root / "archetype"
+        if not package_root.is_dir():
+            result.policy_errors.append(f"missing source package: {value}/archetype")
+            continue
+        if not any(path.is_file() for path in package_root.rglob("*.py")):
+            result.policy_errors.append(f"source package has no Python files: {value}/archetype")
+            continue
+        roots.append(source_root)
+    return tuple(roots)
+
+
+def _parse_sources(
+    repo_root: Path,
+    result: AuditResult,
+) -> tuple[tuple[Path, ...], list[SourceUnit]]:
+    source_roots = _configured_source_roots(repo_root, result)
+    units: list[SourceUnit] = []
+    module_paths: dict[str, list[str]] = defaultdict(list)
+    for source_root in source_roots:
+        package_root = source_root / "archetype"
+        for path in sorted(package_root.rglob("*.py")):
+            relative = path.relative_to(repo_root).as_posix()
+            module = _module_name(path, source_root)
+            module_paths[module].append(relative)
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
+            except (OSError, SyntaxError) as error:
+                result.policy_errors.append(f"cannot parse {relative}: {error}")
+                continue
+            if len(module_paths[module]) == 1:
+                units.append(SourceUnit(path, relative, module, tree, _bindings(tree, module)))
+    for module, paths in sorted(module_paths.items()):
+        if len(paths) > 1:
+            result.policy_errors.append(
+                f"duplicate first-party module identity {module}: " + ", ".join(paths)
+            )
+    result.files_scanned = sum(len(paths) for paths in module_paths.values())
+    return source_roots, units
 
 
 class _ScopeCollector(ast.NodeVisitor):
@@ -605,15 +676,10 @@ def _natural_owner(path: str) -> str:
 def _owner_may_claim_source(owner: str, path: str, scope: str) -> bool:
     if owner == _natural_owner(path):
         return True
-    return (
-        owner == "world"
-        and path == "src/archetype/core/aio/async_world.py"
-        and scope
-        in {
-            "archetype.core.aio.async_world.AsyncWorld._compute_archetype",
-            "archetype.core.aio.async_world.AsyncWorld._commit_archetype",
-        }
-    )
+    return owner == "world" and scope in {
+        "archetype.core.aio.async_world.AsyncWorld._compute_archetype",
+        "archetype.core.aio.async_world.AsyncWorld._commit_archetype",
+    }
 
 
 def _host_scope_allowed(scope: str, capability: str) -> bool:
@@ -658,14 +724,12 @@ def _is_protocol(node: ast.ClassDef, bindings: dict[str, str]) -> bool:
 
 def _protocol_operations(
     units: list[SourceUnit],
-    source_root: Path,
     registered_family_scopes: frozenset[str],
     result: AuditResult,
 ) -> dict[str, set[str]]:
     operations: dict[str, set[str]] = defaultdict(set)
     definitions: dict[tuple[str, str], list[str]] = defaultdict(list)
     protocols = 0
-    app_root = source_root / "archetype" / "app"
     for unit in units:
         family_roots: list[tuple[str, str]] = []
         for scope in registered_family_scopes:
@@ -675,16 +739,13 @@ def _protocol_operations(
         # Compatibility for the application-family layout that remains in use
         # during the package migration. PR-11 removes this path after all
         # protocol owners live in registered top-level families.
-        try:
-            relative = unit.path.relative_to(app_root)
-        except ValueError:
-            pass
-        else:
-            if len(relative.parts) >= 2:
+        if unit.module.startswith("archetype.app."):
+            application_parts = unit.module.split(".")
+            if len(application_parts) >= 3:
                 family_roots.append(
                     (
-                        relative.parts[0],
-                        f"archetype.app.{relative.parts[0]}",
+                        application_parts[2],
+                        f"archetype.app.{application_parts[2]}",
                     )
                 )
 
@@ -972,13 +1033,14 @@ def _literal_string_map(node: ast.AST | None, name: str) -> dict[str, str]:
     return result
 
 
-def _load_vocabulary(repo_root: Path, result: AuditResult) -> Vocabulary:
-    path = repo_root / "src" / "archetype" / "_obs.py"
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
-    except (OSError, SyntaxError) as error:
-        result.policy_errors.append(f"cannot parse observability vocabulary: {error}")
+def _load_vocabulary(units: list[SourceUnit], result: AuditResult) -> Vocabulary:
+    matches = [unit for unit in units if unit.module == "archetype._obs"]
+    if len(matches) != 1:
+        result.policy_errors.append(
+            "observability vocabulary must resolve to exactly one archetype._obs module"
+        )
         return Vocabulary({name: frozenset() for name in VOCABULARY_SETS}, {})
+    tree = matches[0].tree
 
     sets: dict[str, frozenset[str]] = {}
     maps: dict[str, dict[str, str]] = {}
@@ -2076,10 +2138,10 @@ class _SourceAnalyzer(ast.NodeVisitor):
     def _check_print(self, node: ast.Call, resolved: str) -> None:
         if resolved not in {"print", "builtins.print"}:
             return
-        cli_prefix = "src/archetype/cli/"
-        if not self.unit.relative_path.startswith(cli_prefix) and not self._approved(
-            "console_export"
-        ):
+        is_cli = self.unit.module == "archetype.cli" or self.unit.module.startswith(
+            "archetype.cli."
+        )
+        if not is_cli and not self._approved("console_export"):
             self._add(
                 "shipped_print",
                 f"call:print:{ast.unparse(node)}",
@@ -2578,13 +2640,12 @@ def audit_repository(
     root = repo_root.resolve()
     manifests = manifest_root.resolve()
     result = AuditResult()
-    source_root, units = _parse_sources(root, result)
-    vocabulary = _load_vocabulary(root, result)
+    _source_roots, units = _parse_sources(root, result)
+    vocabulary = _load_vocabulary(units, result)
     registered_family_scopes = _registered_top_level_family_scopes(root, result)
     reviewed_concrete_services = _reviewed_concrete_service_types(root, result)
     protocols = _protocol_operations(
         units,
-        source_root,
         registered_family_scopes,
         result,
     )

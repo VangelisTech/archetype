@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
@@ -16,20 +17,17 @@ from typing import get_type_hints
 
 from pydantic import TypeAdapter
 
-from archetype.missions import Candidate
 from archetype.research import contracts, models
 from archetype.research.handlers import _config_identity
 from archetype.research.models import (
     AutoResearch,
     AutoResearchConfig,
-    CandidateContext,
     CandidatePreparer,
     Evaluator,
-    ResearchCandidateContext,
 )
 from archetype.world.models import EpisodeConfig, RolloutResult
 
-_RESEARCH_ROOT = Path("src/archetype/research")
+_RESEARCH_ROOT = Path("packages/archetype-research/src/archetype/research")
 _LEDGER_SOURCE_MANIFEST = Path("tests/research/fixtures") / "autoresearch_ledger_core_v0.json"
 _FORBIDDEN_PRODUCTION_PREFIXES = (
     "archetype.app",
@@ -52,23 +50,22 @@ def _imports(path: Path) -> set[str]:
     return modules
 
 
-def test_models_are_canonical_and_compatibility_exports_are_object_identical() -> None:
-    assert CandidateContext is ResearchCandidateContext
-    assert CandidateContext is not Candidate
-
+def test_models_and_contract_exports_are_canonical() -> None:
     names = (
         "AutoResearchConfig",
         "AutoResearchResult",
-        "CandidateContext",
         "CandidatePreparer",
         "Evaluation",
         "EvaluationResult",
         "Evaluator",
         "IterationResult",
+        "ResearchCandidateContext",
     )
     for name in names:
         canonical = getattr(models, name)
         assert getattr(contracts, name) is canonical
+    assert not hasattr(models, "CandidateContext")
+    assert not hasattr(contracts, "CandidateContext")
 
 
 def test_callback_contracts_are_structural_protocols() -> None:
@@ -115,15 +112,36 @@ def test_autoresearch_is_the_sole_research_operation_model() -> None:
 
 
 def test_research_family_has_no_outward_or_lifetime_authority_imports() -> None:
+    domain_files = tuple(
+        path
+        for path in _RESEARCH_ROOT.glob("*.py")
+        if path.name not in {"_extension.py", "runtime.py"}
+    )
     imported: set[str] = set()
-    for path in _RESEARCH_ROOT.glob("*.py"):
+    for path in domain_files:
         imported.update(_imports(path))
 
     assert not {module for module in imported if module.startswith(_FORBIDDEN_PRODUCTION_PREFIXES)}
 
-    source = "\n".join(path.read_text() for path in _RESEARCH_ROOT.glob("*.py"))
+    source = "\n".join(path.read_text() for path in domain_files)
     assert "ContextVar" not in source
     assert "create_task(" not in source
+
+
+def test_research_ledger_has_no_coding_session_ontology() -> None:
+    """Coding-agent session ingestion and identity remain Missions-owned."""
+
+    assert importlib.util.find_spec("archetype.research.loaders") is None
+    source = (_RESEARCH_ROOT / "components.py").read_text(encoding="utf-8")
+    for coding_field in (
+        "repo_url",
+        "vm_name",
+        "harness:",
+        "workspace_path",
+        "agent_name",
+        "commit_hash",
+    ):
+        assert coding_field not in source
 
 
 def test_config_identity_preserves_the_frozen_semantic_digest() -> None:

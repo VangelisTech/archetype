@@ -24,6 +24,12 @@ from pathlib import Path
 
 COPYRIGHT_RE = re.compile(r"Copyright \d{4}(?:-\d{4})? Vangelis Technologies Inc\.")
 LICENSE_MARKERS = ("SPDX-License-Identifier: Apache-2.0", "Apache License")
+WORKSPACE_SOURCE_ROOTS = (
+    Path("packages/archetype-ecs/src"),
+    Path("packages/archetype-missions/src"),
+    Path("packages/archetype-physical-ai/src"),
+    Path("packages/archetype-research/src"),
+)
 
 # Headers live at the top of the file. Only inspect the head so a docstring or
 # string literal that merely mentions the license cannot satisfy the check.
@@ -115,6 +121,23 @@ def should_skip_file(file_path: Path) -> bool:
     return False
 
 
+def default_python_files(project_root: Path) -> list[Path]:
+    """Return Python sources from every required workspace distribution."""
+
+    missing = [
+        relative for relative in WORKSPACE_SOURCE_ROOTS if not (project_root / relative).is_dir()
+    ]
+    if missing:
+        rendered = ", ".join(str(relative) for relative in missing)
+        raise FileNotFoundError(f"workspace source roots are incomplete; missing: {rendered}")
+    return sorted(
+        path
+        for relative in WORKSPACE_SOURCE_ROOTS
+        for path in (project_root / relative).rglob("*.py")
+        if path.is_file()
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Check and add Apache 2.0 license headers to Python files"
@@ -127,13 +150,13 @@ def main() -> int:
     args = parser.parse_args()
 
     if not args.files:
-        # If no files specified, check all Python files in the src directory
+        # If no files are specified, audit all four published source trees.
         project_root = Path(__file__).parent.parent
-        src_dir = project_root / "src"
-        if src_dir.exists():
-            python_files = list(src_dir.glob("**/*.py"))
-        else:
-            python_files = []
+        try:
+            python_files = default_python_files(project_root)
+        except FileNotFoundError as error:
+            print(error)
+            return 1
     else:
         python_files = [Path(f) for f in args.files if f.endswith(".py")]
 

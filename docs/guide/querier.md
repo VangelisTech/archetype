@@ -122,4 +122,4 @@ df = await world.get_components([Position, Health])
 
 ## Source Reference
 
-The querier is defined in `src/archetype/core/aio/async_querier.py`.
+The querier is defined in `packages/archetype-ecs/src/archetype/core/aio/async_querier.py`.

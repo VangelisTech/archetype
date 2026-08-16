@@ -2,20 +2,20 @@ name: Sandbox backend parity
 
 on:
   workflow_dispatch:
+  # Every PR base is intentional: dependent/stacked PRs need their own evidence.
   pull_request:
-    branches: [main]
     # This advisory PR substrate proof follows every package that can change
     # mission sandbox behavior. The retained release scenario is separately
     # owned by the operational manifest and runner.
     paths:
-      - "src/archetype/missions/**"
-      - "src/archetype/runtime/**"
-      - "src/archetype/runtime_resources.py"
-      - "src/archetype/commands/**"
-      - "src/archetype/world/**"
-      - "src/archetype/graph/**"
-      - "src/archetype/core/hooks.py"
-      - "src/archetype/wiring.py"
+      - "packages/archetype-missions/src/archetype/missions/**"
+      - "packages/archetype-ecs/src/archetype/runtime/**"
+      - "packages/archetype-ecs/src/archetype/runtime_resources.py"
+      - "packages/archetype-ecs/src/archetype/commands/**"
+      - "packages/archetype-ecs/src/archetype/world/**"
+      - "packages/archetype-ecs/src/archetype/graph/**"
+      - "packages/archetype-ecs/src/archetype/core/hooks.py"
+      - "packages/archetype-ecs/src/archetype/wiring.py"
       - "examples/11_coding_agent_mission.py"
       - "tests/missions/**"
       - "tests/integration/test_docker_sandbox_parity.py"
@@ -44,7 +44,7 @@ jobs:
           version: "0.11.28"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uv sync --group dev
+      - run: uv sync --all-packages --all-extras --group dev
       - run: docker info
       - name: Verify session-filesystem checkpoint and restore
         env:

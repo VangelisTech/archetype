@@ -38,6 +38,12 @@ COMPONENT_BASES = frozenset(
         "archetype.core.component.Component",
     }
 )
+WORLD_LIBRARY_ADAPTER_ROLES = frozenset({"composition", "runtime", "api"})
+WORLD_LIBRARY_ADAPTER_BASENAMES = {
+    "composition": "_extension",
+    "runtime": "runtime",
+    "api": "api",
+}
 
 
 @dataclass(frozen=True)
@@ -214,6 +220,57 @@ def _resolved_name(node: ast.AST, bindings: dict[str, str]) -> str:
     return f"{resolved}.{tail}" if separator else resolved
 
 
+def _configured_source_roots(
+    policy: dict[str, Any],
+    repo_root: Path,
+    result: AuditResult,
+) -> tuple[Path, ...]:
+    """Resolve one legacy source root or the workspace's ordered source roots."""
+
+    has_legacy = "source_root" in policy
+    has_workspace = "source_roots" in policy
+    if has_legacy and has_workspace:
+        result.policy_errors.append("declare source_root or source_roots, not both")
+        return ()
+
+    raw_values: Any
+    label: str
+    if has_workspace:
+        raw_values = policy.get("source_roots")
+        label = "source_roots"
+        if not isinstance(raw_values, list) or not raw_values:
+            result.policy_errors.append("source_roots must be a non-empty array of paths")
+            return ()
+    else:
+        raw_values = [policy.get("source_root", "src")]
+        label = "source_root"
+
+    if any(not isinstance(value, str) or not value.strip() for value in raw_values):
+        result.policy_errors.append(f"{label} must contain only non-empty path strings")
+        return ()
+    configured = [str(value).strip() for value in raw_values]
+    if len(configured) != len(set(configured)):
+        result.policy_errors.append(f"{label} contains duplicate paths")
+        return ()
+
+    root = repo_root.resolve()
+    resolved: list[Path] = []
+    for configured_path in configured:
+        source_root = (repo_root / configured_path).resolve()
+        if not source_root.is_relative_to(root):
+            result.policy_errors.append(f"{label} path escapes the repository: {configured_path}")
+            continue
+        if not source_root.is_dir():
+            result.policy_errors.append(f"source root does not exist: {source_root}")
+            continue
+        files = _source_files(source_root)
+        if not files:
+            result.policy_errors.append(f"source root contains no Python files: {source_root}")
+            continue
+        resolved.append(source_root)
+    return tuple(resolved)
+
+
 def _source_files(source_root: Path) -> list[Path]:
     return sorted(path for path in source_root.rglob("*.py") if path.is_file())
 
@@ -300,8 +357,8 @@ def _fragment_dir(policy_path: Path) -> Path:
 def _load_policy(policy_path: Path) -> dict[str, Any]:
     with policy_path.open("rb") as handle:
         policy = tomllib.load(handle)
-    if policy.get("version") not in {1, 2, 3}:
-        raise ValueError("architecture policy version must be 1, 2, or 3")
+    if policy.get("version") not in {1, 2, 3, 4}:
+        raise ValueError("architecture policy version must be 1, 2, 3, or 4")
     fragment_dir = _fragment_dir(policy_path)
     fragment_paths = sorted(fragment_dir.glob("*.toml")) if fragment_dir.is_dir() else []
     for fragment_path in fragment_paths:
@@ -518,27 +575,37 @@ def audit_repository(
 
     result = AuditResult()
     policy = _load_policy(policy_path)
-    source_root = repo_root / str(policy.get("source_root", "src"))
-    if not source_root.is_dir():
-        result.policy_errors.append(f"source_root does not exist: {source_root}")
+    source_roots = _configured_source_roots(policy, repo_root, result)
+    if not source_roots:
         return result
 
-    files = _source_files(source_root)
+    files = [path for source_root in source_roots for path in _source_files(source_root)]
     result.files_scanned = len(files)
-    if not files:
-        result.policy_errors.append(f"source_root contains no Python files: {source_root}")
-        return result
 
     parsed: dict[str, tuple[Path, ast.AST, bool]] = {}
-    for path in files:
-        module = _module_name(path, source_root)
-        parsed[module] = (
-            path,
-            ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
-            path.name == "__init__.py",
-        )
+    module_sources: dict[str, list[Path]] = {}
+    for source_root in source_roots:
+        for path in _source_files(source_root):
+            module = _module_name(path, source_root)
+            module_sources.setdefault(module, []).append(path)
+            parsed.setdefault(
+                module,
+                (
+                    path,
+                    ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
+                    path.name == "__init__.py",
+                ),
+            )
+    for module, paths in sorted(module_sources.items()):
+        if len(paths) > 1:
+            rendered = ", ".join(path.relative_to(repo_root).as_posix() for path in sorted(paths))
+            result.policy_errors.append(
+                f"duplicate first-party module identity {module}: {rendered}"
+            )
 
-    actual_top_level_scopes = _top_level_first_party_scopes(source_root)
+    actual_top_level_scopes = frozenset().union(
+        *(_top_level_first_party_scopes(source_root) for source_root in source_roots)
+    )
     root_tree = parsed.get("archetype", (None, None, False))[1]
     root_export_owners, root_export_error = _root_export_owners(root_tree)
     if root_export_error is not None:
@@ -789,6 +856,110 @@ def audit_repository(
             )
         top_level_family_scopes[consumer_scope] = allowed
 
+    world_library_config = policy.get("world_library_policy", {})
+    if not isinstance(world_library_config, dict):
+        result.policy_errors.append("world_library_policy must be a table")
+        world_library_config = {}
+    configured_library_values = world_library_config.get("families", [])
+    if not isinstance(configured_library_values, list):
+        result.policy_errors.append("world_library_policy.families must be a list")
+        configured_library_values = []
+    library_values = [str(value).strip() for value in configured_library_values]
+    world_library_families = frozenset(value for value in library_values if value)
+    if len(library_values) != len(world_library_families):
+        result.policy_errors.append(
+            "world_library_policy.families contains empty or duplicate entries"
+        )
+    invalid_library_families = sorted(
+        value
+        for value in world_library_families
+        if re.fullmatch(r"archetype\.[A-Za-z_][A-Za-z0-9_]*", value) is None
+    )
+    if invalid_library_families:
+        result.policy_errors.append(
+            "world_library_policy.families has non-top-level scopes: "
+            + ", ".join(invalid_library_families)
+        )
+    unknown_library_families = sorted(world_library_families - registered_family_scopes)
+    if unknown_library_families:
+        result.policy_errors.append(
+            "world_library_policy.families references unregistered families: "
+            + ", ".join(unknown_library_families)
+        )
+
+    raw_adapters = policy.get("world_library_adapter", [])
+    if not isinstance(raw_adapters, list) or any(not isinstance(row, dict) for row in raw_adapters):
+        result.policy_errors.append("world_library_adapter must be an array of tables")
+        raw_adapters = []
+    world_library_adapters: dict[str, tuple[str, str]] = {}
+    adapter_coordinates: set[tuple[str, str]] = set()
+    for index, row in enumerate(raw_adapters):
+        module = str(row.get("module", "")).strip()
+        family = str(row.get("family", "")).strip()
+        role = str(row.get("role", "")).strip()
+        label = module or f"at index {index}"
+        if not module:
+            result.policy_errors.append(f"world-library adapter {label} has an empty module")
+            continue
+        if module in world_library_adapters:
+            result.policy_errors.append(f"duplicate world-library adapter module: {module}")
+            continue
+        if family not in world_library_families:
+            result.policy_errors.append(
+                f"world-library adapter {label} uses unregistered library family: {family}"
+            )
+        if role not in WORLD_LIBRARY_ADAPTER_ROLES:
+            result.policy_errors.append(f"world-library adapter {label} has invalid role {role!r}")
+        expected_module = (
+            f"{family}.{WORLD_LIBRARY_ADAPTER_BASENAMES[role]}"
+            if family in world_library_families and role in WORLD_LIBRARY_ADAPTER_ROLES
+            else ""
+        )
+        if expected_module and module != expected_module:
+            result.policy_errors.append(
+                f"world-library adapter {label} must be the exact {role} module {expected_module}"
+            )
+        if module not in parsed:
+            result.policy_errors.append(
+                f"world-library adapter references missing module: {module}"
+            )
+        coordinate = (family, role)
+        if coordinate in adapter_coordinates:
+            result.policy_errors.append(
+                f"duplicate world-library adapter role for {family}: {role}"
+            )
+        adapter_coordinates.add(coordinate)
+        world_library_adapters[module] = (family, role)
+
+    for family in sorted(world_library_families):
+        for required_role in ("composition", "runtime"):
+            if (family, required_role) not in adapter_coordinates:
+                result.policy_errors.append(
+                    f"world library {family} has no exact {required_role} adapter"
+                )
+        cross_library_edges = sorted(
+            top_level_family_scopes.get(family, frozenset()) & world_library_families
+        )
+        if cross_library_edges:
+            result.policy_errors.append(
+                f"world library {family} declares world-library dependencies: "
+                + ", ".join(cross_library_edges)
+            )
+        for basename in WORLD_LIBRARY_ADAPTER_BASENAMES.values():
+            candidate = f"{family}.{basename}"
+            if candidate in parsed and candidate not in world_library_adapters:
+                result.policy_errors.append(
+                    f"world-library adapter module lacks exact classification: {candidate}"
+                )
+
+    for module, (_family, role) in world_library_adapters.items():
+        if role == "composition" and module not in composition_roots:
+            result.policy_errors.append(
+                f"world-library composition adapter is not a composition root: {module}"
+            )
+    if policy_version >= 4 and not world_library_families:
+        result.policy_errors.append("architecture policy registers no world-library families")
+
     if policy_version >= 3:
         common_family_overlap = sorted(registered_family_scopes & common_family_imports)
         if common_family_overlap:
@@ -975,6 +1146,44 @@ def audit_repository(
         if consumer_family_scope is not None:
             allowed_families = top_level_family_scopes[consumer_family_scope]
             for dependency, line in imports:
+                dependency_library_scope = next(
+                    (
+                        scope
+                        for scope in world_library_families
+                        if _matches_prefix(dependency, scope)
+                    ),
+                    None,
+                )
+                if (
+                    consumer_family_scope in world_library_families
+                    and dependency_library_scope is not None
+                    and dependency_library_scope != consumer_family_scope
+                ):
+                    _add_once(
+                        findings,
+                        seen,
+                        Violation(
+                            rule="world_library_dependency",
+                            consumer=consumer,
+                            target=dependency,
+                            path=path,
+                            line=line,
+                            detail=(
+                                f"{consumer} imports world library {dependency}; "
+                                "world libraries may depend only on the generic framework"
+                            ),
+                        ),
+                    )
+                    continue
+
+                # These exact, policy-classified modules are trusted host
+                # adapters. They may consume framework infrastructure needed
+                # for installation, typed runtime convenience, or API routing,
+                # while the check above still denies every library-to-library
+                # edge. Ordinary family modules retain the strict DAG below.
+                if consumer in world_library_adapters:
+                    continue
+
                 if any(_matches_prefix(dependency, prefix) for prefix in outward_packages):
                     _add_once(
                         findings,

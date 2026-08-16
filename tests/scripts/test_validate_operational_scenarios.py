@@ -28,7 +28,7 @@ version = 1
 id = "example.00_quickstart"
 kind = "example"
 owner = "runtime"
-owner_paths = ["src/archetype/runtime"]
+owner_paths = ["packages/archetype-ecs/src/archetype/runtime"]
 source_path = "examples/00_quickstart.py"
 source_command = ["python", "examples/00_quickstart.py"]
 required_extras = []
@@ -43,7 +43,7 @@ cleanup_policy = "isolated"
 artifact_policy = "receipt"
 artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
-workflow = { path = ".github/workflows/external.yml", trigger_paths = ["src/archetype/runtime/**"] }
+workflow = { path = ".github/workflows/external.yml", trigger_paths = ["packages/archetype-ecs/src/archetype/runtime/**"] }
 """
 
 _WORKFLOW = """\
@@ -52,7 +52,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - "src/archetype/runtime/**"
+      - "packages/archetype-ecs/src/archetype/runtime/**"
 jobs:
   evidence:
     runs-on: ubuntu-latest
@@ -126,7 +126,7 @@ def _write_fixture(
 ) -> Path:
     (root / "quality").mkdir()
     (root / "examples").mkdir()
-    (root / "src" / "archetype" / "runtime").mkdir(parents=True)
+    (root / "packages" / "archetype-ecs" / "src" / "archetype" / "runtime").mkdir(parents=True)
     (root / "tests").mkdir()
     (root / "evals").mkdir()
     (root / ".github" / "workflows").mkdir(parents=True)
@@ -260,11 +260,11 @@ def test_runtime_loopback_is_required_source_and_wheel_dogfood() -> None:
     assert loopback["kind"] == "dogfood"
     assert loopback["owner"] == "runtime"
     assert loopback["owner_paths"] == [
-        "src/archetype/runtime",
-        "src/archetype/runtime_resources.py",
-        "src/archetype/wiring.py",
-        "src/archetype/api",
-        "src/archetype/commands",
+        "packages/archetype-ecs/src/archetype/runtime",
+        "packages/archetype-ecs/src/archetype/runtime_resources.py",
+        "packages/archetype-ecs/src/archetype/wiring.py",
+        "packages/archetype-ecs/src/archetype/api",
+        "packages/archetype-ecs/src/archetype/commands",
     ]
     assert loopback["tier"] == 1
     assert loopback["applicability"] == ["source", "wheel"]
@@ -423,8 +423,8 @@ def test_every_numbered_example_requires_a_scenario(tmp_path: Path) -> None:
     ("old", "new", "message"),
     [
         (
-            'owner_paths = ["src/archetype/runtime"]',
-            'owner_paths = ["src/archetype/missing"]',
+            'owner_paths = ["packages/archetype-ecs/src/archetype/runtime"]',
+            'owner_paths = ["packages/archetype-ecs/src/archetype/missing"]',
             "owner_paths names a missing path",
         ),
         (
@@ -535,17 +535,20 @@ def test_credential_skip_cannot_silently_report_pass(tmp_path: Path) -> None:
 
 def test_workflow_path_trigger_must_cover_every_declared_owner(tmp_path: Path) -> None:
     registry = _VALID_REGISTRY.replace(
-        'trigger_paths = ["src/archetype/runtime/**"]',
+        'trigger_paths = ["packages/archetype-ecs/src/archetype/runtime/**"]',
         'trigger_paths = ["examples/**"]',
     )
     workflow = _WORKFLOW.replace(
-        '"src/archetype/runtime/**"',
+        '"packages/archetype-ecs/src/archetype/runtime/**"',
         '"examples/**"',
     )
 
     errors = _audit(tmp_path, registry, workflow)
 
-    assert any("do not cover owner path src/archetype/runtime" in error for error in errors)
+    assert any(
+        "do not cover owner path packages/archetype-ecs/src/archetype/runtime" in error
+        for error in errors
+    )
 
 
 def test_advisory_pr_workflow_still_audits_declared_owner_paths(tmp_path: Path) -> None:
@@ -553,23 +556,26 @@ def test_advisory_pr_workflow_still_audits_declared_owner_paths(tmp_path: Path) 
         'required_cadence = ["pr", "main", "release"]',
         'required_cadence = ["release"]',
     ).replace(
-        'trigger_paths = ["src/archetype/runtime/**"]',
+        'trigger_paths = ["packages/archetype-ecs/src/archetype/runtime/**"]',
         'trigger_paths = ["examples/**"]',
     )
     workflow = _WORKFLOW.replace(
-        '"src/archetype/runtime/**"',
+        '"packages/archetype-ecs/src/archetype/runtime/**"',
         '"examples/**"',
     )
 
     errors = _audit(tmp_path, registry, workflow)
 
-    assert any("do not cover owner path src/archetype/runtime" in error for error in errors)
+    assert any(
+        "do not cover owner path packages/archetype-ecs/src/archetype/runtime" in error
+        for error in errors
+    )
 
 
 def test_workflow_must_contain_every_declared_trigger(tmp_path: Path) -> None:
     registry = _VALID_REGISTRY.replace(
-        'trigger_paths = ["src/archetype/runtime/**"]',
-        'trigger_paths = ["src/archetype/runtime/**", "quality/operational_scenarios.toml"]',
+        'trigger_paths = ["packages/archetype-ecs/src/archetype/runtime/**"]',
+        'trigger_paths = ["packages/archetype-ecs/src/archetype/runtime/**", "quality/operational_scenarios.toml"]',
     )
 
     errors = _audit(tmp_path, registry)
@@ -579,11 +585,11 @@ def test_workflow_must_contain_every_declared_trigger(tmp_path: Path) -> None:
 
 def test_unfiltered_pull_request_workflow_covers_all_owner_paths(tmp_path: Path) -> None:
     workflow = _WORKFLOW.replace(
-        '  pull_request:\n    paths:\n      - "src/archetype/runtime/**"\n',
+        '  pull_request:\n    paths:\n      - "packages/archetype-ecs/src/archetype/runtime/**"\n',
         "  pull_request:\n",
     )
     registry = _VALID_REGISTRY.replace(
-        'trigger_paths = ["src/archetype/runtime/**"]',
+        'trigger_paths = ["packages/archetype-ecs/src/archetype/runtime/**"]',
         "trigger_paths = []",
     )
 

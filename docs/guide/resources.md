@@ -175,4 +175,4 @@ For isolated resources, create a fork through a workflow that explicitly attache
 
 ## Source Reference
 
-Resources: `src/archetype/core/resources.py`
+Resources: `packages/archetype-ecs/src/archetype/core/resources.py`

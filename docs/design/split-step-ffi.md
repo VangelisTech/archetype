@@ -2,7 +2,7 @@
 
 **Status:** design for Phase 6.
 **Scope:** `crates/archetype-ffi`, `crates/archetype-core`, and the future
-Python adapter under `src/archetype/core/native`.
+Python adapter under `packages/archetype-ecs/src/archetype/core/native`.
 
 This document defines the C ABI that lets the Rust kernel own tick
 materialization, stamping, persistence, and live snapshots while Python still
@@ -16,7 +16,7 @@ executes Python processors. It is intentionally a split-step ABI:
 The design is constrained by the existing Arrow C Data Interface helpers in
 `crates/archetype-ffi/src/lib.rs`, the Rust world state in
 `crates/archetype-core/src/aio/async_world.rs`, and the Python tick contract in
-`src/archetype/core/aio/async_world.py`.
+`packages/archetype-ecs/src/archetype/core/aio/async_world.py`.
 
 ## 1. Call Sequence Per Tick Table
 
@@ -159,7 +159,7 @@ Arrow C Data value, both the `ArrowArray.release` and `ArrowSchema.release`
 callbacks must be null. Python cleanup helpers may call release in `finally`,
 but they must first check that the pointer is not null and the release callback
 is not null. This is the same defensive cleanup shape as the current adapter
-prototype under `src/archetype/core/native/arrow_c.py` in the Rust-core working
+prototype under `packages/archetype-ecs/src/archetype/core/native/arrow_c.py` in the Rust-core working
 tree.
 
 ### Begin Output Ownership
@@ -390,7 +390,7 @@ does not claim tick-level atomicity.
 
 This aligns with the existing caveat implied by:
 
-- `AsyncWorld.step()` in `src/archetype/core/aio/async_world.py`, which runs
+- `AsyncWorld.step()` in `packages/archetype-ecs/src/archetype/core/aio/async_world.py`, which runs
   table tasks through `asyncio.gather(..., return_exceptions=True)`;
 - each table task persists through `_run_archetype` before `step()` inspects all
   errors;
@@ -479,7 +479,7 @@ is `off`, no native library is loaded.
 
 ## 7. Python Adapter Sketch
 
-The adapter belongs under `src/archetype/core/native/`. The interface is
+The adapter belongs under `packages/archetype-ecs/src/archetype/core/native/`. The interface is
 deliberately internal; public runtime APIs remain Python-first.
 
 ### Boundary Choice

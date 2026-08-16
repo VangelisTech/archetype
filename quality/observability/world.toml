@@ -254,7 +254,7 @@ attribute_keys = [
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/world/lifecycle.py"
+path = "packages/archetype-ecs/src/archetype/world/lifecycle.py"
 qualified_scope = "archetype.world.lifecycle.WorldLifecycle._mark_failed_activation"
 target = "log:exception:'failed to mark incompletely activated world %s non-active':exception"
 owner = "world"
@@ -264,7 +264,7 @@ expiry_condition = "Remove when #519 emits a bounded activation-reconciliation d
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/world/lifecycle.py"
+path = "packages/archetype-ecs/src/archetype/world/lifecycle.py"
 qualified_scope = "archetype.world.lifecycle.WorldLifecycle.open_world_mutable"
 target = "log:exception:'resume for world %s acquired fence epoch %d but failed before installing its replacement writer':exception"
 owner = "world"
@@ -274,7 +274,7 @@ expiry_condition = "Remove when #519 emits a bounded resume-failure diagnostic w
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/world/query.py"
+path = "packages/archetype-ecs/src/archetype/world/query.py"
 qualified_scope = "archetype.world.query._signature_records"
 target = "log:exception:'control catalog unavailable for durable signature discovery':exception"
 owner = "world"
@@ -284,7 +284,7 @@ expiry_condition = "Remove when #520 introduces bounded query failure diagnostic
 
 [[legacy]]
 rule = "legacy_attribute_key"
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
 target = "span:world.query:attribute:sig"
 owner = "world"
@@ -294,7 +294,7 @@ expiry_condition = "Remove when #519 replaces sig with archetype.component.signa
 
 [[legacy]]
 rule = "legacy_attribute_key"
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
 target = "span:world.query:attribute:tick"
 owner = "world"
@@ -304,7 +304,7 @@ expiry_condition = "Remove when #519 replaces tick with archetype.tick at the tr
 
 [[legacy]]
 rule = "legacy_attribute_key"
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
 target = "span:world.materialize:attribute:sig"
 owner = "world"
@@ -314,7 +314,7 @@ expiry_condition = "Remove when #519 replaces sig with archetype.component.signa
 
 [[legacy]]
 rule = "legacy_attribute_key"
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
 target = "span:world.materialize:attribute:tick"
 owner = "world"
@@ -324,7 +324,7 @@ expiry_condition = "Remove when #519 replaces tick with archetype.tick while cor
 
 [[legacy]]
 rule = "legacy_span_name"
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
 target = "span:world.materialize"
 owner = "world"
@@ -334,7 +334,7 @@ expiry_condition = "Remove when #519 replaces world.materialize according to the
 
 [[legacy]]
 rule = "legacy_attribute_key"
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
 target = "span:world.execute:attribute:sig"
 owner = "world"
@@ -344,7 +344,7 @@ expiry_condition = "Remove when #519 replaces sig with archetype.component.signa
 
 [[legacy]]
 rule = "legacy_attribute_key"
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
 target = "span:world.execute:attribute:tick"
 owner = "world"
@@ -354,7 +354,7 @@ expiry_condition = "Remove when #519 replaces tick with archetype.tick at the me
 
 [[legacy]]
 rule = "legacy_span_name"
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
 target = "span:world.execute"
 owner = "world"
@@ -364,7 +364,7 @@ expiry_condition = "Remove when #519 replaces world.execute according to the #51
 
 [[legacy]]
 rule = "legacy_attribute_key"
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 qualified_scope = "archetype.core.aio.async_world.AsyncWorld._commit_archetype"
 target = "span:world.update:attribute:sig"
 owner = "world"
@@ -374,7 +374,7 @@ expiry_condition = "Remove when #519 replaces sig with archetype.component.signa
 
 [[legacy]]
 rule = "legacy_attribute_key"
-path = "src/archetype/core/aio/async_world.py"
+path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 qualified_scope = "archetype.core.aio.async_world.AsyncWorld._commit_archetype"
 target = "span:world.update:attribute:tick"
 owner = "world"

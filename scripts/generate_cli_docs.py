@@ -14,24 +14,25 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import click
 import typer.main
+from typer._click.core import Command, Parameter
+from typer.core import TyperArgument, TyperGroup, TyperOption
 
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs" / "reference"
 OUTPUT = DOCS_DIR / "cli.md"
 
 
-def get_click_app() -> click.Group:
+def get_click_app() -> TyperGroup:
     """Convert the Typer app to a Click group for introspection."""
     from archetype.cli.main import app
 
     return typer.main.get_command(app)
 
 
-def render_params(params: list[click.Parameter]) -> list[str]:
+def render_params(params: list[Parameter]) -> list[str]:
     """Render command parameters as a markdown table."""
-    arguments = [p for p in params if isinstance(p, click.Argument)]
-    options = [p for p in params if isinstance(p, click.Option) and p.name != "help"]
+    arguments = [p for p in params if isinstance(p, TyperArgument)]
+    options = [p for p in params if isinstance(p, TyperOption) and p.name != "help"]
 
     lines: list[str] = []
 
@@ -69,7 +70,7 @@ def render_params(params: list[click.Parameter]) -> list[str]:
     return lines
 
 
-def render_command(name: str, cmd: click.Command, prefix: str = "archetype") -> list[str]:
+def render_command(name: str, cmd: Command, prefix: str = "archetype") -> list[str]:
     """Render a single command as markdown."""
     full_name = f"{prefix} {name}"
     lines: list[str] = []
@@ -86,12 +87,12 @@ def render_command(name: str, cmd: click.Command, prefix: str = "archetype") -> 
     # Build usage line
     usage_parts = [full_name]
     for param in cmd.params:
-        if isinstance(param, click.Argument):
+        if isinstance(param, TyperArgument):
             if param.required:
                 usage_parts.append(f"<{param.human_readable_name}>")
             else:
                 usage_parts.append(f"[{param.human_readable_name}]")
-    options = [p for p in cmd.params if isinstance(p, click.Option) and p.name != "help"]
+    options = [p for p in cmd.params if isinstance(p, TyperOption) and p.name != "help"]
     if options:
         usage_parts.append("[OPTIONS]")
     lines.append(" ".join(usage_parts))
@@ -107,7 +108,7 @@ def render_command(name: str, cmd: click.Command, prefix: str = "archetype") -> 
     return lines
 
 
-def render_group(name: str, group: click.Group, prefix: str = "archetype") -> list[str]:
+def render_group(name: str, group: TyperGroup, prefix: str = "archetype") -> list[str]:
     """Render a command group and all its subcommands."""
     full_name = f"{prefix} {name}"
     lines: list[str] = []
@@ -123,7 +124,7 @@ def render_group(name: str, group: click.Group, prefix: str = "archetype") -> li
     for cmd_name, cmd in sorted(group.commands.items()):
         if getattr(cmd, "hidden", False):
             continue
-        if isinstance(cmd, click.Group):
+        if isinstance(cmd, TyperGroup):
             lines.extend(render_group(cmd_name, cmd, prefix=full_name))
         else:
             lines.extend(render_command(cmd_name, cmd, prefix=full_name))
@@ -152,13 +153,13 @@ def generate() -> str:
     lines.append("")
 
     # Separate top-level commands from subgroups
-    top_commands: list[tuple[str, click.Command]] = []
-    subgroups: list[tuple[str, click.Group]] = []
+    top_commands: list[tuple[str, Command]] = []
+    subgroups: list[tuple[str, TyperGroup]] = []
 
     for cmd_name, cmd in sorted(app.commands.items()):
         if getattr(cmd, "hidden", False):
             continue
-        if isinstance(cmd, click.Group):
+        if isinstance(cmd, TyperGroup):
             subgroups.append((cmd_name, cmd))
         else:
             top_commands.append((cmd_name, cmd))

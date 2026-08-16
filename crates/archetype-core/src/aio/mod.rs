@@ -1,6 +1,6 @@
 //! Async core boundary modules.
 //!
-//! The file names intentionally mirror `src/archetype/core/aio` in the Python
+//! The file names intentionally mirror `packages/archetype-ecs/src/archetype/core/aio` in the Python
 //! package. Rust currently has a synchronous processor trait and world-state
 //! kernel inside this async boundary; the store trait is already async, and the
 //! world executor will grow here.

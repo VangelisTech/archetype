@@ -1717,6 +1717,161 @@ def test_repository_storage_capability_rule_keeps_canonical_owner() -> None:
         assert rule["mediated_attributes"]["to_pylist"] == "materialize"
 
 
+def test_workspace_source_roots_are_unioned_and_duplicate_modules_fail_closed(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "packages" / "first" / "src" / "archetype"
+    second = tmp_path / "packages" / "second" / "src" / "archetype"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / "alpha.py").write_text("value = 1\n", encoding="utf-8")
+    (second / "beta.py").write_text("value = 2\n", encoding="utf-8")
+    policy = tmp_path / "architecture.toml"
+    policy.write_text(
+        """
+version = 1
+source_roots = [
+  "packages/first/src",
+  "packages/second/src",
+]
+""",
+        encoding="utf-8",
+    )
+
+    clean = checker.audit_repository(policy, repo_root=tmp_path)
+
+    assert clean.ok
+    assert clean.files_scanned == 2
+
+    (second / "alpha.py").write_text("value = 3\n", encoding="utf-8")
+    duplicate = checker.audit_repository(policy, repo_root=tmp_path)
+
+    assert not duplicate.ok
+    assert duplicate.files_scanned == 3
+    assert any(
+        "duplicate first-party module identity archetype.alpha" in error
+        and "packages/first/src/archetype/alpha.py" in error
+        and "packages/second/src/archetype/alpha.py" in error
+        for error in duplicate.policy_errors
+    )
+
+
+def test_exact_world_library_adapters_may_import_framework_but_not_other_libraries(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "packages" / "base" / "src" / "archetype"
+    alpha = tmp_path / "packages" / "alpha" / "src" / "archetype" / "alpha"
+    beta = tmp_path / "packages" / "beta" / "src" / "archetype" / "beta"
+    for path in (
+        base / "core" / "__init__.py",
+        base / "api" / "deps.py",
+        base / "runtime" / "__init__.py",
+        base / "cli" / "__init__.py",
+        base / "world_libraries" / "__init__.py",
+        base / "errors.py",
+        alpha / "_extension.py",
+        alpha / "runtime.py",
+        alpha / "domain.py",
+        beta / "_extension.py",
+        beta / "runtime.py",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("value = 1\n", encoding="utf-8")
+    (alpha / "_extension.py").write_text(
+        "from archetype.api import deps\nfrom archetype.beta import value\n",
+        encoding="utf-8",
+    )
+    (alpha / "domain.py").write_text(
+        "from archetype.api import deps\n",
+        encoding="utf-8",
+    )
+    policy = tmp_path / "architecture.toml"
+    reserved = "\n".join(
+        f'  "{scope}",' for scope in (*DEFAULT_RESERVED_INFRASTRUCTURE, "archetype.world_libraries")
+    )
+    policy.write_text(
+        f"""
+version = 3
+source_roots = [
+  "packages/base/src",
+  "packages/alpha/src",
+  "packages/beta/src",
+]
+
+[concrete_services]
+types = []
+composition_roots = [
+  "archetype.alpha._extension",
+  "archetype.beta._extension",
+]
+
+[top_level_family_policy]
+forbidden_outward = [
+  "archetype.app",
+  "archetype.runtime",
+  "archetype.api",
+  "archetype.cli",
+]
+reserved_infrastructure = [
+{reserved}
+]
+common_family_imports = ["archetype.errors"]
+
+[world_library_policy]
+families = ["archetype.alpha", "archetype.beta"]
+
+[[world_library_adapter]]
+module = "archetype.alpha._extension"
+family = "archetype.alpha"
+role = "composition"
+
+[[world_library_adapter]]
+module = "archetype.alpha.runtime"
+family = "archetype.alpha"
+role = "runtime"
+
+[[world_library_adapter]]
+module = "archetype.beta._extension"
+family = "archetype.beta"
+role = "composition"
+
+[[world_library_adapter]]
+module = "archetype.beta.runtime"
+family = "archetype.beta"
+role = "runtime"
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = []
+
+[[top_level_family_rule]]
+name = "beta"
+consumer = "archetype.beta"
+allowed_families = []
+""",
+        encoding="utf-8",
+    )
+
+    result = checker.audit_repository(policy, repo_root=tmp_path)
+
+    assert not result.policy_errors
+    assert {
+        (violation.rule, violation.consumer, violation.target) for violation in result.violations
+    } == {
+        (
+            "world_library_dependency",
+            "archetype.alpha._extension",
+            "archetype.beta",
+        ),
+        (
+            "top_level_family_outward_dependency",
+            "archetype.alpha.domain",
+            "archetype.api",
+        ),
+    }
+
+
 def _write_fragment(policy: Path, name: str, body: str) -> Path:
     fragment_dir = policy.parent / f"{policy.stem}.d"
     fragment_dir.mkdir(exist_ok=True)

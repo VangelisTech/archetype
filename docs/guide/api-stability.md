@@ -21,6 +21,10 @@ application services, app protocols, process wiring, and `RuntimeResources`
 are internal. The synchronous
 educational engine remains a compatibility interface.
 
+Separately installed world libraries expose supported family-qualified imports
+and typed adapters. The base framework root does not own their API. See
+[World Libraries](world-libraries.md).
+
 ## What counts as public
 
 A supported name is one classified by the generated Python API manifest or a
@@ -39,27 +43,37 @@ experimental may change without the compatibility guarantees of the main API.
 
 ### Reviewed capability packages
 
+The 0.6 distribution split preserves `archetype.missions`,
+`archetype.physical_ai`, and `archetype.research` while moving them to separate
+wheels. New code imports domain values and adapters from those namespaces.
+The split is a clean pre-1.0 break: manifests do not contribute domain values
+to `archetype`, and installed libraries do not add domain methods to generic
+runtime or world handles. See [Archetype 0.6](release-0.6.md).
+
+`archetype.episodes` has been removed. Execution episodes remain under
+`archetype.world`; coding-session transcript and trajectory contracts are
+canonical under `archetype.missions.trajectories`.
+
 The provisional production `archetype.experiments` package has been removed.
 Standalone scripts under the repository-root `experiments/` directory are
 consumers of the shipped library; they do not define an importable domain
 family or application authority.
 
 `ClaudeTranscriptSource` and `TranscriptIngestionResult` are supported types
-in the `RuntimeWorld.ingest_claude_transcript()` signature. They remain
-namespaced under `archetype.missions.trajectories`; support does not require promotion to the
-root import surface. The parser's in-memory `LoadedSession` and the concrete
-transcript composition plus artifact-family handlers remain implementation
-details.
+in the `MissionWorld.ingest_claude_transcript()` signature. They remain
+namespaced under `archetype.missions.trajectories`; support does not require
+promotion to the framework root. The parser's in-memory `LoadedSession` and
+the concrete transcript composition plus artifact-family handlers remain
+implementation details.
 
 `archetype.physical_ai` is the reviewed owner for reusable physical state,
 hosted episode contracts, provider reconciliation, and pure instruction
 optimization. `HostedEpisodeRequest`, `HostedEpisodeObservation`, and
-`ModalHostedEpisodeConfig` are canonical in
-`archetype.physical_ai.models` and supported at the top level because they
-appear in `RuntimeWorld.run_hosted_episode()`. The family workflow, Activity
-binding, worker, and exact operation model remain internal. Raw-client
-environment and policy processors are internal in-process implementation
-details and are not a distributed runtime surface.
+`ModalHostedEpisodeConfig` are supported from the `archetype.physical_ai`
+family facade and appear in `PhysicalAI.run_hosted_episode()`. The family
+workflow, Activity binding, worker, and exact operation model remain internal.
+Raw-client environment and policy processors are internal in-process
+implementation details and are not a distributed runtime surface.
 
 `FrameGrader`, `Outcome`, `GraderContract`, and `EvalReceipt` are supported
 top-level evaluation contracts. `TrajectoryGrader` remains an object-identical
@@ -78,9 +92,8 @@ physical state and the hosted episode workflow live in `physical_ai`; that
 workflow is registered behind one exact trusted-only direct operation; and
 research values, ledger state, views, decoder, and free workflow handler live
 in `archetype.research`. `ResearchCandidateContext` is the canonical supported
-preparer-callback value. `CandidateContext` remains an object-identical
-one-release alias; it is not the persisted `archetype.missions.Candidate`
-review subject.
+preparer-callback value. It is not the persisted
+`archetype.missions.Candidate` review subject.
 
 Do not build a compatibility promise around the planning adapter or concrete
 application module paths. New applications use `ArchetypeRuntime` and the

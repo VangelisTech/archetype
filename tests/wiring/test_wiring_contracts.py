@@ -15,7 +15,7 @@ from importlib import import_module
 from importlib.util import find_spec
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 from pydantic import BaseModel
@@ -34,10 +34,10 @@ _PULL_FORWARD_MODELS = (
     ("archetype.evaluation.models", "Evaluate"),
     ("archetype.research.models", "AutoResearch"),
     ("archetype.physical_ai.models", "RunHostedEpisode"),
-    ("archetype.episodes.models", "IngestClaudeTranscript"),
-    ("archetype.episodes.models", "QueryTranscriptRows"),
-    ("archetype.episodes.models", "QueryTrajectory"),
-    ("archetype.episodes.models", "GradeTrajectory"),
+    ("archetype.missions.trajectories.models", "IngestClaudeTranscript"),
+    ("archetype.missions.trajectories.models", "QueryTranscriptRows"),
+    ("archetype.missions.trajectories.models", "QueryTrajectory"),
+    ("archetype.missions.trajectories.models", "GradeTrajectory"),
     ("archetype.missions.models", "SubmitMission"),
     ("archetype.missions.models", "RunMission"),
     ("archetype.missions.models", "RestoreMissionSandbox"),
@@ -180,7 +180,24 @@ def _operation_name(model: type[BaseModel]) -> str:
     return value
 
 
-def _config(wiring: Any, tmp_path: Path) -> Any:
+def _world_library_manifests() -> tuple[Any, ...]:
+    from archetype.missions._extension import get_manifest as missions_manifest
+    from archetype.physical_ai._extension import get_manifest as physical_ai_manifest
+    from archetype.research._extension import get_manifest as research_manifest
+
+    return (
+        missions_manifest(),
+        physical_ai_manifest(),
+        research_manifest(),
+    )
+
+
+def _config(
+    wiring: Any,
+    tmp_path: Path,
+    *,
+    world_libraries: tuple[Any, ...] = (),
+) -> Any:
     return wiring.RuntimeBootstrapConfig(
         control_catalog_config=ControlCatalogConfig(
             catalog_dir=tmp_path / "catalogs",
@@ -190,12 +207,20 @@ def _config(wiring: Any, tmp_path: Path) -> Any:
             namespace="pr4-wiring-red",
             backend=StorageBackend.ICEBERG,
         ),
+        world_libraries=world_libraries,
     )
 
 
 @asynccontextmanager
-async def _built_resources(wiring: Any, tmp_path: Path):
-    resources = wiring.build_runtime_resources(_config(wiring, tmp_path))
+async def _built_resources(
+    wiring: Any,
+    tmp_path: Path,
+    *,
+    world_libraries: tuple[Any, ...] = (),
+):
+    resources = wiring.build_runtime_resources(
+        _config(wiring, tmp_path, world_libraries=world_libraries)
+    )
     try:
         yield resources
     finally:
@@ -325,7 +350,9 @@ async def test_builder_returns_complete_runtime_resources(tmp_path: Path) -> Non
     try:
         assert type(resources) is RuntimeResources
         assert resources.dispatcher is not None
-        assert len(_specs(resources)) == 46
+        assert len(_specs(resources)) == 37
+        assert resources.world_library_manifests == ()
+        assert dict(resources.world_libraries) == {}
         assert resources.close_state.value == "OPEN"
     finally:
         await resources.aclose()
@@ -333,7 +360,45 @@ async def test_builder_returns_complete_runtime_resources(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_registry_contains_world_plus_thirteen_pull_forward_specs_exactly_once(
+async def test_world_library_installers_cannot_acquire_runtime_resources(
+    tmp_path: Path,
+) -> None:
+    from archetype.world_libraries import InstalledWorldLibrary, WorldLibraryManifest
+
+    class InstallerProbe(BaseModel):
+        operation: Literal["installer_probe"] = "installer_probe"
+
+    captured: dict[str, Any] = {}
+
+    def install(context: Any) -> InstalledWorldLibrary:
+        captured["resources"] = context.resources
+        context.resources.reserve_owner(
+            "installer:probe",
+            phase="workflow-handles",
+        )
+        raise AssertionError("reservation must fail before installer work starts")
+
+    manifest = WorldLibraryManifest(
+        name="installer-probe",
+        distribution="archetype-installer-probe",
+        version="0.6.0",
+        requires_framework=">=0.6,<0.7",
+        operation_models=(InstallerProbe,),
+        install=install,
+    )
+    wiring = _wiring()
+
+    with pytest.raises(RuntimeError, match="installer 'installer-probe' cannot reserve"):
+        wiring.build_runtime_resources(_config(wiring, tmp_path, world_libraries=(manifest,)))
+
+    resources = captured["resources"]
+    with pytest.raises(KeyError, match="installer:probe"):
+        resources.owner("installer:probe")
+    await resources.aclose()
+
+
+@pytest.mark.asyncio
+async def test_registry_contains_framework_plus_resolved_library_specs_exactly_once(
     tmp_path: Path,
 ) -> None:
     expected = _expected_models()
@@ -346,11 +411,26 @@ async def test_registry_contains_world_plus_thirteen_pull_forward_specs_exactly_
     assert defects[0] and defects[2]
 
     wiring = _wiring()
-    async with _built_resources(wiring, tmp_path) as resources:
+    manifests = _world_library_manifests()
+    async with _built_resources(
+        wiring,
+        tmp_path,
+        world_libraries=manifests,
+    ) as resources:
         actual = _inventory(resources)
         assert len(actual) == 46
         assert _inventory_defects(actual, expected) == (set(), set(), set(), set())
         assert set(actual) == {(_operation_name(model), model) for model in expected}
+        assert tuple(manifest.name for manifest in resources.world_library_manifests) == (
+            "missions",
+            "physical-ai",
+            "research",
+        )
+        assert tuple(resources.world_libraries) == (
+            "missions",
+            "physical-ai",
+            "research",
+        )
 
         specs = {spec.name: spec for spec in _specs(resources)}
         assert set(_WORLD_TOKEN_COSTS) == {
@@ -548,7 +628,11 @@ async def test_wiring_is_explicit_topological_and_has_no_setter_injection(
     assert _setter_calls(source) == set()
     assert all(name not in source for name in _SETTER_NAMES)
 
-    async with _built_resources(wiring, tmp_path) as resources:
+    async with _built_resources(
+        wiring,
+        tmp_path,
+        world_libraries=(_world_library_manifests()[-1],),
+    ) as resources:
         dispatcher = resources.dispatcher
         registry = _registry(resources)
         scheduler = dispatcher._scheduler
@@ -561,7 +645,7 @@ async def test_wiring_is_explicit_topological_and_has_no_setter_injection(
             ("ack", (scheduler, outbox_rows)),
         ]
         assert resources._storage is audit._storage_service
-        assert len(registry.specs) == 46
+        assert len(registry.specs) == 38
         assert [
             spec.name
             for spec in registry.specs
@@ -588,9 +672,6 @@ async def test_bootstrap_environment_is_resolved_once_before_family_construction
     from archetype.commands.audit import AuditLog
     from archetype.commands.policy import Policy
     from archetype.commands.scheduler import CommandScheduler
-    from archetype.missions.trajectory_service import TrajectoryService
-    from archetype.missions.transcript_service import TranscriptIngestionService
-    from archetype.research.handlers import AutoResearchAdmissions
     from archetype.storage.service import StorageService
     from archetype.world.lifecycle import WorldLifecycle
     from archetype.world.registry import WorldRegistry
@@ -607,9 +688,6 @@ async def test_bootstrap_environment_is_resolved_once_before_family_construction
         WorldLifecycle,
         AuditLog,
         Policy,
-        TranscriptIngestionService,
-        TrajectoryService,
-        AutoResearchAdmissions,
     )
     constructor_modules = {
         inspect.getmodule(constructor_type) for constructor_type in constructor_types
@@ -640,6 +718,7 @@ async def test_bootstrap_environment_is_resolved_once_before_family_construction
             namespace="pr4-env-once",
             backend=StorageBackend.ICEBERG,
         ),
+        world_libraries=(),
     )
     assert calls == [None]
     resources = wiring.build_runtime_resources(config)
@@ -703,7 +782,11 @@ async def test_no_runtime_or_api_operation_can_fall_back_to_a_legacy_bridge(
             import_module(module_name)
         assert caught.value.name in {module_name, "archetype.app"}
 
-    async with _built_resources(wiring, tmp_path) as resources:
+    async with _built_resources(
+        wiring,
+        tmp_path,
+        world_libraries=_world_library_manifests(),
+    ) as resources:
         pull_forward = set(_pull_forward_types())
         specs = tuple(spec for spec in _specs(resources) if spec.model in pull_forward)
         assert len(specs) == 13
@@ -730,7 +813,11 @@ async def test_pull_forward_registration_has_exact_four_actor_aware_and_nine_tru
     assert {name for name, spec in bad.items() if spec.untrusted} != _ACTOR_AWARE
 
     wiring = _wiring()
-    async with _built_resources(wiring, tmp_path) as resources:
+    async with _built_resources(
+        wiring,
+        tmp_path,
+        world_libraries=_world_library_manifests(),
+    ) as resources:
         specs = _pull_forward_specs(resources)
         assert set(specs) == _ACTOR_AWARE | _TRUSTED_ONLY
         assert {name for name, spec in specs.items() if spec.untrusted} == _ACTOR_AWARE
@@ -855,7 +942,11 @@ async def test_compound_destroy_and_audit_handlers_preserve_owned_order(
         reconcile,
         raising=False,
     )
-    async with _built_resources(wiring, tmp_path) as resources:
+    async with _built_resources(
+        wiring,
+        tmp_path,
+        world_libraries=_world_library_manifests(),
+    ) as resources:
         specs = {spec.name: spec for spec in _specs(resources)}
         dispatcher = resources.dispatcher
 
@@ -974,7 +1065,11 @@ async def test_nondurable_pull_forward_rejections_have_no_provider_or_scheduler_
     assert probe_effects == []
 
     wiring = _wiring()
-    async with _built_resources(wiring, tmp_path) as resources:
+    async with _built_resources(
+        wiring,
+        tmp_path,
+        world_libraries=_world_library_manifests(),
+    ) as resources:
         dispatcher = resources.dispatcher
         specs = _pull_forward_specs(resources)
         trap = _Untouched()

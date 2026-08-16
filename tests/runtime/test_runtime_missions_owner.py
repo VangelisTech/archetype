@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Focused ownership contracts for the inert RuntimeMissions facade."""
+"""Focused ownership contracts for the inert Missions adapter."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from archetype.core.config import StorageConfig
+from archetype.missions._extension import get_manifest
 from archetype.missions.contracts import (
     AgentMissionConfig,
     AgentTask,
@@ -20,6 +21,7 @@ from archetype.missions.contracts import (
     SubmittedMission,
 )
 from archetype.missions.models import RestoreMissionSandbox, RunMission, SubmitMission
+from archetype.missions.runtime import Missions
 from archetype.missions.sandboxes import CheckpointRef
 from archetype.runtime.runtime import ArchetypeRuntime
 from archetype.runtime_resources import OperationAdmission
@@ -198,7 +200,7 @@ async def _invoke(handle: Any, operation: str) -> object:
 async def test_mission_facade_anchor_survives_failed_close_until_retry_release() -> None:
     reservation = _Reservation(fail_once=True)
     runtime = _runtime(reservation)
-    handle = runtime.missions("anchored", config=_config())
+    handle = Missions(runtime, "anchored", config=_config())
 
     assert reservation.anchors == [handle]
     assert runtime._resources.reservations[0][1] == "workflow-handles"  # type: ignore[attr-defined]
@@ -251,7 +253,7 @@ async def test_mission_facade_anchor_survives_failed_close_until_retry_release()
 async def test_runtime_owned_release_closes_facade_before_dispatch_effect() -> None:
     reservation = _Reservation(fail_once=False)
     runtime = _runtime(reservation)
-    handle = runtime.missions("released", config=_config())
+    handle = Missions(runtime, "released", config=_config())
     resources = runtime._resources  # type: ignore[attr-defined]
 
     reservation.release()
@@ -300,7 +302,7 @@ async def test_mission_close_drains_each_admitted_public_operation(operation: st
 
     if operation == "query":
         reservation.bound = QueryService()
-    handle = runtime.missions("drained", config=_config())
+    handle = Missions(runtime, "drained", config=_config())
 
     admitted = asyncio.create_task(_invoke(handle, operation))
     await asyncio.wait_for(operation_started.wait(), timeout=5)
@@ -330,16 +332,17 @@ async def test_mission_close_drains_each_admitted_public_operation(operation: st
 async def test_process_admission_drains_each_mission_operation(operation: str) -> None:
     operation_started = asyncio.Event()
     operation_release = asyncio.Event()
+    operation_name = operation
 
     class BlockingDispatcher(_Dispatcher):
-        async def apply(self, dispatched: object) -> object:
+        async def apply(self, operation: object) -> object:
             self.effects += 1
             expected_type = {
                 "submit": SubmitMission,
                 "run": RunMission,
                 "restore": RestoreMissionSandbox,
-            }.get(operation)
-            if expected_type is not None and type(dispatched) is expected_type:
+            }.get(operation_name)
+            if expected_type is not None and type(operation) is expected_type:
                 operation_started.set()
                 await operation_release.wait()
             return object()
@@ -359,7 +362,7 @@ async def test_process_admission_drains_each_mission_operation(operation: str) -
 
     if operation == "query":
         reservation.bound = QueryService()
-    handle = runtime.missions("process-drained", config=_config())
+    handle = Missions(runtime, "process-drained", config=_config())
 
     admitted = asyncio.create_task(_invoke(handle, operation))
     await asyncio.wait_for(operation_started.wait(), timeout=5)
@@ -388,7 +391,7 @@ async def test_mission_close_allows_same_task_nested_public_continuation() -> No
     nested_call_release = asyncio.Event()
     reservation = _Reservation(fail_once=False)
     runtime = _runtime(reservation)
-    handle = runtime.missions("nested-continuation", config=_config())
+    handle = Missions(runtime, "nested-continuation", config=_config())
 
     async def admitted_compound_operation() -> object:
         async with runtime._resources.admit_operation():  # type: ignore[attr-defined]
@@ -417,7 +420,7 @@ async def test_mission_close_allows_same_task_nested_public_continuation() -> No
 async def test_mission_close_from_current_admitted_operation_rejects_without_deadlock() -> None:
     reservation = _Reservation(fail_once=False)
     runtime = _runtime(reservation)
-    handle = runtime.missions("self-close-rejection", config=_config())
+    handle = Missions(runtime, "self-close-rejection", config=_config())
 
     async with handle._operation_admission.admit():
         with pytest.raises(RuntimeError, match="cannot close from an admitted operation"):
@@ -431,8 +434,9 @@ async def test_mission_close_from_current_admitted_operation_rejects_without_dea
 
 @pytest.mark.asyncio
 async def test_mission_supervised_task_cannot_partially_close_its_owner(tmp_path) -> None:
-    runtime = ArchetypeRuntime()
-    handle = runtime.missions(
+    runtime = ArchetypeRuntime(world_libraries=(get_manifest(),))
+    handle = Missions(
+        runtime,
         "supervised-mission-self-close",
         config=_config(),
         storage=StorageConfig(
