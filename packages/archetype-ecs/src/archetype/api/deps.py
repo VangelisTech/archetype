@@ -19,6 +19,12 @@ from __future__ import annotations
 from fastapi import Header, HTTPException, Request
 from uuid_utils import NAMESPACE_URL, uuid5
 
+from archetype.api.principals import (
+    AuthenticationError,
+    MissionPrincipal,
+    MissionPrincipalDirectory,
+    parse_bearer_credential,
+)
 from archetype.commands.dispatch import CommandDispatcher
 from archetype.commands.models import ActorCtx
 
@@ -54,3 +60,31 @@ async def get_actor_ctx(authorization: str | None = Header(None)) -> ActorCtx:
         id=uuid5(NAMESPACE_URL, f"archetype:development-principal:{role}"),
         roles={role},
     )
+
+
+def mission_principal_directory(request: Request) -> MissionPrincipalDirectory:
+    """Return the process-owned mission principal directory, or empty."""
+
+    directory = getattr(request.app.state, "mission_principals", None)
+    if isinstance(directory, MissionPrincipalDirectory):
+        return directory
+    return MissionPrincipalDirectory.empty()
+
+
+async def get_mission_principal(
+    request: Request,
+    authorization: str | None = Header(None),
+) -> MissionPrincipal:
+    """Authenticate a mission-control caller with a verified service principal.
+
+    Missing, malformed, unknown, expired, revoked, and role-label credentials
+    fail closed. This dependency is for mission-control and interactive routes
+    only; existing developer routes keep ``get_actor_ctx``.
+    """
+
+    directory = mission_principal_directory(request)
+    try:
+        credential = parse_bearer_credential(authorization)
+        return directory.authenticate(credential)
+    except AuthenticationError:
+        raise HTTPException(status_code=401, detail="Authentication required") from None

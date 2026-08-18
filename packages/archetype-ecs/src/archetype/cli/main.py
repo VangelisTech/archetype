@@ -246,8 +246,11 @@ def serve(
     reload: bool = typer.Option(False, help="Enable auto-reload"),
 ):
     """Start the FastAPI server."""
+    import os
+
     import uvicorn
 
+    os.environ["ARCHETYPE_BIND_HOST"] = host
     configure_host_observability(service_name="archetype-api")
     uvicorn.run("archetype.api.app:create_app", host=host, port=port, reload=reload, factory=True)
 

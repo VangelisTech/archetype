@@ -716,6 +716,7 @@ class RuntimeResources:
         self._sealed = False
         self._audit_close: _OwnedClose | None = None
         self._storage_close: _OwnedClose | None = None
+        self._host_capabilities: dict[str, Any] = {}
 
     @property
     def dispatcher(self) -> Any:
@@ -770,6 +771,29 @@ class RuntimeResources:
             return self._world_libraries[name]
         except KeyError:
             raise KeyError(f"world library {name!r} is not installed") from None
+
+    def retain_host_capability(self, name: str, value: object) -> None:
+        """Retain one inert host capability for the process lifetime.
+
+        World-library installers may bind catalogs here. The owner stays
+        generic: it does not interpret product operations.
+        """
+
+        _validate_owner(name)
+        if self._close_state is not RuntimeCloseState.OPEN:
+            raise RuntimeError("runtime resource admission is closed")
+        if name in self._host_capabilities:
+            raise RuntimeError(f"host capability {name!r} is already retained")
+        self._host_capabilities[name] = value
+
+    def host_capability(self, name: str) -> Any:
+        """Resolve one retained host capability."""
+
+        _validate_owner(name)
+        try:
+            return self._host_capabilities[name]
+        except KeyError:
+            raise KeyError(f"host capability {name!r} is not retained") from None
 
     @property
     def close_state(self) -> RuntimeCloseState:
@@ -987,6 +1011,7 @@ class RuntimeResources:
         if self._sealed:
             return
         self._sealed = True
+        self._host_capabilities.clear()
         for reservation in self._owners.values():
             reservation._seal()
 

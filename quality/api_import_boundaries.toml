@@ -69,9 +69,12 @@ allowed_dependencies = [
   "archetype.api.deps",
   "archetype.api.errors",
   "archetype.api.models",
+  "archetype.api.principals",
   "archetype.commands.dispatch",
   "archetype.commands.models",
   "archetype.missions.components",
+  "archetype.missions.control",
+  "archetype.missions.execution_profiles",
   "archetype.missions.relations",
   "archetype.world.models",
 ]
@@ -86,7 +89,7 @@ forbidden_dependencies = [
   "archetype.world.registry",
   "archetype.world.simulation",
 ]
-rationale = "The optional Missions transport adapter projects family state through framework API dependencies and the actor-aware dispatcher without acquiring workflow or composition authority"
+rationale = "The optional Missions transport adapter authenticates verified principals, projects family state, and authorizes profile-bound mission-control operations without acquiring workflow or composition authority"
 
 [public_api]
 targets = ["packages/archetype-ecs/src/archetype/**/*.py"]

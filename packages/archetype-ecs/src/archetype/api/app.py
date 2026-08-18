@@ -36,6 +36,7 @@ async def lifespan(app: FastAPI):
 
     # Composition stays lazy: importing the ASGI module and calling
     # ``create_app`` must not construct providers, catalogs, or tasks.
+    from archetype.api.principals import MissionPrincipalDirectory
     from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
 
     configure_host_observability(service_name="archetype-api")
@@ -46,6 +47,7 @@ async def lifespan(app: FastAPI):
         )
     )
     app.state.resources = resources
+    app.state.mission_principals = MissionPrincipalDirectory.from_env()
     try:
         yield
     finally:

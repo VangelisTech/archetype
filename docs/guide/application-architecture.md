@@ -70,6 +70,11 @@ CLI or remote client
   -> the same registered family handler
 ```
 
+Mission-control and interactive routes authenticate a verified service
+principal instead of developer-mode `ActorCtx`. Missions-owned profile and
+capability policy authorize the operation; API handlers do not construct
+domain state.
+
 The CLI is an HTTP client except for the server-startup entrypoint. It does not
 authorize calls or import application/runtime implementation code. FastAPI
 translates transport models, authenticates principals, constructs exact

@@ -62,9 +62,18 @@ class _World:
 
 
 def _context(tmp_path: Path) -> WorldLibraryContext:
+    retained: dict[str, object] = {}
+
+    def retain_host_capability(name: str, value: object) -> None:
+        retained[name] = value
+
+    resources = SimpleNamespace(
+        retain_host_capability=retain_host_capability,
+        host_capabilities=retained,
+    )
     return WorldLibraryContext(
         registry=OperationRegistry(),
-        resources=SimpleNamespace(),
+        resources=resources,
         worlds=SimpleNamespace(),
         lifecycle=SimpleNamespace(),
         scheduler=SimpleNamespace(),
@@ -112,6 +121,7 @@ def test_install_registers_only_the_seven_declared_operations(tmp_path: Path) ->
     assert tuple(spec.model for spec in context.registry.specs) == MISSION_OPERATION_MODELS
     assert tuple(spec.name for spec in context.registry.specs) == get_manifest().operation_names
     assert all(spec.trusted and not spec.untrusted for spec in context.registry.specs)
+    assert "missions:control" in context.resources.host_capabilities
 
 
 def test_install_rejects_unknown_library_configuration(tmp_path: Path) -> None:

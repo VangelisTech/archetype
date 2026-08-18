@@ -63,6 +63,7 @@ def test_framework_and_missions_routes_use_explicit_compositions(
     assert "# Agent Missions REST API Reference" in missions_rest_reference
     assert "| Distribution | `archetype-missions` |" in missions_rest_reference
     assert "GET /worlds/{world_id}/missions" in missions_rest_reference
+    assert "POST /v1/mission-control/runs" in missions_rest_reference
     assert "GET /healthz" not in missions_rest_reference
 
 

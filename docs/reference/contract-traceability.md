@@ -26,6 +26,7 @@ machine authority; this page is its review surface.
 | `runtime.lifecycle.single_flight_and_drain` | `runtime` | high | [docs/guide/specification.md](../guide/specification.md) — Concurrency Contract | pytest: 3; eval: 2 | `pr`, `main`, `release` |
 | `runtime.lifecycle.retryable_teardown` | `runtime` | high | [docs/guide/runtime.md](../guide/runtime.md) — R4 — Async context manager is canonical | pytest: 6 | `pr`, `main`, `release` |
 | `gateway.authorization.rbac` | `commands` | high | [docs/guide/command-gate.md](../guide/command-gate.md) — 1. The gate model | pytest: 3; static: 1; eval: 5 | `pr`, `main`, `release` |
+| `missions.control.authenticated_profiles` | `api` | high | [docs/guide/api-layer.md](../guide/api-layer.md) — Mission-control authentication | pytest: 3 | `pr`, `main`, `release` |
 | `commands.identity.idempotent` | `commands` | high | [docs/guide/specification.md](../guide/specification.md) — Command ledger, scheduler, and dispatcher | pytest: 1; static: 1; eval: 4 | `pr`, `main`, `release` |
 | `commands.settlement.atomic` | `commands` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 7. Commands, commits, artifacts, and audit | pytest: 3; eval: 2 | `pr`, `main`, `release` |
 | `commands.failure.preserves_progress` | `commands` | high | [docs/guide/specification.md](../guide/specification.md) — Command ledger, scheduler, and dispatcher | pytest: 1; eval: 4 | `pr`, `main`, `release` |

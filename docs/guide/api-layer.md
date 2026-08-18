@@ -59,18 +59,52 @@ async def run_world(
 
 ## Authentication context
 
-The served API is a single-tenant development surface, and this is the
-deliberate v0.6 posture. There is no authentication system: every caller is
-the tenant. A request with no `Authorization` header receives the admin role;
-`Bearer <role>` self-asserts one of admin/operator/player/viewer. Roles
-therefore scope cooperating agents — a client instructed to send
-`Bearer viewer` is genuinely viewer-scoped by the command gate — but they are
-not a security boundary against an adversarial caller, and binding the server
-beyond loopback exposes an unauthenticated admin API. The credentials that
-matter are the storage credentials in Daft's `IOConfig`. Real
-authentication/authorization against an external identity provider is a
-future hardening slice. The trusted runtime has no actor context. See
+The served ECS API is a single-tenant development surface, and this is the
+deliberate v0.6 posture for existing world, command, simulation, and query
+routes. Those routes have no verified authentication: a request with no
+`Authorization` header receives the admin role, and `Bearer <role>`
+self-asserts one of admin/operator/player/viewer. Roles therefore scope
+cooperating agents — a client instructed to send `Bearer viewer` is genuinely
+viewer-scoped by the command gate — but they are not a security boundary
+against an adversarial caller. Binding those developer routes beyond loopback
+exposes an unauthenticated admin API. The credentials that matter for storage
+are in Daft's `IOConfig`. The trusted runtime has no actor context. See
 [Command Gate](command-gate.md).
+
+### Mission-control authentication
+
+Mission-control and interactive routes do not inherit developer-mode identity.
+They authenticate an opaque bearer credential to a stable service principal
+through `get_mission_principal`. A role label such as `admin` is never accepted
+as a credential. Missing, malformed, unknown, expired, and revoked credentials
+fail closed. The process stores only a salted HMAC verifier; the credential
+never appears in logs, errors, events, receipts, or model-visible tool results.
+
+Principals carry explicit capabilities (`mission:submit`, `mission:read`,
+`mission:cancel`, `mission:attach`, `mission:steer`, `mission:takeover`) plus
+profile allowlists. Resource ownership is enforced in addition to capability
+names: one principal cannot read or control another principal's accepted runs
+without an explicit grant.
+
+`archetype serve --host` records `ARCHETYPE_BIND_HOST`. Loopback developer
+mode remains the documented ECS posture and cannot enable unauthenticated
+mission execution. Non-loopback hosting stays fail-closed for mission-control
+unless verified principals are configured; an empty principal directory rejects
+every mission-control request.
+
+The client supplies a `profile_id`, not execution internals. A versioned
+server-owned execution profile owns allowed repositories, base refs, branch
+namespace, sandbox backend and environment, agent/critic drivers, model,
+timeouts, tick/retry/concurrency/cost ceilings, validator and publication
+bounds, secret names, provider credential names, and whether cancel, attach,
+steer, or takeover is allowed. An accepted run pins profile id, version, and
+canonical digest. Changing later configuration cannot reinterpret that pin.
+Request bodies cannot carry sandbox, secret, driver, model, critic, budget, or
+timeout fields.
+
+Credential verification lives in `archetype.api`. Profile values and
+authorization policy live in `archetype.missions`. Wiring/runtime resources
+compose the catalogs. API handlers do not construct Mission domain state.
 
 ## Route Structure
 
@@ -207,6 +241,7 @@ archetype query <world-id> Agent,Score --where "score__value > 0.5" --count
 
 - App factory: `packages/archetype-ecs/src/archetype/api/app.py`
 - Dependency injection: `packages/archetype-ecs/src/archetype/api/deps.py`
+- Mission service principals: `packages/archetype-ecs/src/archetype/api/principals.py`
 - Request/response models: `packages/archetype-ecs/src/archetype/api/models.py`
 - Routes: `packages/archetype-ecs/src/archetype/api/routes/`
 - CLI: `packages/archetype-ecs/src/archetype/cli/main.py`

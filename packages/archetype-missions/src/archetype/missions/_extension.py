@@ -28,6 +28,7 @@ from archetype.missions.coding_agents.harness import (
     CodingAgentHarness,
     CodingAgentHarnessConfig,
 )
+from archetype.missions.control import MissionControlCatalog
 from archetype.missions.critic_activity_coordinator import MissionCriticActivityCoordinator
 from archetype.missions.critic_activity_world import (
     MissionCriticActivityBinding,
@@ -39,6 +40,7 @@ from archetype.missions.critics import (
     CriticHarness,
     CriticHarnessConfig,
 )
+from archetype.missions.execution_profiles import ExecutionProfileCatalog
 from archetype.missions.local_activity_values import LocalMissionAuthorValueStore
 from archetype.missions.local_critic_activity_values import LocalMissionCriticValueStore
 from archetype.missions.modal_author import (
@@ -493,6 +495,10 @@ def install(context: WorldLibraryContext) -> InstalledWorldLibrary:
     )
     trajectories = TrajectoryService(context.storage)
     handlers = _operation_handlers(context, transcripts, trajectories)
+    context.resources.retain_host_capability(
+        "missions:control",
+        MissionControlCatalog(ExecutionProfileCatalog.from_env()),
+    )
 
     if set(handlers) != set(MISSION_OPERATION_MODELS):
         raise RuntimeError("Missions operation composition is incomplete")

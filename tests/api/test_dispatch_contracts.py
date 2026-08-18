@@ -795,6 +795,12 @@ _EXPECTED_DECLARED_ROUTES = {
     ("GET", "/worlds/{world_id}/missions"): 200,
     ("GET", "/worlds/{world_id}/missions/{mission_id}/tasks"): 200,
     ("GET", "/worlds/{world_id}/tasks/{task_id}"): 200,
+    ("POST", "/v1/mission-control/runs"): 202,
+    ("GET", "/v1/mission-control/runs/{run_id}"): 200,
+    ("POST", "/v1/mission-control/runs/{run_id}/cancel"): 200,
+    ("POST", "/v1/mission-control/runs/{run_id}/attach"): 200,
+    ("POST", "/v1/mission-control/runs/{run_id}/steer"): 200,
+    ("POST", "/v1/mission-control/runs/{run_id}/takeover"): 200,
     ("GET", "/"): 200,
     ("GET", "/healthz"): 200,
 }
@@ -834,7 +840,7 @@ def test_supported_paths_statuses_and_response_shapes_are_unchanged() -> None:
     mission_routes = {
         key: value
         for key, value in _EXPECTED_DECLARED_ROUTES.items()
-        if "/missions" in key[1] or "/tasks/{task_id}" in key[1]
+        if "/missions" in key[1] or "/tasks/{task_id}" in key[1] or "/mission-control" in key[1]
     }
     framework_routes = {
         key: value for key, value in _EXPECTED_DECLARED_ROUTES.items() if key not in mission_routes

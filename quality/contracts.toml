@@ -274,6 +274,22 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "missions.control.authenticated_profiles"
+source = "docs/guide/api-layer.md"
+section = "Mission-control authentication"
+owner = "api"
+risk = "high"
+pytest = [
+  "tests/api/test_mission_principals.py",
+  "tests/api/test_mission_control_routes.py",
+  "tests/missions/test_execution_profiles.py",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "commands.identity.idempotent"
 source = "docs/guide/specification.md"
 section = "Command ledger, scheduler, and dispatcher"

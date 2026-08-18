@@ -298,6 +298,21 @@ environment, but it has a distinct sandbox identity, receives no Git
 publication secret, is never checkpointed, and closes after its evidence is
 durable.
 
+### Authenticated mission clients and execution profiles
+
+External agents and UIs authenticate as service principals. They do not inherit
+developer-mode `Bearer <role>` identity and they cannot choose execution
+authority. The client names a `profile_id`. The host owns the versioned
+execution profile: repositories, refs, sandbox, drivers, model, budgets,
+secrets (by name), and whether cancel, attach, steer, or takeover is allowed.
+
+`archetype.missions.execution_profiles` owns the digestible profile values.
+`archetype.missions.control` owns capability, ownership, and pin policy.
+`archetype.api.principals` verifies credentials. An accepted mission-control
+run records profile id, version, and digest so a later catalog change cannot
+reinterpret that run. Durable asynchronous `MissionRun` execution is a
+separate lifecycle.
+
 ## 4. State and transition protocol
 
 ```mermaid
@@ -1053,6 +1068,8 @@ The implementation follows this layout:
 | File | Owns |
 |---|---|
 | `archetype/missions/contracts.py` | Supported authoring, configuration, and result values. |
+| `archetype/missions/execution_profiles.py` | Versioned server-owned execution profiles and canonical digests. |
+| `archetype/missions/control.py` | Mission-control capability, ownership, and accepted-run pins. |
 | `archetype/missions/components.py` | Mission, task, validator, candidate, critic, sandbox, execution, and output Components. |
 | `archetype/missions/relations.py` | Membership, dependency, guard, placement, candidate/review, and provenance Relations. |
 | `archetype/missions/transitions.py` | Small persisted status vocabularies and transition tables. |
