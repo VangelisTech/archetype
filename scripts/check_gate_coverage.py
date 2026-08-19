@@ -98,6 +98,9 @@ def check_registry_coverage() -> list[str]:
     from archetype.commands.models import GetAuditHistory
     from archetype.evaluation.models import Evaluate, RunGraders
     from archetype.missions.models import (
+        AcceptMissionRun,
+        CancelMissionRun,
+        GetMissionRun,
         RestoreMissionSandbox,
         RunMission,
         SubmitMission,
@@ -135,6 +138,9 @@ def check_registry_coverage() -> list[str]:
         SubmitMission,
         RunMission,
         RestoreMissionSandbox,
+        AcceptMissionRun,
+        GetMissionRun,
+        CancelMissionRun,
         RunHostedEpisode,
         AutoResearch,
     )

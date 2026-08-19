@@ -81,6 +81,9 @@ _PULL_FORWARD_OPERATIONS = frozenset(
         "run_graders",
         "run_mission",
         "submit_mission",
+        "accept_mission_run",
+        "get_mission_run",
+        "cancel_mission_run",
         "run_hosted_episode",
     }
 )

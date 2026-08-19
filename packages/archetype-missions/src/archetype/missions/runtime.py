@@ -21,7 +21,15 @@ from archetype.missions.contracts import (
     MissionSubmission,
     SubmittedMission,
 )
-from archetype.missions.models import RestoreMissionSandbox, RunMission, SubmitMission
+from archetype.missions.models import (
+    AcceptMissionRun,
+    CancelMissionRun,
+    GetMissionRun,
+    RestoreMissionSandbox,
+    RunMission,
+    SubmitMission,
+)
+from archetype.missions.run_contracts import MissionRun, MissionRunRequest
 from archetype.missions.sandboxes import CheckpointRef, SandboxIdentity
 from archetype.missions.trajectories.models import (
     GradeTrajectory,
@@ -125,6 +133,69 @@ class Missions:
                     name=name,
                     base_ref=base_ref,
                 ),
+            )
+        )
+
+    @_admitted_mission_operation
+    async def accept(
+        self,
+        *,
+        repository: str,
+        branch: str,
+        tasks: Sequence[AgentTask],
+        principal: str,
+        idempotency_key: str,
+        name: str = "agent-mission",
+        base_ref: str = "main",
+    ) -> MissionRun:
+        """Admit one durable MissionRun and return its run_id before completion."""
+
+        return await self._dispatcher.apply(
+            AcceptMissionRun(
+                owner_id=self._owner_id,
+                name=self._name,
+                config=self._config,
+                storage=self._storage,
+                request=MissionRunRequest(
+                    principal=principal,
+                    idempotency_key=idempotency_key,
+                    submission=MissionSubmission(
+                        repository=repository,
+                        branch=branch,
+                        tasks=tuple(tasks),
+                        name=name,
+                        base_ref=base_ref,
+                    ),
+                ),
+            )
+        )
+
+    @_admitted_mission_operation
+    async def get_run(self, run_id: str) -> MissionRun:
+        """Load one durable MissionRun and resume supervision if it is still open."""
+
+        return await self._dispatcher.apply(
+            GetMissionRun(
+                owner_id=self._owner_id,
+                name=self._name,
+                config=self._config,
+                storage=self._storage,
+                run_id=run_id,
+            )
+        )
+
+    @_admitted_mission_operation
+    async def cancel_run(self, run_id: str, *, reason: str = "") -> MissionRun:
+        """Record cancellation intent without cancelling already admitted work."""
+
+        return await self._dispatcher.apply(
+            CancelMissionRun(
+                owner_id=self._owner_id,
+                name=self._name,
+                config=self._config,
+                storage=self._storage,
+                run_id=run_id,
+                reason=reason,
             )
         )
 
