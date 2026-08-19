@@ -18,7 +18,7 @@ import pytest
 
 from archetype.missions.mcp.config import McpHostConfig
 from archetype.missions.mcp.server import MissionMcpServer
-from tests.missions.mcp.conftest import CREDENTIAL
+from tests.missions.mcp.conftest import CREDENTIAL, call_tool, submit_arguments
 
 HOSTILE_OPAQUE_IDS = [
     "../admin",
@@ -75,8 +75,8 @@ def test_hostile_cursor_never_reaches_the_wire(call, fake_control, hostile):
     "hostile",
     ["../key", "key with space", "key\r\nX-Evil: 1", "", "k" * 300],
 )
-def test_hostile_idempotency_key_cannot_inject_headers(call, fake_control, hostile, submit_args):
-    is_error, payload = call("mission_submit", submit_args(idempotency_key=hostile))
+def test_hostile_idempotency_key_cannot_inject_headers(call, fake_control, hostile):
+    is_error, payload = call("mission_submit", submit_arguments(idempotency_key=hostile))
     assert is_error is True
     assert payload["error"]["code"] == "invalid_argument"
     assert fake_control.requests == []
@@ -114,8 +114,8 @@ def test_configuration_overrides_are_unknown_arguments(call, fake_control, tool,
 
 
 @pytest.mark.parametrize("override", CONFIG_OVERRIDE_ARGUMENTS)
-def test_submit_configuration_overrides_are_rejected(call, fake_control, override, submit_args):
-    is_error, payload = call("mission_submit", {**submit_args(), **override})
+def test_submit_configuration_overrides_are_rejected(call, fake_control, override):
+    is_error, payload = call("mission_submit", {**submit_arguments(), **override})
     assert is_error is True
     assert payload["error"]["code"] == "invalid_argument"
     assert fake_control.requests == []
@@ -131,9 +131,7 @@ def test_submit_configuration_overrides_are_rejected(call, fake_control, overrid
         {"budget": 10**9},
     ],
 )
-def test_profile_widening_through_task_payload_is_rejected(
-    call, fake_control, task_widening, submit_args
-):
+def test_profile_widening_through_task_payload_is_rejected(call, fake_control, task_widening):
     """Task items carry name/prompt/validators/depends_on only (issue #808)."""
 
     tasks = [
@@ -143,20 +141,20 @@ def test_profile_widening_through_task_payload_is_rejected(
             **task_widening,
         }
     ]
-    is_error, payload = call("mission_submit", submit_args(tasks=tasks))
+    is_error, payload = call("mission_submit", submit_arguments(tasks=tasks))
     assert is_error is True
     assert payload["error"]["code"] == "invalid_argument"
     assert fake_control.requests == []
 
 
-def test_task_count_and_prompt_bytes_are_bounded(call, fake_control, submit_args):
+def test_task_count_and_prompt_bytes_are_bounded(call, fake_control):
     many = [{"name": f"task-{index}", "prompt": "p"} for index in range(33)]
-    is_error, payload = call("mission_submit", submit_args(tasks=many))
+    is_error, payload = call("mission_submit", submit_arguments(tasks=many))
     assert is_error is True
     assert payload["error"]["code"] == "invalid_argument"
 
     huge_prompt = [{"name": "task", "prompt": "x" * 70000}]
-    is_error, payload = call("mission_submit", submit_args(tasks=huge_prompt))
+    is_error, payload = call("mission_submit", submit_arguments(tasks=huge_prompt))
     assert is_error is True
     assert payload["error"]["code"] == "invalid_argument"
     assert fake_control.requests == []
@@ -196,24 +194,12 @@ def test_transport_failure_is_bounded_and_credential_free():
     )
     server = MissionMcpServer(config, stderr=io.StringIO())
     try:
-        frame = server.handle_message(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "mission_get",
-                    "arguments": {"run_id": "run-1"},
-                },
-            }
-        )
+        is_error, payload = call_tool(server, "mission_get", {"run_id": "run-1"})
     finally:
         server.close()
-    result = frame["result"]
-    assert result["isError"] is True
-    text = result["content"][0]["text"]
-    assert CREDENTIAL not in text
-    assert json.loads(text)["error"]["code"] == "unavailable"
+    assert is_error is True
+    assert CREDENTIAL not in json.dumps(payload)
+    assert payload["error"]["code"] == "unavailable"
 
 
 def test_stderr_diagnostics_redact_the_credential_and_stay_bounded(mcp_server, stderr_sink):

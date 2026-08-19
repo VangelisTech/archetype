@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -177,3 +178,33 @@ def test_stdio_subprocess_end_to_end(fake_control):
     assert payload["run_id"] == run.run_id
     assert fake_control.credential not in process.stdout
     assert fake_control.credential not in process.stderr
+
+
+def test_declared_schemas_agree_with_runtime_validation():
+    """Advertised inputSchema fragments and runtime validators render from one table."""
+
+    from archetype.missions.mcp import server as server_module
+    from archetype.missions.mcp.client import MissionToolError
+
+    samples = {
+        "opaque_id": ("run-1", "a/b"),
+        "line": ("main", "bad\nline"),
+        "limit": (5, 0),
+        "tasks": (
+            [{"name": "t", "prompt": "p"}],
+            [{"name": "t", "prompt": "p", "sandbox": {}}],
+        ),
+    }
+    for spec in server_module._TOOL_SPECS:
+        schema = next(t for t in TOOLS if t["name"] == spec.name)["inputSchema"]
+        for argument, kind, required in spec.arguments:
+            fragment, validator = server_module._ARGUMENT_KINDS[kind]
+            assert schema["properties"][argument] == fragment
+            assert (argument in schema.get("required", [])) is required
+            good, bad = samples[kind]
+            validator(good, argument)  # schema-conforming values pass
+            with pytest.raises(MissionToolError):
+                validator(bad, argument)  # schema-violating values fail closed
+            if "pattern" in fragment:
+                assert re.fullmatch(fragment["pattern"], good)
+                assert not re.fullmatch(fragment["pattern"], bad)

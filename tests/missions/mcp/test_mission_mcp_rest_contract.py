@@ -6,28 +6,14 @@
 from __future__ import annotations
 
 import io
-import json
 
 from archetype.missions.mcp.config import McpHostConfig
 from archetype.missions.mcp.server import MissionMcpServer
-from tests.missions.mcp.conftest import host_environ, submit_arguments
+from tests.missions.mcp.conftest import call_tool, host_environ, submit_arguments
 
 
-def _tool(server: MissionMcpServer, name: str, arguments: dict | None = None):
-    frame = server.handle_message(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {"name": name, "arguments": arguments or {}},
-        }
-    )
-    result = frame["result"]
-    return result["isError"], json.loads(result["content"][0]["text"])
-
-
-def test_submit_returns_run_id_before_completion(call, fake_control, submit_args):
-    is_error, payload = call("mission_submit", submit_args())
+def test_submit_returns_run_id_before_completion(call, fake_control):
+    is_error, payload = call("mission_submit", submit_arguments())
     assert is_error is False
     assert payload["run_id"]
     assert payload["state"] == "queued"
@@ -37,19 +23,19 @@ def test_submit_returns_run_id_before_completion(call, fake_control, submit_args
     assert fake_control.runs[payload["run_id"]].result is None
 
 
-def test_duplicate_submit_after_process_death_returns_original_run(fake_control, submit_args):
+def test_duplicate_submit_after_process_death_returns_original_run(fake_control):
     """A fresh MCP process reusing the idempotency key recovers the same run."""
 
     config = McpHostConfig.from_env(host_environ(fake_control))
     first = MissionMcpServer(config, stderr=io.StringIO())
     try:
-        _, original = _tool(first, "mission_submit", submit_args())
+        _, original = call_tool(first, "mission_submit", submit_arguments())
     finally:
         first.close()
 
     second = MissionMcpServer(config, stderr=io.StringIO())
     try:
-        is_error, recovered = _tool(second, "mission_submit", submit_args())
+        is_error, recovered = call_tool(second, "mission_submit", submit_arguments())
     finally:
         second.close()
     assert is_error is False
@@ -57,18 +43,18 @@ def test_duplicate_submit_after_process_death_returns_original_run(fake_control,
     assert recovered["request_digest"] == original["request_digest"]
 
 
-def test_submit_with_changed_content_conflicts(call, submit_args):
-    call("mission_submit", submit_args())
-    is_error, payload = call("mission_submit", submit_args(mission="different-mission"))
+def test_submit_with_changed_content_conflicts(call):
+    call("mission_submit", submit_arguments())
+    is_error, payload = call("mission_submit", submit_arguments(mission="different-mission"))
     assert is_error is True
     assert payload["error"]["code"] == "conflict"
 
 
-def test_missing_credential_fails_closed(fake_control, submit_args):
+def test_missing_credential_fails_closed(fake_control):
     config = McpHostConfig.from_env({"ARCHETYPE_MISSIONS_MCP_URL": fake_control.base_url})
     server = MissionMcpServer(config, stderr=io.StringIO())
     try:
-        is_error, payload = _tool(server, "mission_submit", submit_arguments())
+        is_error, payload = call_tool(server, "mission_submit", submit_arguments())
     finally:
         server.close()
     assert is_error is True
@@ -186,7 +172,7 @@ def test_oversized_payload_is_truncated_with_an_explicit_marker(fake_control):
     )
     server = MissionMcpServer(config, stderr=io.StringIO())
     try:
-        is_error, payload = _tool(server, "mission_result", {"run_id": run.run_id})
+        is_error, payload = call_tool(server, "mission_result", {"run_id": run.run_id})
     finally:
         server.close()
     assert is_error is False

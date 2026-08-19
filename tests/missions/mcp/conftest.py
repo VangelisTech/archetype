@@ -332,23 +332,29 @@ def mcp_server(host_config, stderr_sink):
     server.close()
 
 
+def call_tool(
+    server: MissionMcpServer, name: str, arguments: dict[str, Any] | None = None
+) -> tuple[bool, dict[str, Any]]:
+    """Invoke one tool on ``server`` through the full MCP frame path."""
+
+    frame = server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments or {}},
+        }
+    )
+    assert frame is not None and "result" in frame, frame
+    result = frame["result"]
+    payload = json.loads(result["content"][0]["text"])
+    return result["isError"], payload
+
+
 @pytest.fixture
 def call(mcp_server):
-    """Invoke one tool through the full MCP frame path."""
-
     def _call(name: str, arguments: dict[str, Any] | None = None):
-        frame = mcp_server.handle_message(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": name, "arguments": arguments or {}},
-            }
-        )
-        assert frame is not None and "result" in frame, frame
-        result = frame["result"]
-        payload = json.loads(result["content"][0]["text"])
-        return result["isError"], payload
+        return call_tool(mcp_server, name, arguments)
 
     return _call
 
@@ -370,8 +376,3 @@ def submit_arguments(**overrides: Any) -> dict[str, Any]:
     }
     arguments.update(overrides)
     return arguments
-
-
-@pytest.fixture
-def submit_args():
-    return submit_arguments

@@ -1201,11 +1201,10 @@ Boundaries:
 - Trusted host configuration only: `ARCHETYPE_MISSIONS_MCP_URL`,
   `ARCHETYPE_MISSIONS_MCP_CREDENTIAL` (or `..._CREDENTIAL_FILE`),
   `ARCHETYPE_MISSIONS_MCP_TIMEOUT_SECONDS`,
-  `ARCHETYPE_MISSIONS_MCP_MAX_EVENTS_PAGE`,
-  `ARCHETYPE_MISSIONS_MCP_MAX_RESULT_BYTES`,
-  `ARCHETYPE_MISSIONS_MCP_MAX_TASKS`, and
-  `ARCHETYPE_MISSIONS_MCP_MAX_PROMPT_BYTES` are read once at process
-  start. Tool arguments carry domain inputs and opaque ids only; a model
+  `ARCHETYPE_MISSIONS_MCP_MAX_EVENTS_PAGE`, and
+  `ARCHETYPE_MISSIONS_MCP_MAX_RESULT_BYTES` are read once at process
+  start; input caps (32 tasks, 64 KiB prompt bytes) are fixed module
+  constants. Tool arguments carry domain inputs and opaque ids only; a model
   can never supply a URL, bearer token, REST path or method, execution
   backend, secret, or configuration override, and the client never
   follows redirects.

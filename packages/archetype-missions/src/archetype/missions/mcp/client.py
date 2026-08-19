@@ -30,6 +30,10 @@ from archetype.missions.mcp.config import McpHostConfig
 # injection at the validation boundary.
 _OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 
+#: Advertised in every opaque-id tool schema; the same expression
+#: :func:`require_opaque_id` enforces at runtime.
+OPAQUE_ID_PATTERN = _OPAQUE_ID.pattern
+
 _RUNS_PATH = "/v1/mission-runs"
 
 
@@ -102,7 +106,7 @@ class MissionRunClient:
     ) -> dict[str, Any]:
         key = require_opaque_id(idempotency_key, label="idempotency_key")
         body = {
-            "profile_id": require_opaque_id(profile_id, label="profile_id"),
+            "profile_id": profile_id,
             "repository": repository,
             "ref": ref,
             "mission": mission,
@@ -120,7 +124,9 @@ class MissionRunClient:
         path = f"{_RUNS_PATH}/{require_opaque_id(run_id, label='run_id')}"
         return self._payload(self._request("GET", path), ok={200})
 
-    def events(self, run_id: str, *, after: str | None, limit: int | None) -> dict[str, Any]:
+    def events(
+        self, run_id: str, *, after: str | None = None, limit: int | None = None
+    ) -> dict[str, Any]:
         path = f"{_RUNS_PATH}/{require_opaque_id(run_id, label='run_id')}/events"
         params: dict[str, str] = {"limit": str(self._clamped_limit(limit))}
         if after is not None:
@@ -135,7 +141,7 @@ class MissionRunClient:
         path = f"{_RUNS_PATH}/{require_opaque_id(run_id, label='run_id')}/cancel"
         return self._payload(self._request("POST", path), ok={200, 202})
 
-    def list_runs(self, *, limit: int | None) -> dict[str, Any]:
+    def list_runs(self, *, limit: int | None = None) -> dict[str, Any]:
         params = {"limit": str(self._clamped_limit(limit))}
         return self._payload(self._request("GET", _RUNS_PATH, params=params), ok={200})
 

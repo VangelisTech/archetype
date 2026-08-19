@@ -8,16 +8,23 @@ diagnostics go to bounded, credential-redacted stderr. The server exposes
 exactly the six asynchronous mission tools from issue #810 and returns
 ``-32601`` for any unsupported request method. Interactive attachment
 tools (issue #811) are deliberately absent rather than stubbed.
+
+Each tool is one :class:`_ToolSpec` row: the advertised ``inputSchema``
+and the runtime argument validation render from the same
+``_ARGUMENT_KINDS`` table, so the two encodings cannot drift.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, TextIO
 
 from archetype.missions.mcp.client import (
+    OPAQUE_ID_PATTERN,
     MissionRunClient,
     MissionToolError,
     require_opaque_id,
@@ -27,19 +34,25 @@ from archetype.missions.mcp.config import McpHostConfig, McpHostConfigError
 SERVER_NAME = "archetype-missions-mcp"
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
+# Fixed input bounds (issue #810: "fixed byte/item limits"). Output bounds
+# (events page, rendered result bytes) remain host-configured knobs.
+_MAX_OPAQUE_ID_CHARS = 256
 _MAX_COORDINATE_CHARS = 512
 _MAX_TASK_NAME_CHARS = 200
+_MAX_TASKS = 32
+_MAX_PROMPT_BYTES = 65536
 _MAX_DIAGNOSTIC_BYTES = 512
 
 _TASK_KEYS = {"name", "prompt", "validators", "depends_on"}
 
-_OPAQUE_ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 256}
+# Single-line coordinate: no ASCII control characters.
+_LINE_PATTERN = "^[^\\u0000-\\u001f]+$"
 
 _TASK_SCHEMA = {
     "type": "object",
     "properties": {
         "name": {"type": "string", "minLength": 1, "maxLength": _MAX_TASK_NAME_CHARS},
-        "prompt": {"type": "string", "minLength": 1},
+        "prompt": {"type": "string", "minLength": 1, "maxLength": _MAX_PROMPT_BYTES},
         "validators": {
             "type": "array",
             "items": {
@@ -52,134 +65,11 @@ _TASK_SCHEMA = {
                 "additionalProperties": False,
             },
         },
-        "depends_on": {"type": "array", "items": {"type": "string"}},
+        "depends_on": {"type": "array", "items": {"type": "string", "minLength": 1}},
     },
     "required": ["name", "prompt"],
     "additionalProperties": False,
 }
-
-TOOLS: tuple[dict[str, Any], ...] = (
-    {
-        "name": "mission_submit",
-        "description": (
-            "Explicitly start a durable Archetype coding mission and return "
-            "immediately with its run_id and status coordinates; the mission "
-            "keeps running after this process exits. Reusing the same "
-            "idempotency_key with identical inputs returns the original run. "
-            "Execution authority comes from the server-owned profile, never "
-            "from these arguments."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "profile_id": _OPAQUE_ID_SCHEMA,
-                "repository": {"type": "string", "minLength": 1},
-                "ref": {"type": "string", "minLength": 1},
-                "mission": {"type": "string", "minLength": 1},
-                "tasks": {"type": "array", "items": _TASK_SCHEMA, "minItems": 1},
-                "idempotency_key": _OPAQUE_ID_SCHEMA,
-            },
-            "required": [
-                "profile_id",
-                "repository",
-                "ref",
-                "mission",
-                "tasks",
-                "idempotency_key",
-            ],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "mission_get",
-        "description": "Read the bounded status projection of one mission run.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"run_id": _OPAQUE_ID_SCHEMA},
-            "required": ["run_id"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "mission_events",
-        "description": (
-            "Read ordered mission-run events after an opaque cursor; replay "
-            "from the same cursor has no gaps or duplicates."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "run_id": _OPAQUE_ID_SCHEMA,
-                "after": _OPAQUE_ID_SCHEMA,
-                "limit": {"type": "integer", "minimum": 1},
-            },
-            "required": ["run_id"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "mission_result",
-        "description": (
-            "Read the immutable terminal result of one mission run; fails "
-            "with not_ready while the run is nonterminal."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {"run_id": _OPAQUE_ID_SCHEMA},
-            "required": ["run_id"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "mission_cancel",
-        "description": (
-            "Record durable cancellation intent for one mission run; repeat "
-            "calls are idempotent and completion races resolve to the "
-            "committed execution fact."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {"run_id": _OPAQUE_ID_SCHEMA},
-            "required": ["run_id"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "mission_list",
-        "description": "List mission runs owned by the authenticated principal.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"limit": {"type": "integer", "minimum": 1}},
-            "additionalProperties": False,
-        },
-    },
-)
-
-
-def _server_version() -> str:
-    try:
-        return version("archetype-missions")
-    except PackageNotFoundError:  # pragma: no cover - source-tree fallback
-        return "0.0.0"
-
-
-class _Diagnostics:
-    """Bounded stderr sink that redacts the configured credential."""
-
-    def __init__(self, stream: TextIO, secrets: tuple[str, ...]) -> None:
-        self._stream = stream
-        self._secrets = tuple(secret for secret in secrets if secret)
-
-    def emit(self, text: str) -> None:
-        for secret in self._secrets:
-            text = text.replace(secret, "[redacted]")
-        line = " ".join(text.split())
-        encoded = line.encode("utf-8", errors="replace")[:_MAX_DIAGNOSTIC_BYTES]
-        try:
-            self._stream.write(f"{SERVER_NAME}: {encoded.decode('utf-8', errors='replace')}\n")
-            self._stream.flush()
-        except OSError:  # pragma: no cover - diagnostics must never kill frames
-            pass
 
 
 def _require_string(value: object, *, label: str, max_chars: int) -> str:
@@ -223,6 +113,255 @@ def _require_arguments(params: object) -> dict[str, Any]:
     if params is None:
         return {}
     return _string_keyed(params, label="arguments")
+
+
+def _validate_opaque_id(value: object, label: str) -> str:
+    return require_opaque_id(value, label=label)
+
+
+def _validate_line(value: object, label: str) -> str:
+    return _require_string(value, label=label, max_chars=_MAX_COORDINATE_CHARS)
+
+
+def _validate_limit(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise MissionToolError("invalid_argument", f"{label} must be a positive integer")
+    return value
+
+
+def _validate_validators(validators: object, *, label: str) -> list[dict[str, Any]]:
+    if not isinstance(validators, list):
+        raise MissionToolError("invalid_argument", f"{label} must be an array")
+    clean: list[dict[str, Any]] = []
+    for position, raw_validator in enumerate(validators):
+        item_label = f"{label}[{position}]"
+        validator = _string_keyed(raw_validator, label=item_label)
+        _reject_unknown(validator, {"name", "argv"})
+        name = validator.get("name")
+        argv = validator.get("argv")
+        if not isinstance(name, str) or not name:
+            raise MissionToolError(
+                "invalid_argument", f"{item_label}.name must be a non-empty string"
+            )
+        if not isinstance(argv, list) or any(not isinstance(item, str) for item in argv):
+            raise MissionToolError(
+                "invalid_argument", f"{item_label}.argv must be an array of strings"
+            )
+        clean.append({"name": name, "argv": argv})
+    return clean
+
+
+def _validate_tasks(tasks: object, label: str) -> list[dict[str, Any]]:
+    if not isinstance(tasks, list) or not tasks:
+        raise MissionToolError("invalid_argument", f"{label} must be a non-empty array")
+    if len(tasks) > _MAX_TASKS:
+        raise MissionToolError(
+            "invalid_argument", f"{label} must contain at most {_MAX_TASKS} items"
+        )
+    validated: list[dict[str, Any]] = []
+    for index, raw_task in enumerate(tasks):
+        task = _string_keyed(raw_task, label=f"{label}[{index}]")
+        _reject_unknown(task, _TASK_KEYS)
+        name = task.get("name")
+        if not isinstance(name, str) or not name or len(name) > _MAX_TASK_NAME_CHARS:
+            raise MissionToolError(
+                "invalid_argument", f"{label}[{index}].name must be a short string"
+            )
+        prompt = task.get("prompt")
+        if (
+            not isinstance(prompt, str)
+            or not prompt
+            or len(prompt.encode("utf-8")) > _MAX_PROMPT_BYTES
+        ):
+            raise MissionToolError(
+                "invalid_argument",
+                f"{label}[{index}].prompt must be a non-empty string of at "
+                f"most {_MAX_PROMPT_BYTES} bytes",
+            )
+        clean: dict[str, Any] = {"name": name, "prompt": prompt}
+        if "validators" in task:
+            clean["validators"] = _validate_validators(
+                task["validators"], label=f"{label}[{index}].validators"
+            )
+        if "depends_on" in task:
+            depends_on = task["depends_on"]
+            if not isinstance(depends_on, list) or any(
+                not isinstance(item, str) or not item for item in depends_on
+            ):
+                raise MissionToolError(
+                    "invalid_argument",
+                    f"{label}[{index}].depends_on must be an array of task names",
+                )
+            clean["depends_on"] = depends_on
+        validated.append(clean)
+    return validated
+
+
+# One row per argument kind: (advertised JSON Schema fragment, runtime
+# validator). Both sides of every tool argument come from this table.
+_ARGUMENT_KINDS: dict[str, tuple[dict[str, Any], Callable[[object, str], Any]]] = {
+    "opaque_id": (
+        {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": _MAX_OPAQUE_ID_CHARS,
+            "pattern": OPAQUE_ID_PATTERN,
+        },
+        _validate_opaque_id,
+    ),
+    "line": (
+        {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": _MAX_COORDINATE_CHARS,
+            "pattern": _LINE_PATTERN,
+        },
+        _validate_line,
+    ),
+    "limit": ({"type": "integer", "minimum": 1}, _validate_limit),
+    "tasks": (
+        {"type": "array", "items": _TASK_SCHEMA, "minItems": 1, "maxItems": _MAX_TASKS},
+        _validate_tasks,
+    ),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _ToolSpec:
+    """One mission tool: name, description, client method, argument rows."""
+
+    name: str
+    description: str
+    client_method: str
+    arguments: tuple[tuple[str, str, bool], ...]  # (argument, kind, required)
+
+
+_TOOL_SPECS: tuple[_ToolSpec, ...] = (
+    _ToolSpec(
+        name="mission_submit",
+        description=(
+            "Explicitly start a durable Archetype coding mission and return "
+            "immediately with its run_id and status coordinates; the mission "
+            "keeps running after this process exits. Reusing the same "
+            "idempotency_key with identical inputs returns the original run. "
+            "Execution authority comes from the server-owned profile, never "
+            "from these arguments."
+        ),
+        client_method="submit",
+        arguments=(
+            ("profile_id", "opaque_id", True),
+            ("repository", "line", True),
+            ("ref", "line", True),
+            ("mission", "line", True),
+            ("tasks", "tasks", True),
+            ("idempotency_key", "opaque_id", True),
+        ),
+    ),
+    _ToolSpec(
+        name="mission_get",
+        description="Read the bounded status projection of one mission run.",
+        client_method="get",
+        arguments=(("run_id", "opaque_id", True),),
+    ),
+    _ToolSpec(
+        name="mission_events",
+        description=(
+            "Read ordered mission-run events after an opaque cursor; replay "
+            "from the same cursor has no gaps or duplicates."
+        ),
+        client_method="events",
+        arguments=(
+            ("run_id", "opaque_id", True),
+            ("after", "opaque_id", False),
+            ("limit", "limit", False),
+        ),
+    ),
+    _ToolSpec(
+        name="mission_result",
+        description=(
+            "Read the immutable terminal result of one mission run; fails "
+            "with not_ready while the run is nonterminal."
+        ),
+        client_method="result",
+        arguments=(("run_id", "opaque_id", True),),
+    ),
+    _ToolSpec(
+        name="mission_cancel",
+        description=(
+            "Record durable cancellation intent for one mission run; repeat "
+            "calls are idempotent and completion races resolve to the "
+            "committed execution fact."
+        ),
+        client_method="cancel",
+        arguments=(("run_id", "opaque_id", True),),
+    ),
+    _ToolSpec(
+        name="mission_list",
+        description="List mission runs owned by the authenticated principal.",
+        client_method="list_runs",
+        arguments=(("limit", "limit", False),),
+    ),
+)
+
+_SPECS_BY_NAME = {spec.name: spec for spec in _TOOL_SPECS}
+
+
+def _input_schema(spec: _ToolSpec) -> dict[str, Any]:
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            argument: dict(_ARGUMENT_KINDS[kind][0]) for argument, kind, _ in spec.arguments
+        },
+        "additionalProperties": False,
+    }
+    required = [argument for argument, _, is_required in spec.arguments if is_required]
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def _validate_arguments(spec: _ToolSpec, arguments: dict[str, Any]) -> dict[str, Any]:
+    _reject_unknown(arguments, {argument for argument, _, _ in spec.arguments})
+    validated: dict[str, Any] = {}
+    for argument, kind, is_required in spec.arguments:
+        if argument not in arguments:
+            if is_required:
+                raise MissionToolError("invalid_argument", f"missing required argument: {argument}")
+            continue
+        validated[argument] = _ARGUMENT_KINDS[kind][1](arguments[argument], argument)
+    return validated
+
+
+TOOLS: tuple[dict[str, Any], ...] = tuple(
+    {"name": spec.name, "description": spec.description, "inputSchema": _input_schema(spec)}
+    for spec in _TOOL_SPECS
+)
+
+
+def _server_version() -> str:
+    try:
+        return version("archetype-missions")
+    except PackageNotFoundError:  # pragma: no cover - source-tree fallback
+        return "0.0.0"
+
+
+class _Diagnostics:
+    """Bounded stderr sink that redacts the configured credential."""
+
+    def __init__(self, stream: TextIO, secrets: tuple[str, ...]) -> None:
+        self._stream = stream
+        self._secrets = tuple(secret for secret in secrets if secret)
+
+    def emit(self, text: str) -> None:
+        for secret in self._secrets:
+            text = text.replace(secret, "[redacted]")
+        line = " ".join(text.split())
+        encoded = line.encode("utf-8", errors="replace")[:_MAX_DIAGNOSTIC_BYTES]
+        try:
+            self._stream.write(f"{SERVER_NAME}: {encoded.decode('utf-8', errors='replace')}\n")
+            self._stream.flush()
+        except OSError:  # pragma: no cover - diagnostics must never kill frames
+            pass
 
 
 class MissionMcpServer:
@@ -327,20 +466,13 @@ class MissionMcpServer:
         name = params.get("name")
         if not isinstance(name, str):
             return _error_frame(request_id, -32602, "Invalid params")
-        handlers = {
-            "mission_submit": self._call_submit,
-            "mission_get": self._call_get,
-            "mission_events": self._call_events,
-            "mission_result": self._call_result,
-            "mission_cancel": self._call_cancel,
-            "mission_list": self._call_list,
-        }
-        handler = handlers.get(name)
-        if handler is None:
+        spec = _SPECS_BY_NAME.get(name)
+        if spec is None:
             return _error_frame(request_id, -32602, f"Unknown tool: {name}")
         try:
             arguments = _require_arguments(params.get("arguments"))
-            payload = handler(arguments)
+            validated = _validate_arguments(spec, arguments)
+            payload = getattr(self._client, spec.client_method)(**validated)
         except MissionToolError as exc:
             self._diagnostics.emit(f"tool {name} failed: {exc.code}")
             return _result_frame(
@@ -365,150 +497,6 @@ class MissionMcpServer:
                 ),
             )
         return _result_frame(request_id, self._tool_content(payload, is_error=False))
-
-    # -- tool handlers ------------------------------------------------------
-
-    def _call_submit(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        _reject_unknown(
-            arguments,
-            {"profile_id", "repository", "ref", "mission", "tasks", "idempotency_key"},
-        )
-        for field in (
-            "profile_id",
-            "repository",
-            "ref",
-            "mission",
-            "tasks",
-            "idempotency_key",
-        ):
-            if field not in arguments:
-                raise MissionToolError("invalid_argument", f"missing required argument: {field}")
-        return self._client.submit(
-            profile_id=require_opaque_id(arguments["profile_id"], label="profile_id"),
-            repository=_require_string(
-                arguments["repository"],
-                label="repository",
-                max_chars=_MAX_COORDINATE_CHARS,
-            ),
-            ref=_require_string(arguments["ref"], label="ref", max_chars=_MAX_COORDINATE_CHARS),
-            mission=_require_string(
-                arguments["mission"], label="mission", max_chars=_MAX_COORDINATE_CHARS
-            ),
-            tasks=self._validated_tasks(arguments["tasks"]),
-            idempotency_key=require_opaque_id(
-                arguments["idempotency_key"], label="idempotency_key"
-            ),
-        )
-
-    def _validated_tasks(self, tasks: object) -> list[dict[str, Any]]:
-        if not isinstance(tasks, list) or not tasks:
-            raise MissionToolError("invalid_argument", "tasks must be a non-empty array")
-        if len(tasks) > self._config.max_tasks:
-            raise MissionToolError(
-                "invalid_argument",
-                f"tasks must contain at most {self._config.max_tasks} items",
-            )
-        validated: list[dict[str, Any]] = []
-        for index, raw_task in enumerate(tasks):
-            task = _string_keyed(raw_task, label=f"tasks[{index}]")
-            _reject_unknown(task, _TASK_KEYS)
-            name = task.get("name")
-            if not isinstance(name, str) or not name or len(name) > _MAX_TASK_NAME_CHARS:
-                raise MissionToolError(
-                    "invalid_argument", f"tasks[{index}].name must be a short string"
-                )
-            prompt = task.get("prompt")
-            if (
-                not isinstance(prompt, str)
-                or not prompt
-                or len(prompt.encode("utf-8")) > self._config.max_prompt_bytes
-            ):
-                raise MissionToolError(
-                    "invalid_argument",
-                    f"tasks[{index}].prompt must be a non-empty string of at "
-                    f"most {self._config.max_prompt_bytes} bytes",
-                )
-            clean: dict[str, Any] = {"name": name, "prompt": prompt}
-            if "validators" in task:
-                clean["validators"] = self._validated_validators(task["validators"], index=index)
-            if "depends_on" in task:
-                depends_on = task["depends_on"]
-                if not isinstance(depends_on, list) or any(
-                    not isinstance(item, str) or not item for item in depends_on
-                ):
-                    raise MissionToolError(
-                        "invalid_argument",
-                        f"tasks[{index}].depends_on must be an array of task names",
-                    )
-                clean["depends_on"] = depends_on
-            validated.append(clean)
-        return validated
-
-    @staticmethod
-    def _validated_validators(validators: object, *, index: int) -> list[dict[str, Any]]:
-        if not isinstance(validators, list):
-            raise MissionToolError(
-                "invalid_argument", f"tasks[{index}].validators must be an array"
-            )
-        clean: list[dict[str, Any]] = []
-        for position, raw_validator in enumerate(validators):
-            label = f"tasks[{index}].validators[{position}]"
-            validator = _string_keyed(raw_validator, label=label)
-            _reject_unknown(validator, {"name", "argv"})
-            name = validator.get("name")
-            argv = validator.get("argv")
-            if not isinstance(name, str) or not name:
-                raise MissionToolError(
-                    "invalid_argument", f"{label}.name must be a non-empty string"
-                )
-            if not isinstance(argv, list) or any(not isinstance(item, str) for item in argv):
-                raise MissionToolError(
-                    "invalid_argument", f"{label}.argv must be an array of strings"
-                )
-            clean.append({"name": name, "argv": argv})
-        return clean
-
-    def _call_get(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        _reject_unknown(arguments, {"run_id"})
-        return self._client.get(self._run_id(arguments))
-
-    def _call_events(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        _reject_unknown(arguments, {"run_id", "after", "limit"})
-        after = arguments.get("after")
-        if after is not None:
-            after = require_opaque_id(after, label="after")
-        return self._client.events(
-            self._run_id(arguments),
-            after=after,
-            limit=self._limit_argument(arguments),
-        )
-
-    def _call_result(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        _reject_unknown(arguments, {"run_id"})
-        return self._client.result(self._run_id(arguments))
-
-    def _call_cancel(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        _reject_unknown(arguments, {"run_id"})
-        return self._client.cancel(self._run_id(arguments))
-
-    def _call_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        _reject_unknown(arguments, {"limit"})
-        return self._client.list_runs(limit=self._limit_argument(arguments))
-
-    @staticmethod
-    def _limit_argument(arguments: dict[str, Any]) -> int | None:
-        if "limit" not in arguments:
-            return None
-        value = arguments["limit"]
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise MissionToolError("invalid_argument", "limit must be a positive integer")
-        return value
-
-    @staticmethod
-    def _run_id(arguments: dict[str, Any]) -> str:
-        if "run_id" not in arguments:
-            raise MissionToolError("invalid_argument", "missing required argument: run_id")
-        return require_opaque_id(arguments["run_id"], label="run_id")
 
     # -- rendering ----------------------------------------------------------
 

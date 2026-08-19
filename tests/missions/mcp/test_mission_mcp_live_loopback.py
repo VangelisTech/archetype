@@ -17,7 +17,6 @@ in ``conftest.py`` and the real MissionRun REST surface:
 from __future__ import annotations
 
 import io
-import json
 import os
 import uuid
 
@@ -25,17 +24,20 @@ import pytest
 
 from archetype.missions.mcp.config import McpHostConfig
 from archetype.missions.mcp.server import MissionMcpServer
+from tests.missions.mcp.conftest import call_tool
 
 LOOPBACK_URL_ENV = "ARCHETYPE_MISSIONS_MCP_LOOPBACK_URL"
 LOOPBACK_CREDENTIAL_ENV = "ARCHETYPE_MISSIONS_MCP_LOOPBACK_CREDENTIAL"
 LOOPBACK_PROFILE_ENV = "ARCHETYPE_MISSIONS_MCP_LOOPBACK_PROFILE"
 LOOPBACK_REPOSITORY_ENV = "ARCHETYPE_MISSIONS_MCP_LOOPBACK_REPOSITORY"
 
-# The adapter's REST surface, exactly as documented in issue #809 plus the
-# principal-scoped list route required by issue #810 (OPEN Q: #809 does not
-# document a list route; the PR body records the GET-collection assumption).
+# The adapter's REST surface: the five routes documented in issue #809 plus
+# the principal-scoped GET collection that mission_list targets (OPEN Q:
+# #809 does not document a list route; the PR body records the assumption,
+# and this set drift-enforces it once the real routes land).
 ADAPTER_ROUTES = {
     ("POST", "/v1/mission-runs"),
+    ("GET", "/v1/mission-runs"),
     ("GET", "/v1/mission-runs/{run_id}"),
     ("GET", "/v1/mission-runs/{run_id}/events"),
     ("GET", "/v1/mission-runs/{run_id}/result"),
@@ -103,16 +105,7 @@ def test_live_loopback_roundtrip():
     server = MissionMcpServer(config, stderr=io.StringIO())
 
     def tool(name: str, arguments: dict) -> tuple[bool, dict]:
-        frame = server.handle_message(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": name, "arguments": arguments},
-            }
-        )
-        result = frame["result"]
-        return result["isError"], json.loads(result["content"][0]["text"])
+        return call_tool(server, name, arguments)
 
     try:
         submit = {

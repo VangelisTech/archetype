@@ -22,8 +22,6 @@ ENV_CREDENTIAL_FILE = "ARCHETYPE_MISSIONS_MCP_CREDENTIAL_FILE"
 ENV_TIMEOUT_SECONDS = "ARCHETYPE_MISSIONS_MCP_TIMEOUT_SECONDS"
 ENV_MAX_EVENTS_PAGE = "ARCHETYPE_MISSIONS_MCP_MAX_EVENTS_PAGE"
 ENV_MAX_RESULT_BYTES = "ARCHETYPE_MISSIONS_MCP_MAX_RESULT_BYTES"
-ENV_MAX_TASKS = "ARCHETYPE_MISSIONS_MCP_MAX_TASKS"
-ENV_MAX_PROMPT_BYTES = "ARCHETYPE_MISSIONS_MCP_MAX_PROMPT_BYTES"
 
 _DEFAULT_BASE_URL = "http://localhost:8000"
 
@@ -102,8 +100,6 @@ class McpHostConfig:
     timeout_seconds: float
     max_events_page: int
     max_result_bytes: int
-    max_tasks: int
-    max_prompt_bytes: int
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> McpHostConfig:
@@ -116,6 +112,4 @@ class McpHostConfig:
             timeout_seconds=_positive_float(source, ENV_TIMEOUT_SECONDS, 30.0),
             max_events_page=_positive_int(source, ENV_MAX_EVENTS_PAGE, 100),
             max_result_bytes=_positive_int(source, ENV_MAX_RESULT_BYTES, 65536),
-            max_tasks=_positive_int(source, ENV_MAX_TASKS, 32),
-            max_prompt_bytes=_positive_int(source, ENV_MAX_PROMPT_BYTES, 65536),
         )
