@@ -39,10 +39,10 @@ _LIBRARY_IMPORTS = {
 }
 _OPERATION_COUNTS = {
     "base": 37,
-    "missions": 47,
+    "missions": 48,
     "physical-ai": 38,
     "research": 38,
-    "all": 49,
+    "all": 50,
 }
 
 
