@@ -855,6 +855,22 @@ benchmarks = []
 profiles = ["main", "release"]
 
 [[contract]]
+id = "missions.mcp.trusted_host_adapter"
+source = "docs/guide/agent-missions.md"
+section = "11. Mission MCP server"
+owner = "missions"
+risk = "high"
+pytest = [
+  "tests/missions/mcp/test_mission_mcp_protocol.py",
+  "tests/missions/mcp/test_mission_mcp_rest_contract.py",
+  "tests/missions/mcp/test_mission_mcp_hostile_args.py",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "missions.agent_v1.public_authoring"
 source = "docs/guide/agent-missions.md"
 section = "2. Public authoring surface"

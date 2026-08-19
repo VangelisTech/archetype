@@ -296,6 +296,7 @@ dependencies = [
     { name = "archetype-ecs" },
     { name = "daft" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "pydantic" },
     { name = "uuid-utils" },
 ]
@@ -310,6 +311,7 @@ requires-dist = [
     { name = "archetype-ecs", editable = "packages/archetype-ecs" },
     { name = "daft", specifier = ">=0.7.19" },
     { name = "fastapi", specifier = ">=0.110" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.5.2" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "uuid-utils", specifier = ">=0.11.0" },
