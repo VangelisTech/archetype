@@ -96,6 +96,37 @@
 | `base_ref` | `str` | `'main'` |
 | `world_id` | `str` | `''` |
 
+::: archetype.missions.MissionRun
+    options:
+      members: false
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `run_id` | `str` | `required` |
+| `principal` | `str` | `required` |
+| `idempotency_key` | `str` | `required` |
+| `request_digest` | `str` | `required` |
+| `profile` | `ExecutionProfileIdentity` | `required` |
+| `status` | `MissionRunStatus` | `required` |
+| `submission` | `MissionSubmission` | `required` |
+| `world_id` | `str` | `''` |
+| `mission_id` | `int \| None` | `None` |
+| `episode_id` | `str` | `''` |
+| `task_ids` | `tuple[tuple[str, int], ...]` | `()` |
+| `active_operation` | `str` | `''` |
+| `active_activity_kind` | `str` | `''` |
+| `active_activity_id` | `str` | `''` |
+| `cancellation_intent` | `bool` | `False` |
+| `cancellation_reason` | `str` | `''` |
+| `result` | `MissionResult \| None` | `None` |
+| `cleanup_state` | `MissionRunCleanupState` | `'none'` |
+| `cleanup_error` | `str` | `''` |
+| `accepted_at_ms` | `int` | `0` |
+| `running_at_ms` | `int \| None` | `None` |
+| `terminal_at_ms` | `int \| None` | `None` |
+| `updated_at_ms` | `int` | `0` |
+| `interrupted_reason` | `str` | `''` |
+
 ::: archetype.missions.MissionResult
     options:
       members: false

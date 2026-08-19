@@ -37,7 +37,14 @@ from archetype.missions.contracts import (
     CommandValidator,
     SubmittedMission,
 )
-from archetype.missions.models import RestoreMissionSandbox, RunMission, SubmitMission
+from archetype.missions.models import (
+    AcceptMissionRun,
+    CancelMissionRun,
+    GetMissionRun,
+    RestoreMissionSandbox,
+    RunMission,
+    SubmitMission,
+)
 from archetype.missions.runtime import Missions, MissionWorld
 from archetype.missions.sandboxes import CheckpointRef
 from archetype.missions.trajectories import ClaudeTranscriptSource, TrajectorySelection
@@ -78,6 +85,9 @@ _PULL_FORWARD_MODELS: tuple[type[BaseModel], ...] = (
     SubmitMission,
     RunMission,
     RestoreMissionSandbox,
+    AcceptMissionRun,
+    GetMissionRun,
+    CancelMissionRun,
 )
 _ACTOR_AWARE_NAMES = frozenset(
     {
@@ -168,7 +178,7 @@ def test_shipped_server_cli_receipt_is_complete_bounded_and_redacted(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_trusted_runtime_reaches_all_thirteen_models_and_reserved_spawn(
+async def test_trusted_runtime_reaches_all_sixteen_models_and_reserved_spawn(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -348,8 +358,17 @@ async def test_trusted_runtime_reaches_all_thirteen_models_and_reserved_spawn(
         )
         await missions.run(submitted, max_ticks=1)
         await missions.restore_sandbox(submitted, checkpoint)
+        await missions.accept(
+            repository="repo",
+            branch="branch",
+            tasks=(task,),
+            principal="agent:runtime-loopback",
+            idempotency_key="mission-run-1",
+        )
+        await missions.get_run("run-1")
+        await missions.cancel_run("run-1", reason="stop")
 
-        assert len(captured) == 13
+        assert len(captured) == 16
         assert {type(operation) for operation in captured} == set(_PULL_FORWARD_MODELS)
         assert all(
             sum(type(operation) is model for operation in captured) == 1

@@ -344,16 +344,20 @@ exhausted review budget raises while leaving the task pending review.
 The handle owns a strongly registered workflow reservation. Its first submit
 or run constructs and binds the internal mission service exactly once; later
 operations resolve that same owner without a parallel service registry.
-`SubmittedMission` carries the exact durable World identity. Therefore a
+`Missions.accept()` records a durable `MissionRun` and returns its `run_id`
+before SubmitMission or RunMission complete. Closing the initiating coroutine
+does not cancel that run. `SubmittedMission` carries the exact durable World
+identity. Therefore a
 replacement process can recreate the handle with the same storage coordinates
-and call `run(submitted)` directly: wiring binds the Activity projector before
+and call `run(submitted)` or `get_run(run_id)` directly: wiring binds the Activity projector before
 mutable World reconstruction, reinstalls process-local processors, resources,
 and hooks, and reconciles provider-bound work instead of replaying it. Closing the handle
 strictly stops and drains the reservation's exact-task admission before it
 joins supervised critic work and closes sandbox resources plus its exact
 mission-world cleanup without closing the parent runtime. Facade calls and the
-registered direct `SubmitMission`, `RunMission`, and
-`RestoreMissionSandbox` handlers share that owner gate, beginning before first
+registered direct `SubmitMission`, `RunMission`, `RestoreMissionSandbox`,
+`AcceptMissionRun`, `GetMissionRun`, and `CancelMissionRun` handlers share that
+owner gate, beginning before first
 service construction or lookup. Therefore close drains work admitted through
 either ingress, while late direct work rejects before construction or provider
 effect. A failed cleanup
@@ -363,7 +367,8 @@ exact-world cleanup finishes, a later mission-world close failure retries only
 the world-close stage rather than reusing the consumed cleanup lease.
 
 `Missions` imports no concrete application service. It dispatches
-`SubmitMission`, `RunMission`, and `RestoreMissionSandbox`; wiring constructs
+`SubmitMission`, `RunMission`, `RestoreMissionSandbox`, `AcceptMissionRun`,
+`GetMissionRun`, and `CancelMissionRun`; wiring constructs
 the handler-side service with the same reservation. V1 is async-only, so sync
 parity is outside the 0.6 world-library contract permitted by R5.
 

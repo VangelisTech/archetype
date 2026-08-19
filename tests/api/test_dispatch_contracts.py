@@ -63,6 +63,9 @@ _PULL_FORWARD_MODEL_BOUNDARIES = (
         "RestoreMissionSandbox",
         "restore_mission_sandbox",
     ),
+    ("archetype.missions.models", "AcceptMissionRun", "accept_mission_run"),
+    ("archetype.missions.models", "GetMissionRun", "get_mission_run"),
+    ("archetype.missions.models", "CancelMissionRun", "cancel_mission_run"),
 )
 _ACTOR_MODEL_BOUNDARIES = (
     ("archetype.research.models", "AutoResearch", "autoresearch"),

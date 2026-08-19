@@ -946,13 +946,17 @@ Component.
 | Snapshot sanitization | Credentials are removed before capture; provider snapshots remain trusted recovery objects rather than published artifacts. | Quarantine/scan before any cross-provider or R2 publication. |
 | Prefab mission libraries | Direct materialization remains authoritative. | Author reusable graphs after generic prefab registry contracts settle. |
 
-`SubmittedMission.world_id` is the cold-recovery coordinate. After process
+`SubmittedMission.world_id` is the cold-recovery coordinate for an already
+materialized mission. `MissionRun.run_id` is the external asynchronous handle
+for a request that may not yet have a World or Mission. After process
 loss, construct `Missions(runtime, ...)` with the same storage configuration and
-pass the retained submission directly to `run()`. The replacement handle binds
-the required projector before resuming that exact World writer, then reinstalls
-the process-local Mission behavior. A provider-bound Activity is reconciled by
-its recorded operation identity; cold recovery never creates a second Mission
-or blindly repeats the provider operation.
+pass the retained `run_id` to `get_run()`. The replacement handle reconstructs
+supervised execution from durable MissionRun state. Mission creation is keyed
+by that `run_id`; recovery cannot create a second World or Mission. A
+provider-bound Activity is reconciled by its recorded operation identity;
+unknown provider completion becomes `interrupted`, never a fabricated
+`failed` or `succeeded` result. The in-process `run(submitted)` path remains
+available for already-submitted missions.
 
 ### Current v0.6 control-plane contract
 
@@ -1052,7 +1056,8 @@ finalization. This replaces ambient cleanup authority without weakening the
 landed create/replace/close race guarantees.
 
 That reservation covers each entire `Missions` operation — `submit`,
-`run`, explicitly rejected `restore_sandbox`, and `query` — not only individual world
+`accept`, `get_run`, `cancel_run`, `run`, explicitly rejected `restore_sandbox`,
+and `query` — not only individual world
 steps or provider subprocesses. The run enters through the registered
 dispatcher operation before it may construct or schedule work and remains
 counted as admitted until its resource ownership is either registered or
@@ -1079,6 +1084,10 @@ The implementation follows this layout:
 | File | Owns |
 |---|---|
 | `archetype/missions/contracts.py` | Supported authoring, configuration, and result values. |
+| `archetype/missions/run_contracts.py` | Durable `MissionRun` values, request digest, profile identity, and lifecycle edges. |
+| `archetype/missions/run_catalog.py` | SQLite persistence for MissionRun control records. |
+| `archetype/missions/run_lifecycle.py` | Idempotent accept, CAS transitions, and recovery meaning. |
+| `archetype/missions/run_supervisor.py` | Process-local supervision of SubmitMission/RunMission independent of the caller. |
 | `archetype/missions/components.py` | Mission, task, validator, candidate, critic, sandbox, execution, and output Components. |
 | `archetype/missions/relations.py` | Membership, dependency, guard, placement, candidate/review, and provenance Relations. |
 | `archetype/missions/transitions.py` | Small persisted status vocabularies and transition tables. |
@@ -1100,7 +1109,7 @@ The implementation follows this layout:
 | `packages/archetype-missions/src/archetype/missions/_extension.py` | Private manifest adapter, exact operation registration, family-internal construction, and binding into `RuntimeResources`. |
 | `packages/archetype-missions/src/archetype/missions/runtime.py` | `Missions` and `MissionWorld` typed adapters and workflow-handle lifecycle. |
 | `examples/11_coding_agent_mission.py` | Real typed dogfood script. |
-| `tests/missions/` | Family contract, transition, sandbox, harness, and provider oracles. |
+| `tests/missions/test_mission_run_lifecycle.py` | Durable MissionRun identity, idempotency, caller disconnect, restart, and interruption oracle. |
 | `tests/missions/test_mission_author_world_integration.py` | Exact committed author admission, staging, restart, and settlement oracle. |
 | `tests/missions/test_mission_critic_world_integration.py` | Exact committed critic admission, staging, restart, and settlement oracle. |
 | `tests/missions/test_modal_activity_executors.py` | Modal author and critic provider restart/reconciliation oracle. |

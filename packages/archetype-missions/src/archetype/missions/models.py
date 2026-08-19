@@ -17,6 +17,7 @@ from archetype.missions.contracts import (
     MissionSubmission,
     SubmittedMission,
 )
+from archetype.missions.run_contracts import MissionRunRequest
 from archetype.missions.sandboxes import CheckpointRef
 
 
@@ -40,6 +41,7 @@ class SubmitMission(_MissionOperation):
     config: AgentMissionConfig
     storage: str | Path | StorageConfig | None = None
     submission: MissionSubmission
+    predetermined_world_id: str = ""
 
 
 class RunMission(_MissionOperation):
@@ -59,6 +61,37 @@ class RestoreMissionSandbox(_MissionOperation):
     operation: Literal["restore_mission_sandbox"] = "restore_mission_sandbox"
     mission: SubmittedMission
     checkpoint: CheckpointRef
+
+
+class AcceptMissionRun(_MissionOperation):
+    """Admit one durable MissionRun and return its run_id before completion."""
+
+    operation: Literal["accept_mission_run"] = "accept_mission_run"
+    name: str
+    config: AgentMissionConfig
+    storage: str | Path | StorageConfig | None = None
+    request: MissionRunRequest
+
+
+class GetMissionRun(_MissionOperation):
+    """Load one durable MissionRun by run_id and resume supervision if needed."""
+
+    operation: Literal["get_mission_run"] = "get_mission_run"
+    name: str
+    config: AgentMissionConfig
+    storage: str | Path | StorageConfig | None = None
+    run_id: str
+
+
+class CancelMissionRun(_MissionOperation):
+    """Record cancellation intent for one MissionRun without erasing evidence."""
+
+    operation: Literal["cancel_mission_run"] = "cancel_mission_run"
+    name: str
+    config: AgentMissionConfig
+    storage: str | Path | StorageConfig | None = None
+    run_id: str
+    reason: str = ""
 
 
 def summarize_mission_operation(operation: _MissionOperation) -> Mapping[str, Any]:
@@ -87,12 +120,18 @@ def _complete_mission_models() -> None:
     }
     SubmitMission.model_rebuild(force=True, _types_namespace=namespace)
     RunMission.model_rebuild(force=True, _types_namespace=namespace)
+    AcceptMissionRun.model_rebuild(force=True, _types_namespace=namespace)
+    GetMissionRun.model_rebuild(force=True, _types_namespace=namespace)
+    CancelMissionRun.model_rebuild(force=True, _types_namespace=namespace)
 
 
 _complete_mission_models()
 
 
 __all__ = [
+    "AcceptMissionRun",
+    "CancelMissionRun",
+    "GetMissionRun",
     "RestoreMissionSandbox",
     "RunMission",
     "SubmitMission",

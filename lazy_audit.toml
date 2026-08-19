@@ -266,6 +266,20 @@ method = "to_pylist"
 reason = "Terminal task result boundary: task state is filtered to the submitted ids and left-joined lazily to first-class commit entities before the finite scalar rows become immutable TaskResult values returned by the public runtime API."
 
 [[entries]]
+path = "packages/archetype-missions/src/archetype/missions/service.py"
+symbol = "MissionService.recover_submitted"
+expr = "(await self._world.query(Mission)).select('entity_id', f'{mission_prefix}episode_id', f'{mission_prefix}repository', f'{mission_prefix}branch', f'{mission_prefix}base_ref').limit(1).to_pylist"
+method = "to_pylist"
+reason = "Crash-recovery identity extract: SubmitMission keyed by a predetermined world must rehydrate at most one persisted Mission row so recovery cannot spawn a second Mission; those scalar identity fields then enter Python control flow as SubmittedMission."
+
+[[entries]]
+path = "packages/archetype-missions/src/archetype/missions/service.py"
+symbol = "MissionService.recover_submitted"
+expr = "membership.join(names, left_on='task_entity_id', right_on='entity_id').select('task_name', 'task_entity_id').to_pylist"
+method = "to_pylist"
+reason = "Crash-recovery identity extract: PartOfMission edges are filtered to the recovered mission and joined lazily to Task names before the finite (name, entity_id) pairs become SubmittedMission.task_ids."
+
+[[entries]]
 path = "packages/archetype-physical-ai/src/archetype/physical_ai/_dataframe.py"
 symbol = "series_to_rows"
 expr = "s.to_pylist"
