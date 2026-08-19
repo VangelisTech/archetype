@@ -63,6 +63,11 @@ _MODEL_BOUNDARIES = (
     ("archetype.missions.models", "AcceptMissionRun", "accept_mission_run"),
     ("archetype.missions.models", "GetMissionRun", "get_mission_run"),
     ("archetype.missions.models", "CancelMissionRun", "cancel_mission_run"),
+    (
+        "archetype.missions.models",
+        "GetMissionRunEvents",
+        "get_mission_run_events",
+    ),
 )
 _EXPECTED_LITERALS = {
     model_name: literal for _module_name, model_name, literal in _MODEL_BOUNDARIES
@@ -369,7 +374,7 @@ def _forbidden_imports(source: str) -> set[str]:
 def test_pull_forward_inventory_is_exactly_sixteen_models() -> None:
     models = _canonical_models()
 
-    assert len(models) == 16
+    assert len(models) == 17
     assert set(models) == set(_EXPECTED_LITERALS)
     for module_name, model_name, literal in _MODEL_BOUNDARIES:
         model = models[model_name]
@@ -460,7 +465,7 @@ async def test_pull_forward_specs_have_exact_immediate_availability_and_are_non_
     specs_by_model = {spec.model.__name__: spec for spec in specs}
 
     assert len(_ACTOR_AWARE_MODELS) == 4
-    assert len(_TRUSTED_ONLY_MODELS) == 12
+    assert len(_TRUSTED_ONLY_MODELS) == 13
     assert set(specs_by_model) == set(_EXPECTED_LITERALS)
     for model_name, spec in specs_by_model.items():
         assert spec.name == _EXPECTED_LITERALS[model_name]
@@ -527,7 +532,7 @@ async def test_apply_as_rejects_other_nine_before_handler_provider_or_scheduler_
         with pytest.raises(PermissionError, match="not available to untrusted"):
             await dispatcher.apply_as(actor, _operation_instance(models[model_name]))
 
-    assert len(_TRUSTED_ONLY_MODELS) == 12
+    assert len(_TRUSTED_ONLY_MODELS) == 13
     assert effects == []
     assert scheduler.calls == []
 

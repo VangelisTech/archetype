@@ -59,6 +59,16 @@ CREATE TABLE IF NOT EXISTS mission_runs (
 CREATE INDEX IF NOT EXISTS mission_runs_open_idx
     ON mission_runs (status, accepted_at_ms)
     WHERE terminal_at_ms IS NULL;
+CREATE TABLE IF NOT EXISTS mission_run_events (
+    run_id TEXT NOT NULL,
+    cursor INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (run_id, cursor)
+);
 INSERT OR IGNORE INTO mission_run_catalog_meta (key, value)
     VALUES ('schema_version', '{_SCHEMA_VERSION}');
 """
@@ -155,8 +165,18 @@ class SqliteMissionRunCatalog:
 
         await self._run(_close)
 
-    async def insert_accepted(self, record: dict[str, object]) -> dict[str, object]:
-        """Insert one accepted run, or return the existing idempotent row."""
+    async def insert_accepted(
+        self,
+        record: dict[str, object],
+        *,
+        events: tuple[dict[str, object], ...] = (),
+    ) -> dict[str, object]:
+        """Insert one accepted run, or return the existing idempotent row.
+
+        ``events`` are appended in the same transaction only when the run row
+        is actually inserted, so idempotent replay never duplicates a logical
+        event.
+        """
 
         def _insert() -> dict[str, object]:
             conn = self._connect_sync()
@@ -190,6 +210,7 @@ class SqliteMissionRunCatalog:
                         record["updated_at_ms"],
                     ),
                 )
+                _append_events_sync(conn, str(record["run_id"]), events)
                 inserted = conn.execute(
                     "SELECT * FROM mission_runs WHERE run_id=?",
                     (record["run_id"],),
@@ -252,8 +273,13 @@ class SqliteMissionRunCatalog:
         expected_status: str,
         expected_updated_at_ms: int,
         values: dict[str, object],
+        events: tuple[dict[str, object], ...] = (),
     ) -> dict[str, object] | None:
-        """Apply one CAS update. Return the new row, or None if the predicate missed."""
+        """Apply one CAS update. Return the new row, or None if the predicate missed.
+
+        ``events`` are appended atomically with the update, so an event exists
+        exactly when its durable transition committed.
+        """
 
         assignments = [f"{column}=?" for column in values]
         parameters = [*values.values(), run_id, expected_status, expected_updated_at_ms]
@@ -270,6 +296,7 @@ class SqliteMissionRunCatalog:
                 )
                 if conn.execute("SELECT changes()").fetchone()[0] != 1:
                     return None
+                _append_events_sync(conn, run_id, events)
                 row = conn.execute(
                     "SELECT * FROM mission_runs WHERE run_id=?",
                     (run_id,),
@@ -278,6 +305,61 @@ class SqliteMissionRunCatalog:
                 return dict(row)
 
         return await self._run(_update)
+
+    async def list_events(
+        self,
+        run_id: str,
+        *,
+        after: int = 0,
+        limit: int = 100,
+    ) -> tuple[dict[str, object], ...]:
+        """Return one ordered event page strictly after ``after``."""
+
+        def _list() -> tuple[dict[str, object], ...]:
+            rows = (
+                self._connect_sync()
+                .execute(
+                    "SELECT * FROM mission_run_events WHERE run_id=? AND cursor>? "
+                    "ORDER BY cursor ASC LIMIT ?",
+                    (run_id, after, limit),
+                )
+                .fetchall()
+            )
+            return tuple(dict(row) for row in rows)
+
+        return await self._run(_list)
+
+
+def _append_events_sync(
+    conn: sqlite3.Connection,
+    run_id: str,
+    events: tuple[dict[str, object], ...],
+) -> None:
+    """Append events with a contiguous run-local cursor inside a transaction."""
+
+    if not events:
+        return
+    row = conn.execute(
+        "SELECT COALESCE(MAX(cursor), 0) FROM mission_run_events WHERE run_id=?",
+        (run_id,),
+    ).fetchone()
+    cursor = int(row[0])
+    for event in events:
+        cursor += 1
+        conn.execute(
+            "INSERT INTO mission_run_events ("
+            "run_id, cursor, schema_version, event_type, phase, payload_json, created_at_ms"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                cursor,
+                event["schema_version"],
+                event["event_type"],
+                event["phase"],
+                event["payload_json"],
+                event["created_at_ms"],
+            ),
+        )
 
 
 def encode_json(value: object) -> str:

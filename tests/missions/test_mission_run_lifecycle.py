@@ -388,3 +388,102 @@ async def test_same_key_returns_original_run_without_second_submit(tmp_path) -> 
     assert executor.submits == 1
     bound = submitted_from_run(await lifecycle.get(first.run_id))
     assert bound.world_id == first.world_id
+
+
+@pytest.mark.asyncio
+async def test_accept_appends_one_event_and_idempotent_replay_appends_none(
+    lifecycle: MissionRunLifecycle,
+) -> None:
+    run = await lifecycle.accept(_request(), execution_profile_identity(_config()))
+    replay = await lifecycle.accept(_request(), execution_profile_identity(_config()))
+
+    events = await lifecycle.events(run.run_id)
+    assert replay.run_id == run.run_id
+    assert [(event.cursor, event.event_type, event.phase) for event in events] == [
+        (1, "accepted", "admission"),
+    ]
+    assert events[0].event_id == f"{run.run_id}/1"
+    assert events[0].schema_version == 1
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_events_are_contiguous_ordered_and_exactly_once(
+    tmp_path,
+) -> None:
+    executor = _FakeExecutor()
+    lifecycle, supervisor = _supervisor(tmp_path, executor)
+    run = await lifecycle.accept(_request(), execution_profile_identity(_config()))
+    task = supervisor.ensure(run)
+    assert task is not None
+    await asyncio.wait_for(task, timeout=2)
+
+    events = await lifecycle.events(run.run_id)
+    assert [event.cursor for event in events] == list(range(1, len(events) + 1))
+    assert [event.event_type for event in events] == [
+        "accepted",
+        "running",
+        "mission_bound",
+        "succeeded",
+    ]
+    assert [event.phase for event in events] == [
+        "admission",
+        "execution",
+        "execution",
+        "terminal",
+    ]
+    stamps = [event.created_at_ms for event in events]
+    assert stamps == sorted(stamps)
+    assert events[2].payload["mission_id"] == 1
+    assert events[3].payload["has_result"] is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_events_record_intent_before_terminal_and_never_duplicate(
+    lifecycle: MissionRunLifecycle,
+) -> None:
+    run = await lifecycle.accept(_request(), execution_profile_identity(_config()))
+    cancelled = await lifecycle.record_cancellation_intent(run, reason="operator stop")
+    again = await lifecycle.record_cancellation_intent(cancelled, reason="operator stop")
+
+    events = await lifecycle.events(run.run_id)
+    assert again.status is MissionRunStatus.CANCELLED
+    assert [event.event_type for event in events] == [
+        "accepted",
+        "cancel_requested",
+        "cancelled",
+    ]
+    assert events[1].payload["reason"] == "operator stop"
+
+
+@pytest.mark.asyncio
+async def test_event_replay_after_cursor_has_no_gaps_or_duplicates(
+    tmp_path,
+) -> None:
+    executor = _FakeExecutor()
+    lifecycle, supervisor = _supervisor(tmp_path, executor)
+    run = await lifecycle.accept(_request(), execution_profile_identity(_config()))
+    task = supervisor.ensure(run)
+    assert task is not None
+    await asyncio.wait_for(task, timeout=2)
+
+    full = await lifecycle.events(run.run_id)
+    first_page = await lifecycle.events(run.run_id, after=0, limit=2)
+    second_page = await lifecycle.events(run.run_id, after=first_page[-1].cursor, limit=500)
+    replayed = [*first_page, *second_page]
+    assert [event.event_id for event in replayed] == [event.event_id for event in full]
+    assert await lifecycle.events(run.run_id, after=full[-1].cursor) == ()
+
+
+@pytest.mark.asyncio
+async def test_event_page_bounds_and_unknown_run_fail_closed(
+    lifecycle: MissionRunLifecycle,
+) -> None:
+    run = await lifecycle.accept(_request(), execution_profile_identity(_config()))
+    with pytest.raises(ValueError, match="at most"):
+        await lifecycle.events(run.run_id, limit=501)
+    with pytest.raises(ValueError, match="positive"):
+        await lifecycle.events(run.run_id, limit=0)
+    with pytest.raises(ValueError, match="non-negative"):
+        await lifecycle.events(run.run_id, after=-1)
+    with pytest.raises(MissionRunNotFoundError):
+        await lifecycle.events("missing-run")

@@ -34,8 +34,28 @@ if TYPE_CHECKING:
 
 _MAX_ID_CHARS = 512
 _MAX_REASON_CHARS = 4096
+_MAX_EVENT_PAYLOAD_CHARS = 4096
 DEFAULT_EXECUTION_PROFILE_ID = "archetype.missions.default"
 DEFAULT_EXECUTION_PROFILE_VERSION = "1"
+MISSION_RUN_EVENT_SCHEMA_VERSION = 1
+MISSION_RUN_EVENT_MAX_PAGE = 500
+
+MISSION_RUN_EVENT_PHASES = MappingProxyType(
+    {
+        "accepted": "admission",
+        "running": "execution",
+        "mission_bound": "execution",
+        "cancel_requested": "cancellation",
+        "cancelling": "cancellation",
+        "succeeded": "terminal",
+        "failed": "terminal",
+        "cancelled": "terminal",
+        "interrupted": "terminal",
+        "cleanup_pending": "cleanup",
+        "cleanup_complete": "cleanup",
+        "cleanup_failed": "cleanup",
+    }
+)
 
 
 class MissionRunStatus(StrEnum):
@@ -263,6 +283,61 @@ class MissionRun:
         """Whether execution has reached an immutable outcome."""
 
         return self.status in TERMINAL_MISSION_RUN_STATUSES
+
+
+@dataclass(frozen=True)
+class MissionRunEvent:
+    """One durable ordered progress fact for a MissionRun.
+
+    Identity is ``(run_id, cursor)``; the cursor is a contiguous run-local
+    sequence assigned in the same transaction as the durable transition, so
+    ``after`` replay has no gaps, reordering, or duplicate logical events.
+    """
+
+    run_id: str
+    cursor: int
+    event_type: str
+    phase: str
+    payload_json: str
+    created_at_ms: int
+    schema_version: int = MISSION_RUN_EVENT_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "run_id",
+            _require_bounded_text(self.run_id, "run_id", _MAX_ID_CHARS),
+        )
+        if isinstance(self.cursor, bool) or not isinstance(self.cursor, int) or self.cursor < 1:
+            raise ValueError("event cursor must be a positive integer")
+        if self.event_type not in MISSION_RUN_EVENT_PHASES:
+            raise ValueError(f"unknown mission-run event type {self.event_type!r}")
+        expected_phase = MISSION_RUN_EVENT_PHASES[self.event_type]
+        if self.phase != expected_phase:
+            raise ValueError(f"event {self.event_type!r} belongs to phase {expected_phase!r}")
+        if not isinstance(self.payload_json, str):
+            raise TypeError("payload_json must be a string")
+        if len(self.payload_json) > _MAX_EVENT_PAYLOAD_CHARS:
+            raise ValueError("event payload exceeds its bound")
+        if self.created_at_ms < 0:
+            raise ValueError("created_at_ms must be non-negative")
+        if self.schema_version != MISSION_RUN_EVENT_SCHEMA_VERSION:
+            raise ValueError("unsupported mission-run event schema version")
+
+    @property
+    def event_id(self) -> str:
+        """Deterministic event identity derived from run and cursor."""
+
+        return f"{self.run_id}/{self.cursor}"
+
+    @property
+    def payload(self) -> dict[str, object]:
+        """Decode the sanitized bounded payload."""
+
+        decoded = json.loads(self.payload_json)
+        if not isinstance(decoded, dict):
+            raise ValueError("event payload must be an object")
+        return {str(key): value for key, value in decoded.items()}
 
 
 def execution_profile_identity(config: AgentMissionConfig) -> ExecutionProfileIdentity:
@@ -496,12 +571,16 @@ def _canonical_json(payload: object) -> bytes:
 __all__ = [
     "DEFAULT_EXECUTION_PROFILE_ID",
     "DEFAULT_EXECUTION_PROFILE_VERSION",
+    "MISSION_RUN_EVENT_MAX_PAGE",
+    "MISSION_RUN_EVENT_PHASES",
+    "MISSION_RUN_EVENT_SCHEMA_VERSION",
     "MISSION_RUN_TRANSITIONS",
     "TERMINAL_MISSION_RUN_STATUSES",
     "ExecutionProfileIdentity",
     "MissionRun",
     "MissionRunCleanupState",
     "MissionRunConflictError",
+    "MissionRunEvent",
     "MissionRunNotFoundError",
     "MissionRunRequest",
     "MissionRunStatus",

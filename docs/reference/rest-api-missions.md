@@ -10,6 +10,369 @@ These routes are contributed only when this trusted world-library manifest is ex
 
 ## Missions
 
+### Submit Mission Control Run
+
+```text
+POST /v1/mission-control/runs
+```
+
+Accept a profile-bound mission run pin for a verified principal.
+
+**Request body:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `profile_id` | string | Yes | — | Profile Id |
+| `repository` | string | Yes | — | Repository |
+| `branch` | string | Yes | — | Branch |
+| `base_ref` | string | No | `"main"` | Base Ref |
+| `name` | string | No | `"agent-mission"` | Name |
+
+**Response** (`202`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `run_id` | string | Yes | — | Run Id |
+| `owner_principal_id` | string | Yes | — | Owner Principal Id |
+| `profile_id` | string | Yes | — | Profile Id |
+| `profile_version` | string | Yes | — | Profile Version |
+| `profile_digest` | string | Yes | — | Profile Digest |
+| `state` | string | No | `"accepted"` | State |
+
+**Error codes:** `422`
+
+---
+
+### Get Mission Control Run
+
+```text
+GET /v1/mission-control/runs/{run_id}
+```
+
+Read one accepted run pin the principal is allowed to see.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `run_id` | string |  |
+
+**Response** (`200`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `run_id` | string | Yes | — | Run Id |
+| `owner_principal_id` | string | Yes | — | Owner Principal Id |
+| `profile_id` | string | Yes | — | Profile Id |
+| `profile_version` | string | Yes | — | Profile Version |
+| `profile_digest` | string | Yes | — | Profile Digest |
+| `state` | string | No | `"accepted"` | State |
+
+**Error codes:** `422`
+
+---
+
+### Attach Mission Control Run
+
+```text
+POST /v1/mission-control/runs/{run_id}/attach
+```
+
+Authorize first-person attachment for one accepted run pin.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `run_id` | string |  |
+
+**Response** (`200`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `run_id` | string | Yes | — | Run Id |
+| `owner_principal_id` | string | Yes | — | Owner Principal Id |
+| `profile_id` | string | Yes | — | Profile Id |
+| `profile_version` | string | Yes | — | Profile Version |
+| `profile_digest` | string | Yes | — | Profile Digest |
+| `state` | string | No | `"accepted"` | State |
+
+**Error codes:** `422`
+
+---
+
+### Cancel Mission Control Run
+
+```text
+POST /v1/mission-control/runs/{run_id}/cancel
+```
+
+Authorize cancellation for one accepted run pin.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `run_id` | string |  |
+
+**Response** (`200`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `run_id` | string | Yes | — | Run Id |
+| `owner_principal_id` | string | Yes | — | Owner Principal Id |
+| `profile_id` | string | Yes | — | Profile Id |
+| `profile_version` | string | Yes | — | Profile Version |
+| `profile_digest` | string | Yes | — | Profile Digest |
+| `state` | string | No | `"accepted"` | State |
+
+**Error codes:** `422`
+
+---
+
+### Steer Mission Control Run
+
+```text
+POST /v1/mission-control/runs/{run_id}/steer
+```
+
+Authorize steering for one accepted run pin.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `run_id` | string |  |
+
+**Response** (`200`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `run_id` | string | Yes | — | Run Id |
+| `owner_principal_id` | string | Yes | — | Owner Principal Id |
+| `profile_id` | string | Yes | — | Profile Id |
+| `profile_version` | string | Yes | — | Profile Version |
+| `profile_digest` | string | Yes | — | Profile Digest |
+| `state` | string | No | `"accepted"` | State |
+
+**Error codes:** `422`
+
+---
+
+### Takeover Mission Control Run
+
+```text
+POST /v1/mission-control/runs/{run_id}/takeover
+```
+
+Authorize writable takeover for one accepted run pin.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `run_id` | string |  |
+
+**Response** (`200`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `run_id` | string | Yes | — | Run Id |
+| `owner_principal_id` | string | Yes | — | Owner Principal Id |
+| `profile_id` | string | Yes | — | Profile Id |
+| `profile_version` | string | Yes | — | Profile Version |
+| `profile_digest` | string | Yes | — | Profile Digest |
+| `state` | string | No | `"accepted"` | State |
+
+**Error codes:** `422`
+
+---
+
+### Submit Mission Run
+
+```text
+POST /v1/mission-runs
+```
+
+Accept one durable MissionRun under a pinned server-owned profile.
+
+The same principal, key, and canonical digest return the original run;
+a changed digest under the same key returns 409. The handler dispatches
+the registered ``accept_mission_run`` operation and never constructs
+Mission ECS state, opens a runtime handle, or supervises execution.
+
+**Request body:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `profile_id` | string | Yes | — | Profile Id |
+| `repository` | string | Yes | — | Repository |
+| `branch` | string | Yes | — | Branch |
+| `base_ref` | string | No | `"main"` | Base Ref |
+| `name` | string | No | `"agent-mission"` | Name |
+| `tasks` | array[MissionRunTaskRequest] | Yes | — | Tasks |
+
+**Response** (`202`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `run_id` | string | Yes | — | Run Id |
+| `state` | string | Yes | — | State |
+| `request_digest` | string | Yes | — | Request Digest |
+| `profile` | object | Yes | — | Pinned execution-profile identity recorded on the durable run. |
+| `status_url` | string | Yes | — | Status Url |
+
+**Error codes:** `400`, `401`, `403`, `404`, `409`, `422`
+
+---
+
+### Get Mission Run
+
+```text
+GET /v1/mission-runs/{run_id}
+```
+
+Project one durable MissionRun the principal owns or was granted.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `run_id` | string |  |
+
+**Response** (`200`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `run_id` | string | Yes | — | Run Id |
+| `state` | string | Yes | — | State |
+| `profile` | object | Yes | — | Pinned execution-profile identity recorded on the durable run. |
+| `request_digest` | string | Yes | — | Request Digest |
+| `world_id` | string | Yes | — | World Id |
+| `mission_id` | integer \| null | Yes | — | Mission Id |
+| `episode_id` | string | Yes | — | Episode Id |
+| `cancellation_requested` | boolean | Yes | — | Cancellation Requested |
+| `cancellation_reason` | string | Yes | — | Cancellation Reason |
+| `cleanup_state` | string | Yes | — | Cleanup State |
+| `interrupted_reason` | string | Yes | — | Interrupted Reason |
+| `accepted_at_ms` | integer | Yes | — | Accepted At Ms |
+| `running_at_ms` | integer \| null | Yes | — | Running At Ms |
+| `terminal_at_ms` | integer \| null | Yes | — | Terminal At Ms |
+| `updated_at_ms` | integer | Yes | — | Updated At Ms |
+
+**Error codes:** `401`, `403`, `404`, `422`
+
+---
+
+### Cancel Mission Run
+
+```text
+POST /v1/mission-runs/{run_id}/cancel
+```
+
+Durably record cancellation intent before reporting acceptance.
+
+Repeated requests are idempotent; ``cancelling`` stays distinct from
+``cancelled``, and a completion race resolves to the committed execution
+fact through the registered ``cancel_mission_run`` operation.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `run_id` | string |  |
+
+**Request body:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `reason` | string | No | `""` | Reason |
+
+**Response** (`202`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `run_id` | string | Yes | — | Run Id |
+| `state` | string | Yes | — | State |
+| `profile` | object | Yes | — | Pinned execution-profile identity recorded on the durable run. |
+| `request_digest` | string | Yes | — | Request Digest |
+| `world_id` | string | Yes | — | World Id |
+| `mission_id` | integer \| null | Yes | — | Mission Id |
+| `episode_id` | string | Yes | — | Episode Id |
+| `cancellation_requested` | boolean | Yes | — | Cancellation Requested |
+| `cancellation_reason` | string | Yes | — | Cancellation Reason |
+| `cleanup_state` | string | Yes | — | Cleanup State |
+| `interrupted_reason` | string | Yes | — | Interrupted Reason |
+| `accepted_at_ms` | integer | Yes | — | Accepted At Ms |
+| `running_at_ms` | integer \| null | Yes | — | Running At Ms |
+| `terminal_at_ms` | integer \| null | Yes | — | Terminal At Ms |
+| `updated_at_ms` | integer | Yes | — | Updated At Ms |
+
+**Error codes:** `401`, `403`, `404`, `409`, `422`
+
+---
+
+### Get Mission Run Events
+
+```text
+GET /v1/mission-runs/{run_id}/events
+```
+
+Return one ordered durable event page with no gaps or duplicates.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `run_id` | string |  |
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `after` | integer | `0` | Replay strictly after this run-local cursor. |
+| `limit` | integer | `100` | Bounded page size. |
+
+**Response** (`200`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `run_id` | string | Yes | — | Run Id |
+| `after` | integer | Yes | — | After |
+| `next_after` | integer | Yes | — | Next After |
+| `events` | array[MissionRunEventResponse] | Yes | — | Events |
+
+**Error codes:** `401`, `403`, `404`, `422`
+
+---
+
+### Get Mission Run Result
+
+```text
+GET /v1/mission-runs/{run_id}/result
+```
+
+Return the one immutable bounded terminal result, or 425 while open.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `run_id` | string |  |
+
+**Response** (`200`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `run_id` | string | Yes | — | Run Id |
+| `state` | string | Yes | — | State |
+| `result` | MissionRunResultDetailResponse \| null | Yes | — |  |
+| `interrupted_reason` | string | Yes | — | Interrupted Reason |
+
+**Error codes:** `401`, `403`, `404`, `422`, `425`
+
+---
+
 ### List Missions
 
 ```text

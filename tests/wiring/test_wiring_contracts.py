@@ -44,6 +44,7 @@ _PULL_FORWARD_MODELS = (
     ("archetype.missions.models", "AcceptMissionRun"),
     ("archetype.missions.models", "GetMissionRun"),
     ("archetype.missions.models", "CancelMissionRun"),
+    ("archetype.missions.models", "GetMissionRunEvents"),
 )
 _ACTOR_AWARE = frozenset(
     {
@@ -66,6 +67,7 @@ _TRUSTED_ONLY = frozenset(
         "accept_mission_run",
         "get_mission_run",
         "cancel_mission_run",
+        "get_mission_run_events",
         "run_hosted_episode",
     }
 )
@@ -160,6 +162,7 @@ _PULL_FORWARD_SCOPES = {
     "accept_mission_run": "application",
     "get_mission_run": "application",
     "cancel_mission_run": "application",
+    "get_mission_run_events": "application",
     "run_hosted_episode": "live_world",
 }
 
@@ -411,7 +414,7 @@ async def test_registry_contains_framework_plus_resolved_library_specs_exactly_o
     tmp_path: Path,
 ) -> None:
     expected = _expected_models()
-    assert len(expected) == 49
+    assert len(expected) == 50
     duplicate_counterfactual = (
         (_operation_name(expected[0]), expected[0]),
         (_operation_name(expected[0]), expected[0]),
@@ -427,7 +430,7 @@ async def test_registry_contains_framework_plus_resolved_library_specs_exactly_o
         world_libraries=manifests,
     ) as resources:
         actual = _inventory(resources)
-        assert len(actual) == 49
+        assert len(actual) == 50
         assert _inventory_defects(actual, expected) == (set(), set(), set(), set())
         assert set(actual) == {(_operation_name(model), model) for model in expected}
         assert tuple(manifest.name for manifest in resources.world_library_manifests) == (
@@ -798,7 +801,7 @@ async def test_no_runtime_or_api_operation_can_fall_back_to_a_legacy_bridge(
     ) as resources:
         pull_forward = set(_pull_forward_types())
         specs = tuple(spec for spec in _specs(resources) if spec.model in pull_forward)
-        assert len(specs) == 16
+        assert len(specs) == 17
         assert all(callable(spec.handler) for spec in specs)
 
 
@@ -812,9 +815,9 @@ async def test_pull_forward_registration_has_exact_four_actor_aware_and_twelve_t
     tmp_path: Path,
 ) -> None:
     assert len(_ACTOR_AWARE) == 4
-    assert len(_TRUSTED_ONLY) == 12
+    assert len(_TRUSTED_ONLY) == 13
     assert _ACTOR_AWARE.isdisjoint(_TRUSTED_ONLY)
-    assert len(_ACTOR_AWARE | _TRUSTED_ONLY) == 16
+    assert len(_ACTOR_AWARE | _TRUSTED_ONLY) == 17
     bad = {
         "one": SimpleNamespace(trusted=True, untrusted=True, durable=object()),
         "two": SimpleNamespace(trusted=False, untrusted=False, durable=None),
@@ -1115,7 +1118,7 @@ async def test_nondurable_pull_forward_rejections_have_no_provider_or_scheduler_
 
             assert trap.reads == []
             assert scheduler.calls == []
-            assert len(access_rows) == 28
+            assert len(access_rows) == 30
             assert all(getattr(row, "outcome", None) == "rejected" for row in access_rows)
         finally:
             dispatcher._policy = original_policy

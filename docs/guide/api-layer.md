@@ -93,6 +93,45 @@ When the Missions library is installed, supported `archetype serve` startup on
 a non-loopback bind requires a configured principal directory. Existing ECS
 developer routes otherwise retain the deliberate v0.6 behavior above.
 
+### MissionRun control surface
+
+The durable MissionRun lifecycle is exposed as a small agent-safe REST
+surface under `/v1/mission-runs`:
+
+| Endpoint | Method | What it does |
+|---|---|---|
+| `/v1/mission-runs` | POST | Accept one durable run for a verified principal (`202`) |
+| `/v1/mission-runs/{run_id}` | GET | Bounded run status projection |
+| `/v1/mission-runs/{run_id}/events` | GET | Ordered durable events, `?after=<cursor>&limit=<n>` |
+| `/v1/mission-runs/{run_id}/result` | GET | One immutable terminal result (`425` while open) |
+| `/v1/mission-runs/{run_id}/cancel` | POST | Durably record cancellation intent (`202`, idempotent) |
+
+Submission requires an `Idempotency-Key` header and a body carrying only
+`profile_id`, repository coordinates, mission name, and an explicit bounded
+task DAG with command validators. The same principal, key, and canonical
+request digest return the original run; a changed digest under the same key
+is a `409` conflict, and both survive an API-process restart. Route handlers
+authenticate the verified principal, authorize capability, ownership, and
+profile policy, then dispatch the exact registered `accept_mission_run`,
+`get_mission_run`, `get_mission_run_events`, and `cancel_mission_run`
+operations. They never open a runtime handle, construct Mission components,
+start background tasks, or own recovery — supervision and recovery stay with
+the missions-owned MissionRun lifecycle.
+
+Events carry a deterministic `(run_id, cursor)` identity, a schema version,
+a timestamp, a phase/type, and a sanitized bounded payload appended in the
+same transaction as the durable transition, so `after` replay across
+reconnects has no gaps, reordering, or duplicated logical events. Cancel
+records intent durably before reporting acceptance; `cancelling` stays
+distinct from `cancelled`, and completion races resolve to the committed
+execution fact. Client disconnect is never cancellation.
+
+Executing a REST-accepted run requires host composition: the retained
+`missions:control` capability resolves a pinned profile to concrete mission
+execution configuration through `bind_run_execution`. An unbound host still
+accepts, observes, and cancels runs; supervision records an honest `failed`
+run instead of fabricating provider work.
+
 ## Route Structure
 
 Routes are thin translators: validate payloads, authenticate, call

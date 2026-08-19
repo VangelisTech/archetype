@@ -274,6 +274,21 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "missions.control.run_rest_surface"
+source = "docs/guide/api-layer.md"
+section = "MissionRun control surface"
+owner = "missions"
+risk = "high"
+pytest = [
+  "tests/api/test_mission_run_routes.py",
+  "tests/missions/test_mission_run_lifecycle.py",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "commands.identity.idempotent"
 source = "docs/guide/specification.md"
 section = "Command ledger, scheduler, and dispatcher"

@@ -55,6 +55,7 @@ from archetype.missions.models import (
     AcceptMissionRun,
     CancelMissionRun,
     GetMissionRun,
+    GetMissionRunEvents,
     RestoreMissionSandbox,
     RunMission,
     SubmitMission,
@@ -65,6 +66,7 @@ from archetype.missions.run_catalog import (
     mission_run_catalog_path_for,
 )
 from archetype.missions.run_contracts import (
+    ExecutionProfileIdentity,
     MissionRun,
     execution_profile_identity,
 )
@@ -111,6 +113,7 @@ MISSION_OPERATION_MODELS: tuple[type[BaseModel], ...] = (
     AcceptMissionRun,
     GetMissionRun,
     CancelMissionRun,
+    GetMissionRunEvents,
 )
 
 _OPERATION_SCOPES: dict[type[BaseModel], Any] = {
@@ -124,6 +127,7 @@ _OPERATION_SCOPES: dict[type[BaseModel], Any] = {
     AcceptMissionRun: "application",
     GetMissionRun: "application",
     CancelMissionRun: "application",
+    GetMissionRunEvents: "application",
 }
 
 
@@ -518,12 +522,30 @@ class _DispatchedMissionRunExecutor:
         self._config = config
         self._storage = storage
 
+    def _mission_config(self, run: MissionRun) -> Any:
+        """Return the process-bound config or the host's pinned-profile binding.
+
+        REST-accepted runs carry no caller config; the retained
+        mission-control capability owns the profile-to-execution composition.
+        An unbound host fails here and supervision records an honest failed
+        run instead of fabricating provider work.
+        """
+
+        if self._config is not None:
+            return self._config
+        control = self._context.resources.host_capability("missions:control")
+        return control.run_execution_config(
+            run.profile.profile_id,
+            run.profile.version,
+            run.profile.digest,
+        )
+
     async def submit(self, run: MissionRun) -> Any:
         return await self._context.resources.dispatcher.apply(
             SubmitMission(
                 owner_id=self._owner_id,
                 name=f"mission-run:{run.run_id}",
-                config=self._config,
+                config=self._mission_config(run),
                 storage=self._storage,
                 submission=run.submission,
                 predetermined_world_id=run.world_id,
@@ -543,12 +565,11 @@ class _DispatchedMissionRunExecutor:
         return await recover()
 
     async def run(self, run: MissionRun, mission: Any) -> Any:
-        del run
         return await self._context.resources.dispatcher.apply(
             RunMission(
                 owner_id=self._owner_id,
                 name=self._name,
-                config=self._config,
+                config=self._mission_config(run),
                 storage=self._storage,
                 mission=mission,
             )
@@ -564,11 +585,35 @@ class _DispatchedMissionRunExecutor:
         return None
 
 
+type _RunControlOperation = (
+    AcceptMissionRun | GetMissionRun | CancelMissionRun | GetMissionRunEvents
+)
+
+
+def _run_owner_reservation(context: WorldLibraryContext, owner_id: str) -> Any:
+    """Resolve or lazily reserve the run-control owner for this process.
+
+    Trusted ``Missions`` handles reserve their owner at construction. The
+    REST control surface dispatches under one stable host owner id with no
+    adapter; reservation happens synchronously on first use so restarts
+    reuse the same durable catalog under the same process owner.
+    """
+
+    try:
+        return context.resources.owner(owner_id)
+    except KeyError:
+        return context.resources.reserve_owner(
+            owner_id,
+            phase="workflow-handles",
+            closed_message="mission-run control owner is closed",
+        )
+
+
 def _run_control(
     context: WorldLibraryContext,
     reservation: Any,
-    operation: AcceptMissionRun | GetMissionRun | CancelMissionRun,
-) -> tuple[MissionRunLifecycle, MissionRunSupervisor]:
+    operation: _RunControlOperation,
+) -> tuple[MissionRunLifecycle, MissionRunSupervisor, SqliteMissionRunCatalog]:
     existing = getattr(reservation, "_mission_run_control", None)
     if existing is not None:
         return existing
@@ -593,19 +638,31 @@ def _run_control(
     control = (lifecycle, supervisor, catalog)
     reservation.retain_anchor(control)
     object.__setattr__(reservation, "_mission_run_control", control)
-    return lifecycle, supervisor
+    return control
+
+
+def _accepted_profile_identity(operation: AcceptMissionRun) -> Any:
+    if operation.profile_id or operation.profile_version or operation.profile_digest:
+        return ExecutionProfileIdentity(
+            profile_id=operation.profile_id,
+            version=operation.profile_version,
+            digest=operation.profile_digest,
+        )
+    if operation.config is None:
+        raise ValueError("AcceptMissionRun requires a pinned execution profile or a mission config")
+    return execution_profile_identity(operation.config)
 
 
 async def _handle_accept_mission_run(
     context: WorldLibraryContext,
     operation: AcceptMissionRun,
 ) -> Any:
-    reservation = context.resources.owner(operation.owner_id)
+    reservation = _run_owner_reservation(context, operation.owner_id)
     async with context.resources.admit_owner_operation(reservation):
-        lifecycle, supervisor = _run_control(context, reservation, operation)
+        lifecycle, supervisor, _catalog = _run_control(context, reservation, operation)
         run = await lifecycle.accept(
             operation.request,
-            execution_profile_identity(operation.config),
+            _accepted_profile_identity(operation),
         )
         supervisor.ensure(run)
         return run
@@ -615,9 +672,9 @@ async def _handle_get_mission_run(
     context: WorldLibraryContext,
     operation: GetMissionRun,
 ) -> Any:
-    reservation = context.resources.owner(operation.owner_id)
+    reservation = _run_owner_reservation(context, operation.owner_id)
     async with context.resources.admit_owner_operation(reservation):
-        lifecycle, supervisor = _run_control(context, reservation, operation)
+        lifecycle, supervisor, _catalog = _run_control(context, reservation, operation)
         run = await lifecycle.get(operation.run_id)
         supervisor.ensure(run)
         return await lifecycle.get(operation.run_id)
@@ -627,13 +684,27 @@ async def _handle_cancel_mission_run(
     context: WorldLibraryContext,
     operation: CancelMissionRun,
 ) -> Any:
-    reservation = context.resources.owner(operation.owner_id)
+    reservation = _run_owner_reservation(context, operation.owner_id)
     async with context.resources.admit_owner_operation(reservation):
-        lifecycle, supervisor = _run_control(context, reservation, operation)
+        lifecycle, supervisor, _catalog = _run_control(context, reservation, operation)
         run = await lifecycle.get(operation.run_id)
         run = await lifecycle.record_cancellation_intent(run, reason=operation.reason)
         supervisor.ensure(run)
         return await lifecycle.get(operation.run_id)
+
+
+async def _handle_get_mission_run_events(
+    context: WorldLibraryContext,
+    operation: GetMissionRunEvents,
+) -> Any:
+    reservation = _run_owner_reservation(context, operation.owner_id)
+    async with context.resources.admit_owner_operation(reservation):
+        lifecycle, _supervisor, _catalog = _run_control(context, reservation, operation)
+        return await lifecycle.events(
+            operation.run_id,
+            after=operation.after,
+            limit=operation.limit,
+        )
 
 
 async def _handle_restore_mission_sandbox(
@@ -677,6 +748,7 @@ def _operation_handlers(
         AcceptMissionRun: cast(Any, partial(_handle_accept_mission_run, context)),
         GetMissionRun: cast(Any, partial(_handle_get_mission_run, context)),
         CancelMissionRun: cast(Any, partial(_handle_cancel_mission_run, context)),
+        GetMissionRunEvents: cast(Any, partial(_handle_get_mission_run_events, context)),
     }
 
 

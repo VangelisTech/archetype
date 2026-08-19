@@ -21,11 +21,15 @@ from archetype.missions.run_catalog import (
     encode_json,
 )
 from archetype.missions.run_contracts import (
+    MISSION_RUN_EVENT_MAX_PAGE,
+    MISSION_RUN_EVENT_PHASES,
+    MISSION_RUN_EVENT_SCHEMA_VERSION,
     TERMINAL_MISSION_RUN_STATUSES,
     ExecutionProfileIdentity,
     MissionRun,
     MissionRunCleanupState,
     MissionRunConflictError,
+    MissionRunEvent,
     MissionRunNotFoundError,
     MissionRunRequest,
     MissionRunStatus,
@@ -36,6 +40,8 @@ from archetype.missions.run_contracts import (
     submission_from_payload,
     submission_payload,
 )
+
+_MAX_EVENT_REASON_CHARS = 512
 
 type ClockMs = Callable[[], int]
 type IdentityFactory = Callable[[], str]
@@ -91,7 +97,8 @@ class MissionRunLifecycle:
                 "accepted_at_ms": now_ms,
                 "created_at_ms": now_ms,
                 "updated_at_ms": now_ms,
-            }
+            },
+            events=(self._event("accepted", {"status": "accepted"}, now_ms=now_ms),),
         )
         run = record_to_run(inserted)
         if run.request_digest != digest:
@@ -119,6 +126,9 @@ class MissionRunLifecycle:
 
     async def mark_running(self, run: MissionRun, *, operation: str) -> MissionRun:
         now_ms = self._now_ms()
+        events: tuple[dict[str, object], ...] = ()
+        if run.status is not MissionRunStatus.RUNNING:
+            events = (self._event("running", {"status": "running"}, now_ms=now_ms),)
         return await self._transition(
             run,
             MissionRunStatus.RUNNING,
@@ -128,6 +138,7 @@ class MissionRunLifecycle:
                 "running_at_ms": run.running_at_ms if run.running_at_ms is not None else now_ms,
                 "updated_at_ms": now_ms,
             },
+            events=events,
         )
 
     async def bind_mission(self, run: MissionRun, submitted: SubmittedMission) -> MissionRun:
@@ -136,6 +147,20 @@ class MissionRunLifecycle:
         if run.world_id and submitted.world_id and run.world_id != submitted.world_id:
             raise MissionRunConflictError("world creation is keyed by run_id")
         now_ms = self._now_ms()
+        events: tuple[dict[str, object], ...] = ()
+        if run.mission_id is None:
+            events = (
+                self._event(
+                    "mission_bound",
+                    {
+                        "world_id": submitted.world_id or run.world_id,
+                        "mission_id": submitted.mission_id,
+                        "episode_id": submitted.episode_id,
+                        "task_count": len(submitted.task_ids),
+                    },
+                    now_ms=now_ms,
+                ),
+            )
         return await self._replace(
             run,
             {
@@ -145,6 +170,7 @@ class MissionRunLifecycle:
                 "task_ids_json": encode_json([list(item) for item in submitted.task_ids]),
                 "updated_at_ms": now_ms,
             },
+            events=events,
         )
 
     async def bind_activity(
@@ -168,6 +194,15 @@ class MissionRunLifecycle:
         if run.cancellation_intent and (not reason or reason == run.cancellation_reason):
             return run
         now_ms = self._now_ms()
+        events: list[dict[str, object]] = []
+        if not run.cancellation_intent:
+            events.append(
+                self._event(
+                    "cancel_requested",
+                    {"reason": reason[:_MAX_EVENT_REASON_CHARS]},
+                    now_ms=now_ms,
+                )
+            )
         values: dict[str, object] = {
             "cancellation_intent": 1,
             "cancellation_reason": reason,
@@ -182,10 +217,12 @@ class MissionRunLifecycle:
                     "terminal_at_ms": now_ms,
                 }
             )
+            events.append(self._event("cancelled", {"status": "cancelled"}, now_ms=now_ms))
         elif run.status is MissionRunStatus.RUNNING:
             require_mission_run_transition(run.status, MissionRunStatus.CANCELLING)
             values["status"] = MissionRunStatus.CANCELLING.value
-        return await self._replace(run, values)
+            events.append(self._event("cancelling", {"status": "cancelling"}, now_ms=now_ms))
+        return await self._replace(run, values, events=tuple(events))
 
     async def mark_succeeded(self, run: MissionRun, result: MissionResult) -> MissionRun:
         if result.status != "succeeded":
@@ -229,6 +266,18 @@ class MissionRunLifecycle:
         error: str = "",
     ) -> MissionRun:
         now_ms = self._now_ms()
+        events: tuple[dict[str, object], ...] = ()
+        if state is not run.cleanup_state and state is not MissionRunCleanupState.NONE:
+            events = (
+                self._event(
+                    f"cleanup_{state.value}",
+                    {
+                        "state": state.value,
+                        "error": error[:_MAX_EVENT_REASON_CHARS],
+                    },
+                    now_ms=now_ms,
+                ),
+            )
         return await self._replace(
             run,
             {
@@ -236,7 +285,54 @@ class MissionRunLifecycle:
                 "cleanup_error": error,
                 "updated_at_ms": now_ms,
             },
+            events=events,
         )
+
+    async def events(
+        self,
+        run_id: str,
+        *,
+        after: int = 0,
+        limit: int = 100,
+    ) -> tuple[MissionRunEvent, ...]:
+        """Return one bounded ordered event page for an existing run."""
+
+        if isinstance(after, bool) or not isinstance(after, int) or after < 0:
+            raise ValueError("after must be a non-negative integer cursor")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        if limit > MISSION_RUN_EVENT_MAX_PAGE:
+            raise ValueError(f"limit must be at most {MISSION_RUN_EVENT_MAX_PAGE}")
+        if await self._catalog.get(run_id) is None:
+            raise MissionRunNotFoundError(run_id)
+        rows = await self._catalog.list_events(run_id, after=after, limit=limit)
+        return tuple(
+            MissionRunEvent(
+                run_id=str(row["run_id"]),
+                cursor=_required_int(row["cursor"]),
+                event_type=str(row["event_type"]),
+                phase=str(row["phase"]),
+                payload_json=str(row["payload_json"]),
+                created_at_ms=_required_int(row["created_at_ms"]),
+                schema_version=_required_int(row["schema_version"]),
+            )
+            for row in rows
+        )
+
+    def _event(
+        self,
+        event_type: str,
+        payload: dict[str, object],
+        *,
+        now_ms: int,
+    ) -> dict[str, object]:
+        return {
+            "schema_version": MISSION_RUN_EVENT_SCHEMA_VERSION,
+            "event_type": event_type,
+            "phase": MISSION_RUN_EVENT_PHASES[event_type],
+            "payload_json": encode_json(payload),
+            "created_at_ms": now_ms,
+        }
 
     async def _terminal(
         self,
@@ -265,25 +361,43 @@ class MissionRunLifecycle:
             values["result_json"] = encode_json(mission_result_payload(result))
         if interrupted_reason:
             values["interrupted_reason"] = interrupted_reason
-        return await self._replace(run, values)
+        event = self._event(
+            status.value,
+            {
+                "status": status.value,
+                "reason": interrupted_reason[:_MAX_EVENT_REASON_CHARS],
+                "has_result": result is not None,
+            },
+            now_ms=now_ms,
+        )
+        return await self._replace(run, values, events=(event,))
 
     async def _transition(
         self,
         run: MissionRun,
         target: MissionRunStatus,
         values: dict[str, object],
+        *,
+        events: tuple[dict[str, object], ...] = (),
     ) -> MissionRun:
         if run.status is target:
-            return await self._replace(run, values)
+            return await self._replace(run, values, events=events)
         require_mission_run_transition(run.status, target)
-        return await self._replace(run, values)
+        return await self._replace(run, values, events=events)
 
-    async def _replace(self, run: MissionRun, values: dict[str, object]) -> MissionRun:
+    async def _replace(
+        self,
+        run: MissionRun,
+        values: dict[str, object],
+        *,
+        events: tuple[dict[str, object], ...] = (),
+    ) -> MissionRun:
         updated = await self._catalog.compare_and_set(
             run.run_id,
             expected_status=run.status.value,
             expected_updated_at_ms=run.updated_at_ms,
             values=values,
+            events=events,
         )
         if updated is None:
             current = await self.get(run.run_id)
@@ -381,6 +495,12 @@ def _task_id_pair(value: object) -> tuple[str, int]:
     if isinstance(entity_id, bool) or not isinstance(entity_id, int):
         raise ValueError("task entity_id must be an integer")
     return name, entity_id
+
+
+def _required_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("expected an integer event field")
+    return value
 
 
 def _optional_int(value: object) -> int | None:

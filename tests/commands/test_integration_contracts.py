@@ -398,6 +398,10 @@ class _CancelMissionRun(_MissionOperation):
     operation: Literal["cancel_mission_run"] = "cancel_mission_run"
 
 
+class _GetMissionRunEvents(_MissionOperation):
+    operation: Literal["get_mission_run_events"] = "get_mission_run_events"
+
+
 @pytest.mark.asyncio
 async def test_future_mission_operations_are_trusted_direct_only_and_reject_all_wire_paths() -> (
     None
@@ -413,6 +417,7 @@ async def test_future_mission_operations_are_trusted_direct_only_and_reject_all_
         _AcceptMissionRun,
         _GetMissionRun,
         _CancelMissionRun,
+        _GetMissionRunEvents,
     )
 
     async def live_handler(operation: _MissionOperation) -> None:
@@ -504,7 +509,7 @@ async def test_future_mission_operations_are_trusted_direct_only_and_reject_all_
     assert provider_calls == []
     assert scheduler.admissions == []
     assert {"target_tick", "priority", "max_attempts"}.isdisjoint(_MissionOperation.model_fields)
-    assert len(access.rows) == 12
+    assert len(access.rows) == 14
     assert set(resolved_ticks) <= {"mission-world"}
     for evidence_value in access.rows:
         evidence = _evidence_dict(evidence_value)

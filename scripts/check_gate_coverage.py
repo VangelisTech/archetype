@@ -101,6 +101,7 @@ def check_registry_coverage() -> list[str]:
         AcceptMissionRun,
         CancelMissionRun,
         GetMissionRun,
+        GetMissionRunEvents,
         RestoreMissionSandbox,
         RunMission,
         SubmitMission,
@@ -141,6 +142,7 @@ def check_registry_coverage() -> list[str]:
         AcceptMissionRun,
         GetMissionRun,
         CancelMissionRun,
+        GetMissionRunEvents,
         RunHostedEpisode,
         AutoResearch,
     )

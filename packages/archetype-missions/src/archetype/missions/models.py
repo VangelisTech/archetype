@@ -64,13 +64,22 @@ class RestoreMissionSandbox(_MissionOperation):
 
 
 class AcceptMissionRun(_MissionOperation):
-    """Admit one durable MissionRun and return its run_id before completion."""
+    """Admit one durable MissionRun and return its run_id before completion.
+
+    Trusted runtime handles pass a process-bound ``config``. The REST control
+    surface instead pins a catalog execution profile identity; the host then
+    resolves execution configuration through its retained mission-control
+    capability when supervision actually drives the run.
+    """
 
     operation: Literal["accept_mission_run"] = "accept_mission_run"
     name: str
-    config: AgentMissionConfig
+    config: AgentMissionConfig | None = None
     storage: str | Path | StorageConfig | None = None
     request: MissionRunRequest
+    profile_id: str = ""
+    profile_version: str = ""
+    profile_digest: str = ""
 
 
 class GetMissionRun(_MissionOperation):
@@ -78,7 +87,7 @@ class GetMissionRun(_MissionOperation):
 
     operation: Literal["get_mission_run"] = "get_mission_run"
     name: str
-    config: AgentMissionConfig
+    config: AgentMissionConfig | None = None
     storage: str | Path | StorageConfig | None = None
     run_id: str
 
@@ -88,10 +97,22 @@ class CancelMissionRun(_MissionOperation):
 
     operation: Literal["cancel_mission_run"] = "cancel_mission_run"
     name: str
-    config: AgentMissionConfig
+    config: AgentMissionConfig | None = None
     storage: str | Path | StorageConfig | None = None
     run_id: str
     reason: str = ""
+
+
+class GetMissionRunEvents(_MissionOperation):
+    """Read one bounded ordered event page for a durable MissionRun."""
+
+    operation: Literal["get_mission_run_events"] = "get_mission_run_events"
+    name: str
+    config: AgentMissionConfig | None = None
+    storage: str | Path | StorageConfig | None = None
+    run_id: str
+    after: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=1)
 
 
 def summarize_mission_operation(operation: _MissionOperation) -> Mapping[str, Any]:
@@ -123,6 +144,7 @@ def _complete_mission_models() -> None:
     AcceptMissionRun.model_rebuild(force=True, _types_namespace=namespace)
     GetMissionRun.model_rebuild(force=True, _types_namespace=namespace)
     CancelMissionRun.model_rebuild(force=True, _types_namespace=namespace)
+    GetMissionRunEvents.model_rebuild(force=True, _types_namespace=namespace)
 
 
 _complete_mission_models()
@@ -132,6 +154,7 @@ __all__ = [
     "AcceptMissionRun",
     "CancelMissionRun",
     "GetMissionRun",
+    "GetMissionRunEvents",
     "RestoreMissionSandbox",
     "RunMission",
     "SubmitMission",

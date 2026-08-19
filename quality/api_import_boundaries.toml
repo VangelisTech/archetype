@@ -72,7 +72,12 @@ allowed_dependencies = [
   "archetype.commands.dispatch",
   "archetype.commands.models",
   "archetype.missions.components",
+  "archetype.missions.contracts",
+  "archetype.missions.control",
+  "archetype.missions.execution_profiles",
+  "archetype.missions.models",
   "archetype.missions.relations",
+  "archetype.missions.run_contracts",
   "archetype.world.models",
 ]
 forbidden_dependencies = [

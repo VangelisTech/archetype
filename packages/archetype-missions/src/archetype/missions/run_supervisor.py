@@ -63,7 +63,9 @@ class MissionRunSupervisor:
         existing = self._inflight.get(run.run_id)
         if existing is not None and not existing.done():
             return existing
-        task = self._spawn(lambda: self._drive(run.run_id), f"mission-run:{run.run_id}")
+        # Runtime task labels are bounded identifiers without ":"; keep the
+        # label spawnable through a real owner reservation.
+        task = self._spawn(lambda: self._drive(run.run_id), f"mission-run-{run.run_id}")
         self._inflight[run.run_id] = task
         task.add_done_callback(lambda _task: self._inflight.pop(run.run_id, None))
         return task
