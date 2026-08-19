@@ -678,6 +678,15 @@ copy for thread admission and never writes a refresh back. Give each
 concurrently active runtime its own Volume because v0.6 does not claim
 cross-runtime compare-and-swap over the mutable login credential.
 
+Release evidence does not treat `codex login status` as proof of usable model
+access. Before the repository mission, a separate Sandbox bound to the same
+workspace, Environment, App, and auth Volume completes one bounded real Codex
+turn through the normal thread-admission barrier. The barrier removes and
+verifies absence of `auth.json` before the model turn. Preflight and mission
+failures expose only a bounded category plus output length/digest summaries;
+raw stderr, error, friction, credentials, and provider URLs do not enter the
+release log.
+
 The GitHub Secret should contain a fine-grained, expiring token scoped to the
 one destination repository, with Metadata read and Contents read/write only.
 Do not grant Actions/Workflows, administration, or organization permissions.

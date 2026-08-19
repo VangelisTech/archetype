@@ -110,6 +110,21 @@ def test_pending_trusted_publishers_do_not_claim_new_project_names() -> None:
         assert "remains claimable until the first successful oidc publication" in content
 
 
+def test_first_publication_runbook_stages_pending_publishers_without_reruns() -> None:
+    release_note = " ".join(
+        (ROOT / "docs/guide/release-0.6.md").read_text(encoding="utf-8").split()
+    )
+    harness = " ".join(
+        (ROOT / "docs/guide/repository-harness.md").read_text(encoding="utf-8").split()
+    )
+
+    assert "at most three pending projects" in release_note
+    assert "two waves within the same release attempt" in release_note
+    assert "including `archetype-smol`, were claimed by v0.6.1" in release_note
+    assert "leave the remaining child waiting at" in harness
+    assert "an intentional child failure or parent rerun is not the bootstrap mechanism" in harness
+
+
 def test_contributing_names_each_trusted_publisher_workflow() -> None:
     contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
 

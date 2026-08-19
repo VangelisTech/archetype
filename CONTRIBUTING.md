@@ -209,10 +209,13 @@ The exact canonical `vMAJOR.MINOR.PATCH` tag, including an annotated tag's peele
 commit, must still resolve to the workflow's original `GITHUB_SHA`. This narrows the
 final mutable-ref window without exposing the publish token to checked-out code.
 
-Before the first five-project release, register pending Trusted Publishers for the
-four new project names on both PyPI and TestPyPI. This preconfigures their OIDC
-identities; it does not reserve or claim the names. Each new name remains claimable
-until the first successful OIDC publication creates the project on that registry.
+For a first publication, register pending Trusted Publishers on both PyPI and
+TestPyPI. Each registry permits at most three pending projects per account, so a
+release adding more names must use the protected-environment two-wave procedure in
+the repository harness. This preconfigures OIDC identities; it does not reserve or
+claim the names. Each new name remains claimable until the first successful OIDC
+publication creates the project. Once created, the publisher is established and an
+ordinary patch release does not register it again.
 Every row uses repository `VangelisTech/archetype` and must be registered once with
 `release-testpypi` and once with `release-pypi`:
 

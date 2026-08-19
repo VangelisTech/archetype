@@ -490,7 +490,7 @@ jobs:
 
   publish-testpypi-libraries:
     name: Publish independently attested distributions to TestPyPI
-    needs: [authorize-release, testpypi-preflight]
+    needs: [authorize-release, testpypi-preflight, publish-testpypi]
     if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -691,7 +691,7 @@ jobs:
 
   publish-libraries:
     name: Publish independently attested distributions to PyPI
-    needs: [authorize-release, pypi-preflight]
+    needs: [authorize-release, pypi-preflight, publish]
     if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
     runs-on: ubuntu-latest
     timeout-minutes: 45

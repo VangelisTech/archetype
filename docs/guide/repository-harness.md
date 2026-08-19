@@ -206,7 +206,16 @@ publisher matrix below. Every row uses repository `VangelisTech/archetype`.
 Register pending Trusted Publishers to preconfigure the OIDC identities for
 project names that do not yet exist. This registration does not reserve or
 claim a name: each new name remains claimable until the first successful OIDC
-publication creates the project on that registry.
+publication creates the project on that registry. Each registry permits at most
+three pending projects per account. When one coordinated release introduces
+more names, register the first wave only. After the established ECS publisher
+succeeds, the parent dispatches every package-specific workflow. Approve only
+the registered first-wave deployments; leave the remaining child waiting at
+its protected environment. Successful first-wave publication creates those
+projects and frees the pending slots. Register the remaining publisher, then
+approve its already-waiting deployment. Complete both waves within the same
+parent release attempt and its 45-minute coordinator timeout; an intentional
+child failure or parent rerun is not the bootstrap mechanism.
 Pending GitHub publishers are unique by repository, workflow, and environment,
 so multiple not-yet-created projects cannot all use `release.yml` with the same
 environment. PyPI also does not support reusable workflows as Trusted
@@ -334,11 +343,15 @@ gh workflow run release.yml \
 
 Approve `release-apple-macos` once; the admitted job runs Biome evidence and
 then Apple Container evidence in that order. After the exact-evidence gate
-succeeds, approve every pending `release-testpypi` deployment. Approve every
-pending `release-pypi` deployment only after the TestPyPI
-installed-distribution matrix succeeds. The ECS publisher remains in the parent
-run; each new distribution is a separately approved direct workflow run. The
-parent waits for the exact child run IDs and fails unless all of them succeed.
+succeeds, approve the parent ECS `release-testpypi` deployment. Only after that
+job succeeds does the parent dispatch the package-specific TestPyPI workflows;
+approve their deployments using the one- or two-wave procedure above. Approve
+the parent ECS `release-pypi` deployment only after the TestPyPI
+installed-distribution matrix succeeds. Its success similarly precedes the
+package-specific PyPI dispatch and approvals. The parent waits for the exact
+child run IDs and fails unless all of them succeed. Once all projects exist,
+their Trusted Publishers are established rather than pending, so ordinary patch
+releases simply approve all dispatched package-specific deployments.
 The ephemeral runner deregisters after the shared Mac job; discard its working
 directory before preparing a rerun or future release.
 
@@ -352,7 +365,7 @@ Release-lane authentication is explicit and provider-scoped:
 | Physical AI (Modal + R2) | The same scoped Modal and R2 credentials run one T4-backed seeded episode. Modal owns provider execution and immutable result blobs; the Archetype World commits intent and observation evidence to a unique R2 prefix, then a fresh runtime cold-resumes and reconciles the same digest without replay. |
 | Biome | No cloud credential is accepted. The explicitly enabled release target builds and launches the pinned upstream Biome/Flecs sources on the logged-in Mac, and the live test proves the active GUI/Metal process, loopback REST readiness, native mission result, durable Archetype evidence, and cleanup. |
 | Apple Container | A one-job ephemeral, bare-metal Apple Silicon runner in the exact-workflow-restricted `archetype-release-macos` group supplies the local host authority. It may run under the operator's current macOS account and bears `self-hosted`, `macOS`, `ARM64`, and `archetype-apple-container-macos-26`. The job provisions Python 3.12 through `uv`, verifies macOS 26, and starts the local `container` service; it creates no macOS login or `/Users/runner` tool cache, and accepts no Apple cloud token. GitHub-hosted arm64 macOS runners are not substitutes because they do not expose the Virtualization.framework VM support required by Apple Container. |
-| Modal Agent Mission | `MODAL_TOKEN_ID` plus `MODAL_TOKEN_SECRET` authenticate the Modal control plane. Actions repository variable `CODING_AGENT_MODAL_PROFILE` becomes the SDK selector `MODAL_PROFILE`; `CODING_AGENT_MODAL_ENVIRONMENT` becomes both the Archetype selector and SDK selector `MODAL_ENVIRONMENT`, while the workspace and remaining Environment-scoped variables bind all named objects. `CODEX_AUTH_VOLUME` supplies the separately device-authenticated Codex `auth.json`. `CODING_AGENT_GITHUB_SECRET` names the Modal Secret resolved for the isolated publisher, but the paid live lane deliberately pushes to a provider-local bare remote and never attaches that secret or mutates GitHub. Deterministic broker contracts separately prove that only the exact GitHub push process can receive `GITHUB_TOKEN`. Modal Connect Tokens authenticate the two transient viewport URLs. |
+| Modal Agent Mission | `MODAL_TOKEN_ID` plus `MODAL_TOKEN_SECRET` authenticate the Modal control plane. Actions repository variable `CODING_AGENT_MODAL_PROFILE` becomes the SDK selector `MODAL_PROFILE`; `CODING_AGENT_MODAL_ENVIRONMENT` becomes both the Archetype selector and SDK selector `MODAL_ENVIRONMENT`, while the workspace and remaining Environment-scoped variables bind all named objects. `CODEX_AUTH_VOLUME` supplies the separately device-authenticated Codex `auth.json`. Before repository setup, the exact-wheel lane creates a separate preflight Sandbox and completes one bounded real Codex turn through the same thread-admission and OAuth-scrub barrier; `codex login status` alone is not release evidence. A failure exposes only an allowlisted category and length/digest summaries. `CODING_AGENT_GITHUB_SECRET` names the Modal Secret resolved for the isolated publisher, but the paid live lane deliberately pushes to a provider-local bare remote and never attaches that secret or mutates GitHub. Deterministic broker contracts separately prove that only the exact GitHub push process can receive `GITHUB_TOKEN`. Modal Connect Tokens authenticate the two transient viewport URLs. |
 
 The operator-dispatched release workflow is serialized under one release
 concurrency group because its configured Codex auth Volume is a static mutable
