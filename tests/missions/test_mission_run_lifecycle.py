@@ -436,6 +436,12 @@ async def test_lifecycle_events_are_contiguous_ordered_and_exactly_once(
     assert events[2].payload["mission_id"] == 1
     assert events[3].payload["has_result"] is True
 
+    first_page = await lifecycle.events(run.run_id, after=0, limit=2)
+    second_page = await lifecycle.events(run.run_id, after=first_page[-1].cursor, limit=500)
+    replayed = [*first_page, *second_page]
+    assert [event.event_id for event in replayed] == [event.event_id for event in events]
+    assert await lifecycle.events(run.run_id, after=events[-1].cursor) == ()
+
 
 @pytest.mark.asyncio
 async def test_cancel_events_record_intent_before_terminal_and_never_duplicate(
@@ -453,25 +459,6 @@ async def test_cancel_events_record_intent_before_terminal_and_never_duplicate(
         "cancelled",
     ]
     assert events[1].payload["reason"] == "operator stop"
-
-
-@pytest.mark.asyncio
-async def test_event_replay_after_cursor_has_no_gaps_or_duplicates(
-    tmp_path,
-) -> None:
-    executor = _FakeExecutor()
-    lifecycle, supervisor = _supervisor(tmp_path, executor)
-    run = await lifecycle.accept(_request(), execution_profile_identity(_config()))
-    task = supervisor.ensure(run)
-    assert task is not None
-    await asyncio.wait_for(task, timeout=2)
-
-    full = await lifecycle.events(run.run_id)
-    first_page = await lifecycle.events(run.run_id, after=0, limit=2)
-    second_page = await lifecycle.events(run.run_id, after=first_page[-1].cursor, limit=500)
-    replayed = [*first_page, *second_page]
-    assert [event.event_id for event in replayed] == [event.event_id for event in full]
-    assert await lifecycle.events(run.run_id, after=full[-1].cursor) == ()
 
 
 @pytest.mark.asyncio

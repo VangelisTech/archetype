@@ -51,9 +51,6 @@ MISSION_RUN_EVENT_PHASES = MappingProxyType(
         "failed": "terminal",
         "cancelled": "terminal",
         "interrupted": "terminal",
-        "cleanup_pending": "cleanup",
-        "cleanup_complete": "cleanup",
-        "cleanup_failed": "cleanup",
     }
 )
 

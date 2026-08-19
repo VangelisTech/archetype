@@ -635,8 +635,7 @@ def test_cancel_records_durable_intent_idempotently_and_converges(
         assert types.count("cancel_requested") == 1
         assert types.count("cancelling") == 1
         assert types.count("cancelled") == 1
-        # Cleanup facts stay observable after the terminal outcome.
-        assert types.index("cancelled") < types.index("cleanup_pending")
+        assert types[-1] == "cancelled"
 
         result = client.get(
             f"/v1/mission-runs/{run_id}/result",
@@ -700,6 +699,129 @@ def test_api_restart_during_run_resumes_one_run_with_a_truthful_outcome(
         assert types.count("mission_bound") == 1
         assert types.count("running") == 1
         assert types.count("succeeded") == 1
+
+
+def test_api_restart_during_cancel_converges_durably(
+    mission_api: SimpleNamespace,
+) -> None:
+    gate = mission_api.gate
+    with mission_api.make_client() as client:
+        created = client.post(
+            "/v1/mission-runs",
+            json=_submit_body(),
+            headers=_submit_headers("cancel-crash-key"),
+        )
+        run_id = created.json()["run_id"]
+        assert gate.submitted.wait(_DEADLINE_SECONDS)
+        cancelling = client.post(
+            f"/v1/mission-runs/{run_id}/cancel",
+            json={"reason": "operator stop"},
+            headers=_auth(_AGENT_TOKEN),
+        )
+        assert cancelling.status_code == 202, cancelling.text
+        assert cancelling.json()["state"] == "cancelling"
+        # The API process disappears with the intent durable and the run open.
+
+    with mission_api.make_client() as restarted:
+        status = restarted.get(
+            f"/v1/mission-runs/{run_id}",
+            headers=_auth(_AGENT_TOKEN),
+        )
+        assert status.status_code == 200, status.text
+        assert status.json()["cancellation_requested"] is True
+
+        final = _poll(restarted, run_id, lambda body: body["state"] == "cancelled")
+        assert final["cancellation_requested"] is True
+        assert final["cancellation_reason"] == "operator stop"
+
+        events = restarted.get(
+            f"/v1/mission-runs/{run_id}/events",
+            headers=_auth(_AGENT_TOKEN),
+        ).json()["events"]
+        cursors = [event["cursor"] for event in events]
+        assert cursors == list(range(1, len(cursors) + 1))
+        types = [event["event_type"] for event in events]
+        assert types.count("cancel_requested") == 1
+        assert types.count("cancelling") == 1
+        assert types.count("cancelled") == 1
+
+        result = restarted.get(
+            f"/v1/mission-runs/{run_id}/result",
+            headers=_auth(_AGENT_TOKEN),
+        )
+        assert result.status_code == 200, result.text
+        assert result.json()["state"] == "cancelled"
+
+
+def test_result_and_status_projections_truncate_oversized_text() -> None:
+    from archetype.missions.api import (
+        _MAX_CANCEL_REASON_CHARS,
+        _MAX_RESULT_REASON_CHARS,
+        _run_result_response,
+        _run_status_response,
+    )
+    from archetype.missions.contracts import (
+        AgentTask,
+        CommandValidator,
+        MissionSubmission,
+    )
+    from archetype.missions.run_contracts import (
+        ExecutionProfileIdentity,
+        MissionRun,
+        MissionRunStatus,
+    )
+
+    long_reason = "r" * (_MAX_RESULT_REASON_CHARS + 500)
+    run = MissionRun(
+        run_id="run-truncation",
+        principal="agent",
+        idempotency_key="truncation-key",
+        request_digest="0" * 64,
+        profile=ExecutionProfileIdentity(profile_id="p", version="1", digest="0" * 64),
+        status=MissionRunStatus.FAILED,
+        submission=MissionSubmission(
+            repository="VangelisTech/archetype",
+            branch="agent/truncation",
+            tasks=(
+                AgentTask(
+                    name="implementation",
+                    prompt="Implement the requested change.",
+                    validators=(CommandValidator(name="tests", command=("true",)),),
+                ),
+            ),
+        ),
+        cancellation_intent=True,
+        cancellation_reason="c" * 4096,
+        result=MissionResult(
+            mission_id=1,
+            episode_id="episode-truncation",
+            status="failed",
+            repository="VangelisTech/archetype",
+            branch="agent/truncation",
+            ticks_completed=1,
+            reason=long_reason,
+            tasks=(
+                TaskResult(
+                    task_id=2,
+                    name="implementation",
+                    status="failed",
+                    dispatches=1,
+                    commit_shas=(),
+                    reason=long_reason,
+                ),
+            ),
+        ),
+        accepted_at_ms=1,
+        terminal_at_ms=2,
+    )
+
+    result_view = _run_result_response(run)
+    assert result_view.result is not None
+    assert len(result_view.result.reason) == _MAX_RESULT_REASON_CHARS
+    assert len(result_view.result.tasks[0].reason) == _MAX_RESULT_REASON_CHARS
+
+    status_view = _run_status_response(run)
+    assert len(status_view.cancellation_reason) == _MAX_CANCEL_REASON_CHARS
 
 
 def test_openapi_documents_every_run_route_state_and_error(

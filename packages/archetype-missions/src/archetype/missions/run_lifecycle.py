@@ -266,18 +266,6 @@ class MissionRunLifecycle:
         error: str = "",
     ) -> MissionRun:
         now_ms = self._now_ms()
-        events: tuple[dict[str, object], ...] = ()
-        if state is not run.cleanup_state and state is not MissionRunCleanupState.NONE:
-            events = (
-                self._event(
-                    f"cleanup_{state.value}",
-                    {
-                        "state": state.value,
-                        "error": error[:_MAX_EVENT_REASON_CHARS],
-                    },
-                    now_ms=now_ms,
-                ),
-            )
         return await self._replace(
             run,
             {
@@ -285,7 +273,6 @@ class MissionRunLifecycle:
                 "cleanup_error": error,
                 "updated_at_ms": now_ms,
             },
-            events=events,
         )
 
     async def events(
