@@ -116,6 +116,7 @@ PAGES: tuple[ReferencePage, ...] = (
             "ExecutionProfileCatalog",
             "ExecutionProfileIdentity",
             "MissionProfileRequest",
+            "installed_execution_profiles",
         ),
         "archetype-missions",
     ),
@@ -342,6 +343,7 @@ WORLD_LIBRARY_FACADE_TIERS: dict[str, dict[str, tuple[str, ...]]] = {
             "ExecutionProfileCatalog",
             "ExecutionProfileIdentity",
             "MissionProfileRequest",
+            "installed_execution_profiles",
         ),
     },
     "archetype.physical_ai": {
@@ -419,6 +421,7 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
     "ExecutionProfileCatalog": ("archetype.missions", "ExecutionProfileCatalog"),
     "ExecutionProfileIdentity": ("archetype.missions", "ExecutionProfileIdentity"),
     "MissionProfileRequest": ("archetype.missions", "MissionProfileRequest"),
+    "installed_execution_profiles": ("archetype.missions", "installed_execution_profiles"),
     "Research": ("archetype.research", "Research"),
     "AutoResearchConfig": ("archetype.research", "AutoResearchConfig"),
     "AutoResearchResult": ("archetype.research", "AutoResearchResult"),

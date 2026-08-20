@@ -42,7 +42,7 @@ Every name in a world-library facade is assigned exactly one tier. The docs buil
 
 - **Recommended:** `Missions`, `MissionWorld`, `AgentMissionConfig`, `AgentTask`, `CommandValidator`, `CriticPolicy`, `RepositoryPublicationPolicy`, `SubmittedMission`, `MissionResult`, `TaskResult`
 - **Extension:** `MISSION_COMPONENTS`, `MISSION_TRANSITIONS`, `OUTPUT_COMPONENTS`, `TASK_COMPONENTS`, `TASK_TRANSITIONS`, `AgentArtifact`, `AgentExecution`, `AgentExecutionStatus`, `AuthoredBy`, `AuthorActivityObservation`, `Candidate`, `CandidateFor`, `Checkpoint`, `Commit`, `CompleteAuthorActivityObservation`, `CompleteCriticActivityObservation`, `CriticConclusion`, `CriticExecution`, `CriticExecutionStatus`, `CriticFinding`, `CriticReceipt`, `DependsOn`, `Executes`, `FilesystemManifest`, `FrictionLog`, `Guards`, `Mission`, `MissionState`, `MissionStatus`, `MissionSubmission`, `mission_episode_id`, `PartOfMission`, `ProducedBy`, `Reviews`, `RunsIn`, `RunnerSession`, `Sandbox`, `Task`, `TaskCriticPolicy`, `TaskCriticSubjectPolicy`, `TaskDispatch`, `TaskPolicy`, `TaskState`, `TaskStatus`, `TaskValidator`, `TaskWorkspace`, `ValidationResult`, `Supersedes`, `require_mission_transition`, `require_task_transition`, `load_runner_sessions`
-- **Integration:** `MissionsExtensionConfig`, `ExecutionProfile`, `ExecutionProfileBinding`, `ExecutionProfileCatalog`, `ExecutionProfileIdentity`, `MissionProfileRequest`
+- **Integration:** `MissionsExtensionConfig`, `ExecutionProfile`, `ExecutionProfileBinding`, `ExecutionProfileCatalog`, `ExecutionProfileIdentity`, `MissionProfileRequest`, `installed_execution_profiles`
 
 ### `archetype.physical_ai`
 

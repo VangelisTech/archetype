@@ -101,6 +101,11 @@ def _require_bool(value: object, *, label: str) -> bool:
 def _parse_expiry(value: object) -> datetime | None:
     if value is None or value == "":
         return None
+    if isinstance(value, datetime):
+        # tomllib yields datetime objects for idiomatic unquoted TOML values.
+        if value.tzinfo is None:
+            raise ValueError("expires_at must include a timezone")
+        return value.astimezone(UTC)
     if not isinstance(value, str):
         raise ValueError("expires_at must be an RFC 3339 timestamp")
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -264,8 +269,16 @@ class MissionPrincipalDirectory:
 
 
 def bind_host_from_env(environ: Mapping[str, str] | None = None) -> str:
+    """Return the declared bind host, or ``""`` when no host was declared.
+
+    An undeclared bind host must stay fail-closed: ``is_loopback_host("")``
+    is False, so the non-loopback principal guard applies. ``archetype serve``
+    declares its bind host automatically; a bare ``uvicorn`` loopback
+    development launch opts in explicitly with ``ARCHETYPE_BIND_HOST=127.0.0.1``.
+    """
+
     source = os.environ if environ is None else environ
-    return source.get(_BIND_HOST_ENV, "127.0.0.1").strip() or "127.0.0.1"
+    return source.get(_BIND_HOST_ENV, "").strip()
 
 
 __all__ = [

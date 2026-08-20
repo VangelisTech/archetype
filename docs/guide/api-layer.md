@@ -89,9 +89,14 @@ a successful profile check is not a `202 Accepted` MissionRun. The durable
 MissionRun owner remains the sole authority for run identity, ownership grants,
 lifecycle, and pinned profile identity.
 
-When the Missions library is installed, supported `archetype serve` startup on
-a non-loopback bind requires a configured principal directory. Existing ECS
-developer routes otherwise retain the deliberate v0.6 behavior above.
+When the Missions library is installed, startup on a non-loopback bind
+requires a configured principal directory. An undeclared bind host is treated
+as non-loopback: `archetype serve` declares `ARCHETYPE_BIND_HOST` from its
+`--host` option, while a bare `uvicorn archetype.api.app:create_app --factory`
+launch declares nothing and therefore fails closed. Loopback development
+outside `archetype serve` opts in explicitly with
+`ARCHETYPE_BIND_HOST=127.0.0.1`. Existing ECS developer routes otherwise
+retain the deliberate v0.6 behavior above.
 
 ## Route Structure
 

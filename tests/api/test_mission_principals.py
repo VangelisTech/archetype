@@ -15,6 +15,7 @@ from archetype.api.app import create_app
 from archetype.api.principals import (
     AuthenticationError,
     MissionPrincipalDirectory,
+    bind_host_from_env,
     is_loopback_host,
     parse_bearer_credential,
 )
@@ -93,6 +94,52 @@ def test_unknown_expired_and_revoked_credentials_fail_closed() -> None:
         active.authenticate("unknown-credential-" + "Z" * 32, now=now)
 
 
+def test_expiry_accepts_native_toml_datetimes_and_requires_a_timezone(tmp_path) -> None:
+    document = tmp_path / "principals.toml"
+    document.write_text(
+        "\n".join(
+            (
+                "[[principal]]",
+                'id = "agent"',
+                'token_env = "MISSION_AGENT_TOKEN"',
+                'capabilities = ["mission:submit"]',
+                "expires_at = 2026-08-18T00:00:00Z",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    directory = MissionPrincipalDirectory.from_env(
+        {
+            "ARCHETYPE_MISSION_PRINCIPALS_PATH": str(document),
+            "MISSION_AGENT_TOKEN": _TOKEN,
+        }
+    )
+
+    active = directory.authenticate(_TOKEN, now=datetime(2026, 8, 17, tzinfo=UTC))
+    assert active.principal_id == "agent"
+    with pytest.raises(AuthenticationError):
+        directory.authenticate(_TOKEN, now=datetime(2026, 8, 19, tzinfo=UTC))
+
+    with pytest.raises(ValueError, match="timezone"):
+        MissionPrincipalDirectory.from_provisioning(
+            (_row(expires_at=datetime(2026, 8, 18)),),
+            {"MISSION_AGENT_TOKEN": _TOKEN},
+        )
+
+
+def test_undeclared_bind_host_stays_fail_closed_and_loopback_is_explicit() -> None:
+    assert bind_host_from_env({}) == ""
+    assert not is_loopback_host(bind_host_from_env({}))
+    assert bind_host_from_env({"ARCHETYPE_BIND_HOST": " 127.0.0.1 "}) == "127.0.0.1"
+
+    with pytest.raises(RuntimeError, match="verified principals"):
+        MissionPrincipalDirectory.empty().require_non_loopback_configuration(bind_host_from_env({}))
+    MissionPrincipalDirectory.empty().require_non_loopback_configuration(
+        bind_host_from_env({"ARCHETYPE_BIND_HOST": "127.0.0.1"})
+    )
+
+
 def test_non_loopback_missions_host_requires_a_configured_directory() -> None:
     assert is_loopback_host("127.0.0.1")
     assert is_loopback_host("::1")
@@ -120,6 +167,21 @@ def test_non_loopback_missions_host_fails_startup_without_principals(
 ) -> None:
     monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "catalogs"))
     monkeypatch.setenv("ARCHETYPE_BIND_HOST", "0.0.0.0")
+    monkeypatch.delenv("ARCHETYPE_MISSION_PRINCIPALS_PATH", raising=False)
+    app = create_app(world_libraries=(get_manifest(),))
+
+    with pytest.raises(RuntimeError, match="verified principals"), TestClient(app):
+        pass
+
+
+def test_missions_host_with_undeclared_bind_host_fails_startup_without_principals(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A bare ``uvicorn --factory`` launch never declares a bind host: fail closed."""
+
+    monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "catalogs"))
+    monkeypatch.delenv("ARCHETYPE_BIND_HOST", raising=False)
     monkeypatch.delenv("ARCHETYPE_MISSION_PRINCIPALS_PATH", raising=False)
     app = create_app(world_libraries=(get_manifest(),))
 

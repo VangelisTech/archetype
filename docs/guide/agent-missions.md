@@ -219,6 +219,17 @@ id, version, and SHA-256 digest form the durable identity copied into an
 accepted MissionRun. Current versions are selected explicitly, and historical
 versions remain resolvable; file order never silently chooses authority.
 
+The installer retains the validated `MissionsExtensionConfig` on the
+installed library record, so the catalog stays reachable through the existing
+world-library seam rather than a parallel service locator:
+`RuntimeResources.world_library("missions")` resolves the installed record,
+`archetype.missions.installed_execution_profiles(installed)` returns the
+`ExecutionProfileCatalog`, and `catalog.resolve(profile_id)` yields the
+`ExecutionProfileBinding` whose `build_config()` materializes the live
+`AgentMissionConfig`. REST handlers use the
+`archetype.missions.api.get_execution_profiles` dependency, which performs the
+same resolution from lifespan-owned state.
+
 Authentication and profile authorization do not create a run. Missions policy
 consumes the authenticated principal and the ownership/profile projection from
 the durable MissionRun owner. It checks the requested capability, explicit run

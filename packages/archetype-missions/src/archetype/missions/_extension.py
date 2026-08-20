@@ -487,6 +487,8 @@ def install(context: WorldLibraryContext) -> InstalledWorldLibrary:
     config = context.config
     if config is not None and not isinstance(config, MissionsExtensionConfig):
         raise TypeError("missions config must be a MissionsExtensionConfig")
+    if config is None:
+        config = MissionsExtensionConfig()
 
     transcripts = TranscriptIngestionService(
         context.redaction,
@@ -531,6 +533,7 @@ def install(context: WorldLibraryContext) -> InstalledWorldLibrary:
         name="missions",
         runtime_adapter=Missions,
         world_adapter=MissionWorld,
+        config=config,
     )
 
 

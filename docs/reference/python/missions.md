@@ -135,3 +135,5 @@
 ::: archetype.missions.ExecutionProfileIdentity
 
 ::: archetype.missions.MissionProfileRequest
+
+::: archetype.missions.installed_execution_profiles

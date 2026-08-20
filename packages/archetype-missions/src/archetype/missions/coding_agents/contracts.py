@@ -176,6 +176,8 @@ class AgentExecutionResult:
 class CodingAgentDriver(Protocol):
     """Invoke one coding-agent process through a sandbox session."""
 
+    driver_id: str
+
     async def run(
         self,
         session: SandboxSession,

@@ -375,6 +375,8 @@ async def test_actor_aware_matrix_and_deferred_paths_reject_before_effects(
     """The lifespan dispatcher allows exactly four and defers none."""
 
     monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "api-catalog"))
+    # An undeclared bind host is fail-closed; this test exercises loopback.
+    monkeypatch.setenv("ARCHETYPE_BIND_HOST", "127.0.0.1")
     app = create_app()
     effects: list[str] = []
     scheduler_effects: list[str] = []

@@ -23,4 +23,20 @@ class MissionsExtensionConfig:
             raise TypeError("execution_profiles must be an ExecutionProfileCatalog")
 
 
-__all__ = ["MissionsExtensionConfig"]
+def installed_execution_profiles(installed: object) -> ExecutionProfileCatalog:
+    """Return the execution-profile catalog retained by the installed library.
+
+    ``installed`` is the value ``RuntimeResources.world_library("missions")``
+    resolves after composition: the Missions installer retains the validated
+    ``MissionsExtensionConfig`` (or its typed empty default) on
+    ``InstalledWorldLibrary.config``, so profile authority flows through the
+    existing world-library seam rather than a parallel service locator.
+    """
+
+    config = getattr(installed, "config", None)
+    if not isinstance(config, MissionsExtensionConfig):
+        raise TypeError("installed missions library did not retain MissionsExtensionConfig")
+    return config.execution_profiles
+
+
+__all__ = ["MissionsExtensionConfig", "installed_execution_profiles"]
