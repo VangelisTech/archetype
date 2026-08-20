@@ -386,6 +386,26 @@ class _RestoreMissionSandbox(_MissionOperation):
     operation: Literal["restore_mission_sandbox"] = "restore_mission_sandbox"
 
 
+class _AcceptMissionRun(_MissionOperation):
+    operation: Literal["accept_mission_run"] = "accept_mission_run"
+
+
+class _GetMissionRun(_MissionOperation):
+    operation: Literal["get_mission_run"] = "get_mission_run"
+
+
+class _CancelMissionRun(_MissionOperation):
+    operation: Literal["cancel_mission_run"] = "cancel_mission_run"
+
+
+class _GetMissionRunEvents(_MissionOperation):
+    operation: Literal["get_mission_run_events"] = "get_mission_run_events"
+
+
+class _ListMissionRuns(_MissionOperation):
+    operation: Literal["list_mission_runs"] = "list_mission_runs"
+
+
 @pytest.mark.asyncio
 async def test_future_mission_operations_are_trusted_direct_only_and_reject_all_wire_paths() -> (
     None
@@ -394,7 +414,16 @@ async def test_future_mission_operations_are_trusted_direct_only_and_reject_all_
     api = _commands_api()
     registry = api.OperationRegistry()
     provider_calls: list[str] = []
-    mission_models = (_SubmitMission, _RunMission, _RestoreMissionSandbox)
+    mission_models = (
+        _SubmitMission,
+        _RunMission,
+        _RestoreMissionSandbox,
+        _AcceptMissionRun,
+        _GetMissionRun,
+        _CancelMissionRun,
+        _GetMissionRunEvents,
+        _ListMissionRuns,
+    )
 
     async def live_handler(operation: _MissionOperation) -> None:
         provider_calls.append(operation.operation)
@@ -485,7 +514,7 @@ async def test_future_mission_operations_are_trusted_direct_only_and_reject_all_
     assert provider_calls == []
     assert scheduler.admissions == []
     assert {"target_tick", "priority", "max_attempts"}.isdisjoint(_MissionOperation.model_fields)
-    assert len(access.rows) == 6
+    assert len(access.rows) == 16
     assert set(resolved_ticks) <= {"mission-world"}
     for evidence_value in access.rows:
         evidence = _evidence_dict(evidence_value)

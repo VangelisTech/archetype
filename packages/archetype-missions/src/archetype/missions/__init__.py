@@ -65,6 +65,15 @@ from archetype.missions.relations import (
     RunsIn,
     Supersedes,
 )
+from archetype.missions.run_contracts import (
+    MissionRun,
+    MissionRunCleanupState,
+    MissionRunConflictError,
+    MissionRunNotFoundError,
+    MissionRunRequest,
+    MissionRunStatus,
+    require_mission_run_transition,
+)
 from archetype.missions.runtime import Missions, MissionWorld
 from archetype.missions.sessions import RunnerSession, load_runner_sessions
 from archetype.missions.transitions import (
@@ -117,6 +126,12 @@ __all__ = [
     "Mission",
     "MissionWorld",
     "MissionResult",
+    "MissionRun",
+    "MissionRunCleanupState",
+    "MissionRunConflictError",
+    "MissionRunNotFoundError",
+    "MissionRunRequest",
+    "MissionRunStatus",
     "MissionState",
     "MissionStatus",
     "MissionSubmission",
@@ -144,6 +159,7 @@ __all__ = [
     "TaskWorkspace",
     "ValidationResult",
     "Supersedes",
+    "require_mission_run_transition",
     "require_mission_transition",
     "require_task_transition",
     "load_runner_sessions",

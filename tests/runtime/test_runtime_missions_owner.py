@@ -20,7 +20,14 @@ from archetype.missions.contracts import (
     CommandValidator,
     SubmittedMission,
 )
-from archetype.missions.models import RestoreMissionSandbox, RunMission, SubmitMission
+from archetype.missions.models import (
+    AcceptMissionRun,
+    CancelMissionRun,
+    GetMissionRun,
+    RestoreMissionSandbox,
+    RunMission,
+    SubmitMission,
+)
 from archetype.missions.runtime import Missions
 from archetype.missions.sandboxes import CheckpointRef
 from archetype.runtime.runtime import ArchetypeRuntime
@@ -179,6 +186,24 @@ async def _invoke(handle: Any, operation: str) -> object:
                 ),
             ),
         )
+    if operation == "accept":
+        return await handle.accept(
+            repository="repo",
+            branch="branch",
+            tasks=(
+                AgentTask(
+                    name="task",
+                    prompt="Implement the task.",
+                    validators=(CommandValidator(name="test", command=("pytest", "-q")),),
+                ),
+            ),
+            principal="agent:owner-contract",
+            idempotency_key="run-1",
+        )
+    if operation == "get_run":
+        return await handle.get_run("run-1")
+    if operation == "cancel_run":
+        return await handle.cancel_run("run-1", reason="stop")
     if operation == "run":
         return await handle.run(_mission())
     if operation == "restore":
@@ -268,7 +293,10 @@ async def test_runtime_owned_release_closes_facade_before_dispatch_effect() -> N
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["submit", "run", "restore", "query"])
+@pytest.mark.parametrize(
+    "operation",
+    ["submit", "accept", "get_run", "cancel_run", "run", "restore", "query"],
+)
 async def test_mission_close_drains_each_admitted_public_operation(operation: str) -> None:
     operation_started = asyncio.Event()
     operation_release = asyncio.Event()
@@ -278,6 +306,9 @@ async def test_mission_close_drains_each_admitted_public_operation(operation: st
             self.effects += 1
             expected_type = {
                 "submit": SubmitMission,
+                "accept": AcceptMissionRun,
+                "get_run": GetMissionRun,
+                "cancel_run": CancelMissionRun,
                 "run": RunMission,
                 "restore": RestoreMissionSandbox,
             }.get(operation_name)
@@ -328,7 +359,10 @@ async def test_mission_close_drains_each_admitted_public_operation(operation: st
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["submit", "run", "restore", "query"])
+@pytest.mark.parametrize(
+    "operation",
+    ["submit", "accept", "get_run", "cancel_run", "run", "restore", "query"],
+)
 async def test_process_admission_drains_each_mission_operation(operation: str) -> None:
     operation_started = asyncio.Event()
     operation_release = asyncio.Event()
@@ -339,6 +373,9 @@ async def test_process_admission_drains_each_mission_operation(operation: str) -
             self.effects += 1
             expected_type = {
                 "submit": SubmitMission,
+                "accept": AcceptMissionRun,
+                "get_run": GetMissionRun,
+                "cancel_run": CancelMissionRun,
                 "run": RunMission,
                 "restore": RestoreMissionSandbox,
             }.get(operation_name)

@@ -36,6 +36,7 @@ WORLD_LIBRARY_EXPORTS = {
     "RepositoryPublicationPolicy",
     "ResearchCandidateContext",
     "SubmittedMission",
+    "MissionRun",
     "TaskResult",
 }
 

@@ -62,6 +62,9 @@ operations = [
   "service.MissionWorld.shutdown",
   "service.MissionWorld.update",
   "service.MissionWorld.world_id",
+  "run_supervisor.MissionRunExecutor.load_existing",
+  "run_supervisor.MissionRunExecutor.run",
+  "run_supervisor.MissionRunExecutor.submit",
   "service.MissionCleanup.commit",
   "service.MissionCleanup.finish",
   "service.MissionCleanup.stage_teardown",
@@ -104,6 +107,7 @@ evidence = [
   "tests/missions/test_mission_author_activities.py",
   "tests/missions/test_mission_critic_activities.py",
   "tests/missions/test_mission_critic_world_integration.py",
+  "tests/missions/test_mission_run_lifecycle.py",
   "tests/missions/test_trajectory_service.py",
 ]
 rationale = "Mission orchestration and family-owned sandbox or agent adapters emit no second authority signal; world history and bound evidence record every durable decision and observation."

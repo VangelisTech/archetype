@@ -190,6 +190,15 @@ def test_missions_host_with_undeclared_bind_host_fails_startup_without_principal
 
 
 def test_auth_and_profile_contract_does_not_publish_a_shadow_run_router() -> None:
+    """Only the durable MissionRun surface is published, never the pin router.
+
+    Before issue #809 landed this asserted no ``/v1/mission*`` route existed
+    at all; the durable lifecycle now owns ``/v1/mission-runs``, so the
+    contract narrows to its original point: no shadow in-memory
+    ``/v1/mission-control`` pin surface may resurface beside it.
+    """
+
     app = create_app(world_libraries=(get_manifest(),))
     paths = {route.path for route in app.routes}
-    assert not any(path.startswith("/v1/mission") for path in paths)
+    assert not any(path.startswith("/v1/mission-control") for path in paths)
+    assert any(path.startswith("/v1/mission-runs") for path in paths)

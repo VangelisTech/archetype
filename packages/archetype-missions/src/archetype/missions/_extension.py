@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from functools import partial
+from pathlib import Path
 from typing import Any, cast
 
 from pydantic import BaseModel
@@ -14,7 +15,7 @@ from pydantic import BaseModel
 from archetype.activities import ActivityCoordinator
 from archetype.commands.registry import OperationSpec
 from archetype.core.config import StorageConfig
-from archetype.errors import WorldNotFoundError
+from archetype.errors import ConflictError, WorldNotFoundError
 from archetype.missions.activity_binding import MissionActivityBinding
 from archetype.missions.activity_coordinator import MissionAuthorActivityCoordinator
 from archetype.missions.activity_world import (
@@ -28,7 +29,11 @@ from archetype.missions.coding_agents.harness import (
     CodingAgentHarness,
     CodingAgentHarnessConfig,
 )
-from archetype.missions.config import MissionsExtensionConfig
+from archetype.missions.config import (
+    MissionsExtensionConfig,
+    installed_execution_profiles,
+)
+from archetype.missions.contracts import MissionSubmission, SubmittedMission
 from archetype.missions.critic_activity_coordinator import MissionCriticActivityCoordinator
 from archetype.missions.critic_activity_world import (
     MissionCriticActivityBinding,
@@ -51,11 +56,27 @@ from archetype.missions.modal_critic import (
     ModalMissionCriticExecutorConfig,
 )
 from archetype.missions.models import (
+    AcceptMissionRun,
+    CancelMissionRun,
+    GetMissionRun,
+    GetMissionRunEvents,
+    ListMissionRuns,
     RestoreMissionSandbox,
     RunMission,
     SubmitMission,
     summarize_mission_operation,
 )
+from archetype.missions.run_catalog import (
+    SqliteMissionRunCatalog,
+    mission_run_catalog_path_for,
+)
+from archetype.missions.run_contracts import (
+    ExecutionProfileIdentity,
+    MissionRun,
+    execution_profile_identity,
+)
+from archetype.missions.run_lifecycle import MissionRunLifecycle
+from archetype.missions.run_supervisor import MissionRunSupervisor
 from archetype.missions.runtime import Missions, MissionWorld
 from archetype.missions.sandboxes.modal import (
     ModalCodexAppServerConnector,
@@ -94,6 +115,11 @@ MISSION_OPERATION_MODELS: tuple[type[BaseModel], ...] = (
     SubmitMission,
     RunMission,
     RestoreMissionSandbox,
+    AcceptMissionRun,
+    GetMissionRun,
+    CancelMissionRun,
+    GetMissionRunEvents,
+    ListMissionRuns,
 )
 
 _OPERATION_SCOPES: dict[type[BaseModel], Any] = {
@@ -104,6 +130,11 @@ _OPERATION_SCOPES: dict[type[BaseModel], Any] = {
     SubmitMission: "application",
     RunMission: "application",
     RestoreMissionSandbox: "application",
+    AcceptMissionRun: "application",
+    GetMissionRun: "application",
+    CancelMissionRun: "application",
+    GetMissionRunEvents: "application",
+    ListMissionRuns: "application",
 }
 
 
@@ -241,6 +272,38 @@ def _mission_world_factory(
     return create
 
 
+def _coerce_storage(storage: str | Path | StorageConfig | None) -> StorageConfig:
+    if isinstance(storage, StorageConfig):
+        return storage
+    if storage is not None:
+        return StorageConfig(uri=str(storage))
+    return StorageConfig()
+
+
+async def _world_recorded(
+    context: WorldLibraryContext,
+    world_id: str,
+    storage_config: StorageConfig,
+) -> bool:
+    catalog = context.storage.get_control_catalog(storage_config)
+    return await catalog.get_world(world_id) is not None
+
+
+async def _create_run_world(
+    context: WorldLibraryContext,
+    *,
+    world_id: str,
+    name: str,
+    storage_config: StorageConfig,
+) -> None:
+    from archetype.core.config import WorldConfig
+
+    await context.lifecycle.create_world(
+        WorldConfig(world_id=world_id, name=name),
+        storage_config,
+    )
+
+
 async def _handle_mission(
     context: WorldLibraryContext,
     operation: SubmitMission | RunMission,
@@ -252,15 +315,30 @@ async def _handle_mission(
     reservation = context.resources.owner(operation.owner_id)
     async with context.resources.admit_owner_operation(reservation):
         cold_constructed = False
+        created_predetermined = False
+        storage_config = _coerce_storage(operation.storage)
+        intended_world_id = ""
+        if isinstance(operation, RunMission):
+            intended_world_id = operation.mission.world_id.strip()
+            if not intended_world_id:
+                raise ValueError("cold Mission run requires SubmittedMission.world_id")
+        elif operation.predetermined_world_id.strip():
+            intended_world_id = operation.predetermined_world_id.strip()
+            if not await _world_recorded(context, intended_world_id, storage_config):
+                await _create_run_world(
+                    context,
+                    world_id=intended_world_id,
+                    name=operation.name,
+                    storage_config=storage_config,
+                )
+                created_predetermined = True
 
         async def construct() -> MissionService:
             nonlocal cold_constructed
             cold_world_id: str | None = None
-            if isinstance(operation, RunMission):
-                cold_world_id = operation.mission.world_id.strip()
-                if not cold_world_id:
-                    raise ValueError("cold Mission run requires SubmittedMission.world_id")
-                cold_constructed = True
+            if intended_world_id:
+                cold_world_id = intended_world_id
+                cold_constructed = not created_predetermined
 
             sandbox = SandboxService((backend,))
             reservation.bind(sandbox, close=sandbox.shutdown)
@@ -411,22 +489,20 @@ async def _handle_mission(
             )
 
         service = await reservation.construct(construct)
-        if cold_constructed:
-            assert isinstance(operation, RunMission)
-            world_id = operation.mission.world_id
-            storage_config = (
-                operation.storage
-                if isinstance(operation.storage, StorageConfig)
-                else StorageConfig(uri=str(operation.storage))
-                if operation.storage is not None
-                else StorageConfig()
-            )
-            await context.worlds.remember_storage_identity(world_id, storage_config)
-            # Bind the exact projector before reconstructing the mutable world.
+        if intended_world_id:
+            await context.worlds.remember_storage_identity(intended_world_id, storage_config)
             await service.bind_activity()
-            await context.lifecycle.open_world_mutable(storage_config, world_id)
+            if cold_constructed:
+                await context.lifecycle.open_world_mutable(storage_config, intended_world_id)
 
         if isinstance(operation, SubmitMission):
+            if intended_world_id:
+                recovered = await service.recover_submitted()
+                if recovered is not None:
+                    return _require_recovered_submission_matches(
+                        recovered,
+                        operation.submission,
+                    )
             submission = operation.submission
             return await service.submit(
                 repository=submission.repository,
@@ -436,6 +512,268 @@ async def _handle_mission(
                 base_ref=submission.base_ref,
             )
         return await service.run(operation.mission, max_ticks=operation.max_ticks)
+
+
+def _require_recovered_submission_matches(
+    recovered: SubmittedMission,
+    submission: MissionSubmission,
+) -> SubmittedMission:
+    """Refuse recovery evidence that does not correspond to the request.
+
+    ``recover_submitted`` trusts the predetermined world alone; comparing the
+    recovered repository coordinates and task-name inventory against the
+    requested submission keeps a reused world id from silently binding a
+    different mission.
+    """
+
+    expected = (
+        submission.repository,
+        submission.branch,
+        submission.base_ref,
+        tuple(sorted(task.name for task in submission.tasks)),
+    )
+    actual = (
+        recovered.repository,
+        recovered.branch,
+        recovered.base_ref,
+        tuple(sorted(name for name, _task_id in recovered.task_ids)),
+    )
+    if expected != actual:
+        raise ConflictError(
+            "recovered Mission evidence does not correspond to the requested submission"
+        )
+    return recovered
+
+
+class _DispatchedMissionRunExecutor:
+    """Invoke governed SubmitMission/RunMission without a second scheduler."""
+
+    def __init__(
+        self,
+        context: WorldLibraryContext,
+        *,
+        owner_id: str,
+        name: str,
+        config: Any,
+        storage: str | Path | StorageConfig | None,
+    ) -> None:
+        self._context = context
+        self._owner_id = owner_id
+        self._name = name
+        self._config = config
+        self._storage = storage
+
+    def _mission_config(self, run: MissionRun) -> Any:
+        """Return the process-bound config or materialize the pinned profile.
+
+        REST-accepted runs carry no caller config; the host-owned execution
+        profile bound through ``world_library_configs`` and retained on the
+        installed library composes the live ``AgentMissionConfig`` for the
+        exact pinned identity. An unbound host fails here and supervision
+        records an honest failed run instead of fabricating provider work.
+        """
+
+        if self._config is not None:
+            return self._config
+        installed = self._context.resources.world_library("missions")
+        binding = installed_execution_profiles(installed).resolve(
+            run.profile.profile_id,
+            version=run.profile.version,
+            digest=run.profile.digest,
+        )
+        return binding.build_config()
+
+    async def submit(self, run: MissionRun) -> Any:
+        return await self._context.resources.dispatcher.apply(
+            SubmitMission(
+                owner_id=self._owner_id,
+                name=f"mission-run:{run.run_id}",
+                config=self._mission_config(run),
+                storage=self._storage,
+                submission=run.submission,
+                predetermined_world_id=run.world_id,
+            )
+        )
+
+    async def load_existing(self, run: MissionRun) -> Any:
+        reservation = self._context.resources.owner(self._owner_id)
+        try:
+            service = reservation.require_bound()
+        except RuntimeError:
+            return None
+        recover = getattr(service, "recover_submitted", None)
+        if recover is None:
+            return None
+        recovered = await recover()
+        if recovered is None:
+            return None
+        return _require_recovered_submission_matches(recovered, run.submission)
+
+    async def run(self, run: MissionRun, mission: Any) -> Any:
+        return await self._context.resources.dispatcher.apply(
+            RunMission(
+                owner_id=self._owner_id,
+                name=self._name,
+                config=self._mission_config(run),
+                storage=self._storage,
+                mission=mission,
+            )
+        )
+
+
+type _RunControlOperation = (
+    AcceptMissionRun | GetMissionRun | CancelMissionRun | GetMissionRunEvents | ListMissionRuns
+)
+
+
+def _run_owner_reservation(context: WorldLibraryContext, owner_id: str) -> Any:
+    """Resolve or lazily reserve the run-control owner for this process.
+
+    Trusted ``Missions`` handles reserve their owner at construction. The
+    REST control surface dispatches under one stable host owner id with no
+    adapter; reservation happens synchronously on first use so restarts
+    reuse the same durable catalog under the same process owner.
+    """
+
+    try:
+        return context.resources.owner(owner_id)
+    except KeyError:
+        return context.resources.reserve_owner(
+            owner_id,
+            phase="workflow-handles",
+            closed_message="mission-run control owner is closed",
+        )
+
+
+def _run_control(
+    context: WorldLibraryContext,
+    reservation: Any,
+    operation: _RunControlOperation,
+) -> tuple[MissionRunLifecycle, MissionRunSupervisor, SqliteMissionRunCatalog]:
+    existing = getattr(reservation, "_mission_run_control", None)
+    if existing is not None:
+        return existing
+    catalog = SqliteMissionRunCatalog(
+        mission_run_catalog_path_for(
+            _coerce_storage(operation.storage),
+            context.control_catalog_config,
+        )
+    )
+    lifecycle = MissionRunLifecycle(catalog)
+    supervisor = MissionRunSupervisor(
+        lifecycle,
+        _DispatchedMissionRunExecutor(
+            context,
+            owner_id=operation.owner_id,
+            name=operation.name,
+            config=operation.config,
+            storage=operation.storage,
+        ),
+        spawn=lambda factory, label: reservation.spawn(factory, label=label),
+        redact=lambda text: (
+            context.redaction.redact_text(
+                text,
+                scope="mission-run-control",
+            ).text
+        ),
+    )
+    control = (lifecycle, supervisor, catalog)
+    reservation.retain_anchor(control)
+    object.__setattr__(reservation, "_mission_run_control", control)
+    # A fresh supervisor means this process has not yet reconstructed
+    # supervision for durable non-terminal runs; recover them now instead of
+    # waiting for a caller to poll each one individually.
+    reservation.spawn(supervisor.recover_open, label="mission-run-recovery")
+    return control
+
+
+def _accepted_profile_identity(operation: AcceptMissionRun) -> Any:
+    if operation.profile_id or operation.profile_version or operation.profile_digest:
+        return ExecutionProfileIdentity(
+            profile_id=operation.profile_id,
+            version=operation.profile_version,
+            digest=operation.profile_digest,
+        )
+    if operation.config is None:
+        raise ValueError("AcceptMissionRun requires a pinned execution profile or a mission config")
+    return execution_profile_identity(operation.config)
+
+
+async def _handle_accept_mission_run(
+    context: WorldLibraryContext,
+    operation: AcceptMissionRun,
+) -> Any:
+    reservation = _run_owner_reservation(context, operation.owner_id)
+    async with context.resources.admit_owner_operation(reservation):
+        lifecycle, supervisor, _catalog = _run_control(context, reservation, operation)
+        run = await lifecycle.accept(
+            operation.request,
+            _accepted_profile_identity(operation),
+        )
+        supervisor.ensure(run)
+        return run
+
+
+async def _handle_get_mission_run(
+    context: WorldLibraryContext,
+    operation: GetMissionRun,
+) -> Any:
+    reservation = _run_owner_reservation(context, operation.owner_id)
+    async with context.resources.admit_owner_operation(reservation):
+        lifecycle, supervisor, _catalog = _run_control(context, reservation, operation)
+        run = await lifecycle.get(operation.run_id)
+        supervisor.ensure(run)
+        return await lifecycle.get(operation.run_id)
+
+
+async def _handle_cancel_mission_run(
+    context: WorldLibraryContext,
+    operation: CancelMissionRun,
+) -> Any:
+    reservation = _run_owner_reservation(context, operation.owner_id)
+    async with context.resources.admit_owner_operation(reservation):
+        lifecycle, supervisor, _catalog = _run_control(context, reservation, operation)
+        run = await lifecycle.get(operation.run_id)
+        # Caller-supplied text is redacted before it becomes a durable fact,
+        # matching every other write site in this family.
+        reason = (
+            context.redaction.redact_text(
+                operation.reason,
+                scope="mission-run-control",
+            ).text
+            if operation.reason
+            else ""
+        )
+        run = await lifecycle.record_cancellation_intent(run, reason=reason)
+        supervisor.ensure(run)
+        return await lifecycle.get(operation.run_id)
+
+
+async def _handle_get_mission_run_events(
+    context: WorldLibraryContext,
+    operation: GetMissionRunEvents,
+) -> Any:
+    reservation = _run_owner_reservation(context, operation.owner_id)
+    async with context.resources.admit_owner_operation(reservation):
+        lifecycle, _supervisor, _catalog = _run_control(context, reservation, operation)
+        return await lifecycle.events(
+            operation.run_id,
+            after=operation.after,
+            limit=operation.limit,
+        )
+
+
+async def _handle_list_mission_runs(
+    context: WorldLibraryContext,
+    operation: ListMissionRuns,
+) -> Any:
+    reservation = _run_owner_reservation(context, operation.owner_id)
+    async with context.resources.admit_owner_operation(reservation):
+        lifecycle, _supervisor, _catalog = _run_control(context, reservation, operation)
+        return await lifecycle.list_for_principal(
+            operation.owner_principal,
+            limit=operation.limit,
+        )
 
 
 async def _handle_restore_mission_sandbox(
@@ -476,11 +814,16 @@ def _operation_handlers(
             Any,
             partial(_handle_restore_mission_sandbox, context),
         ),
+        AcceptMissionRun: cast(Any, partial(_handle_accept_mission_run, context)),
+        GetMissionRun: cast(Any, partial(_handle_get_mission_run, context)),
+        CancelMissionRun: cast(Any, partial(_handle_cancel_mission_run, context)),
+        GetMissionRunEvents: cast(Any, partial(_handle_get_mission_run_events, context)),
+        ListMissionRuns: cast(Any, partial(_handle_list_mission_runs, context)),
     }
 
 
 def install(context: WorldLibraryContext) -> InstalledWorldLibrary:
-    """Compose Missions internals and register its seven exact operations."""
+    """Compose Missions internals and register its exact operations."""
 
     if not isinstance(context, WorldLibraryContext):
         raise TypeError("context must be a WorldLibraryContext")

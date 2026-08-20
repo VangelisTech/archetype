@@ -42,6 +42,9 @@ _PULL_FORWARD_MODELS = (
     ("archetype.missions.models", "SubmitMission"),
     ("archetype.missions.models", "RunMission"),
     ("archetype.missions.models", "RestoreMissionSandbox"),
+    ("archetype.missions.models", "AcceptMissionRun"),
+    ("archetype.missions.models", "GetMissionRun"),
+    ("archetype.missions.models", "CancelMissionRun"),
 )
 
 
@@ -489,6 +492,9 @@ def _assert_exact_pull_forward_dispatch(
         models["SubmitMission"],
         models["RunMission"],
         models["RestoreMissionSandbox"],
+        models["AcceptMissionRun"],
+        models["GetMissionRun"],
+        models["CancelMissionRun"],
     )
     actual_types = tuple(type(operation) for operation in operations)
     assert actual_types == expected_types, (
@@ -539,7 +545,7 @@ async def test_runtime_world_constructs_exact_registered_family_models() -> None
 async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
     tmp_path: Path,
 ) -> None:
-    """All thirteen supported methods construct their canonical operation."""
+    """All sixteen supported methods construct their canonical operation."""
 
     from daft import from_pydict
 
@@ -741,6 +747,20 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
     assert (
         await missions.restore_sandbox(submitted, checkpoint) is results["restore_mission_sandbox"]
     )
+    assert (
+        await missions.accept(
+            repository="repo",
+            branch="branch",
+            tasks=(task,),
+            principal="agent:runtime-dispatch",
+            idempotency_key="mission-run-1",
+            name="mission-submission",
+            base_ref="main",
+        )
+        is results["accept_mission_run"]
+    )
+    assert await missions.get_run("run-1") is results["get_mission_run"]
+    assert await missions.cancel_run("run-1", reason="stop") is results["cancel_mission_run"]
 
     operations = _assert_exact_pull_forward_dispatch(
         dispatcher.trusted,
@@ -748,7 +768,7 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         get_world_info=GetWorldInfo,
         query_components=QueryComponents,
     )
-    assert len(operations) == 13
+    assert len(operations) == 16
     assert all(
         model.model_fields["operation"].default == operations[model_name].operation
         for model_name, model in models.items()
@@ -835,12 +855,26 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
     assert submit.submission.tasks == (task,)
     assert submit.submission.name == "mission-submission"
     assert submit.submission.base_ref == "main"
+    assert submit.predetermined_world_id == ""
     assert operations["RunMission"].owner_id == "mission-owner-1"
     assert operations["RunMission"].mission is submitted
     assert operations["RunMission"].max_ticks == 9
     assert operations["RestoreMissionSandbox"].owner_id == "mission-owner-1"
     assert operations["RestoreMissionSandbox"].mission is submitted
     assert operations["RestoreMissionSandbox"].checkpoint is checkpoint
+    accept = operations["AcceptMissionRun"]
+    assert accept.owner_id == "mission-owner-1"
+    assert accept.name == "mission-runtime"
+    assert accept.config is mission_config
+    assert accept.storage is storage
+    assert accept.request.principal == "agent:runtime-dispatch"
+    assert accept.request.idempotency_key == "mission-run-1"
+    assert accept.request.submission.repository == "repo"
+    assert accept.request.submission.tasks == (task,)
+    assert operations["GetMissionRun"].run_id == "run-1"
+    assert operations["GetMissionRun"].owner_id == "mission-owner-1"
+    assert operations["CancelMissionRun"].run_id == "run-1"
+    assert operations["CancelMissionRun"].reason == "stop"
     assert dispatcher.actor_aware == []
 
 

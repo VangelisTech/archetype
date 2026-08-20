@@ -63,6 +63,15 @@ _PULL_FORWARD_MODEL_BOUNDARIES = (
         "RestoreMissionSandbox",
         "restore_mission_sandbox",
     ),
+    ("archetype.missions.models", "AcceptMissionRun", "accept_mission_run"),
+    ("archetype.missions.models", "GetMissionRun", "get_mission_run"),
+    ("archetype.missions.models", "CancelMissionRun", "cancel_mission_run"),
+    (
+        "archetype.missions.models",
+        "GetMissionRunEvents",
+        "get_mission_run_events",
+    ),
+    ("archetype.missions.models", "ListMissionRuns", "list_mission_runs"),
 )
 _ACTOR_MODEL_BOUNDARIES = (
     ("archetype.research.models", "AutoResearch", "autoresearch"),
@@ -801,6 +810,12 @@ _EXPECTED_DECLARED_ROUTES = {
     ("GET", "/worlds/{world_id}/missions"): 200,
     ("GET", "/worlds/{world_id}/missions/{mission_id}/tasks"): 200,
     ("GET", "/worlds/{world_id}/tasks/{task_id}"): 200,
+    ("POST", "/v1/mission-runs"): 202,
+    ("GET", "/v1/mission-runs"): 200,
+    ("GET", "/v1/mission-runs/{run_id}"): 200,
+    ("GET", "/v1/mission-runs/{run_id}/events"): 200,
+    ("GET", "/v1/mission-runs/{run_id}/result"): 200,
+    ("POST", "/v1/mission-runs/{run_id}/cancel"): 202,
     ("GET", "/"): 200,
     ("GET", "/healthz"): 200,
 }
@@ -840,7 +855,7 @@ def test_supported_paths_statuses_and_response_shapes_are_unchanged() -> None:
     mission_routes = {
         key: value
         for key, value in _EXPECTED_DECLARED_ROUTES.items()
-        if "/missions" in key[1] or "/tasks/{task_id}" in key[1]
+        if "/missions" in key[1] or "/tasks/{task_id}" in key[1] or "/mission-runs" in key[1]
     }
     framework_routes = {
         key: value for key, value in _EXPECTED_DECLARED_ROUTES.items() if key not in mission_routes

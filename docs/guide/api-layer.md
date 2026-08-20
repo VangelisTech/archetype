@@ -98,6 +98,51 @@ outside `archetype serve` opts in explicitly with
 `ARCHETYPE_BIND_HOST=127.0.0.1`. Existing ECS developer routes otherwise
 retain the deliberate v0.6 behavior above.
 
+### MissionRun control surface
+
+The durable MissionRun lifecycle is exposed as a small agent-safe REST
+surface under `/v1/mission-runs`:
+
+| Endpoint | Method | What it does |
+|---|---|---|
+| `/v1/mission-runs` | POST | Accept one durable run for a verified principal (`202`) |
+| `/v1/mission-runs` | GET | Bounded newest-first page of the caller's own runs |
+| `/v1/mission-runs/{run_id}` | GET | Bounded run status projection |
+| `/v1/mission-runs/{run_id}/events` | GET | Ordered durable events, `?after=<cursor>&limit=<n>` |
+| `/v1/mission-runs/{run_id}/result` | GET | One immutable terminal result (`425` while open) |
+| `/v1/mission-runs/{run_id}/cancel` | POST | Durably record cancellation intent (`202`, idempotent) |
+
+Submission requires an `Idempotency-Key` header and a body carrying only
+`profile_id`, repository coordinates, mission name, and an explicit bounded
+task DAG with command validators. The same principal, key, and canonical
+request digest return the original run; a changed digest under the same key
+is a `409` conflict, and both survive an API-process restart. Route handlers
+authenticate the verified principal, authorize capability, ownership, and
+profile policy, then dispatch the exact registered `accept_mission_run`,
+`get_mission_run`, `get_mission_run_events`, and `cancel_mission_run`
+operations. They never open a runtime handle, construct Mission components,
+start background tasks, or own recovery — supervision and recovery stay with
+the missions-owned MissionRun lifecycle.
+
+Events carry a deterministic `(run_id, cursor)` identity, a schema version,
+a timestamp, a phase/type, and a sanitized bounded payload appended in the
+same transaction as the durable transition, so `after` replay across
+reconnects has no gaps, reordering, or duplicated logical events. Cancel
+records intent durably before reporting acceptance; `cancelling` stays
+distinct from `cancelled`, and completion races resolve to the committed
+execution fact. Client disconnect is never cancellation.
+
+Executing a REST-accepted run requires host composition: the execution
+profile bound through the `world_library_configs` wiring input resolves the
+exact pinned `(profile_id, version, digest)` to its trusted
+`AgentMissionConfig` factory. An unbound host still accepts, observes, and
+cancels runs; supervision records an honest `failed` run instead of
+fabricating provider work. Reason text — provider exception text and
+caller-supplied cancel reasons alike — is redacted through the composed
+redaction service before it becomes a durable fact, every projection stays
+bounded, and terminal task facts cap their commit lists, so provider errors
+cannot leak credential-shaped content to any `mission:read` principal.
+
 ## Route Structure
 
 Routes are thin translators: validate payloads, authenticate, call

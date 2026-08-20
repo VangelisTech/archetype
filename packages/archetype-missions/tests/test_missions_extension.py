@@ -111,11 +111,16 @@ def test_manifest_declares_exact_missions_surface() -> None:
         "submit_mission",
         "run_mission",
         "restore_mission_sandbox",
+        "accept_mission_run",
+        "get_mission_run",
+        "cancel_mission_run",
+        "get_mission_run_events",
+        "list_mission_runs",
     )
     assert len(first.api_router_factories) == 1
 
 
-def test_install_registers_only_the_seven_declared_operations(tmp_path: Path) -> None:
+def test_install_registers_only_the_declared_operations(tmp_path: Path) -> None:
     context = _context(tmp_path)
 
     installed = get_manifest().install(context)

@@ -9,9 +9,9 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
-from daft import DataFrame
+from daft import DataFrame, Expression, col
 
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig
@@ -313,6 +313,62 @@ class MissionService:
             repository=submission.repository,
             branch=submission.branch,
             base_ref=submission.base_ref,
+        )
+
+    async def recover_submitted(self) -> SubmittedMission | None:
+        """Return the world's existing Mission identity after crash recovery."""
+
+        await self._world.info()
+        mission_prefix = Mission.get_prefix()
+        task_prefix = Task.get_prefix()
+        part_prefix = PartOfMission.get_prefix()
+        mission_rows = (
+            (await self._world.query(Mission))
+            .select(
+                "entity_id",
+                f"{mission_prefix}episode_id",
+                f"{mission_prefix}repository",
+                f"{mission_prefix}branch",
+                f"{mission_prefix}base_ref",
+            )
+            .limit(1)
+            .to_pylist()
+        )
+        if not mission_rows:
+            return None
+        row = mission_rows[0]
+        mission_id = int(row["entity_id"])
+        membership = (
+            (await self._world.query(PartOfMission))
+            .where(cast(Expression, col(f"{part_prefix}target") == mission_id))
+            .select(col(f"{part_prefix}source").alias("task_entity_id"))
+        )
+        names = (await self._world.query(Task)).select(
+            "entity_id",
+            col(f"{task_prefix}name").alias("task_name"),
+        )
+        task_rows = (
+            membership.join(
+                names,
+                left_on="task_entity_id",
+                right_on="entity_id",
+            )
+            .select("task_name", "task_entity_id")
+            .to_pylist()
+        )
+        return SubmittedMission(
+            mission_id=mission_id,
+            task_ids=tuple(
+                sorted(
+                    ((str(task["task_name"]), int(task["task_entity_id"])) for task in task_rows),
+                    key=lambda item: item[1],
+                )
+            ),
+            episode_id=str(row[f"{mission_prefix}episode_id"]),
+            world_id=str(self._world.world_id),
+            repository=str(row[f"{mission_prefix}repository"]),
+            branch=str(row[f"{mission_prefix}branch"]),
+            base_ref=str(row.get(f"{mission_prefix}base_ref") or "main"),
         )
 
     async def restore_sandbox(
