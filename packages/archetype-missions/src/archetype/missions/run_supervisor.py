@@ -5,14 +5,17 @@
 
 The supervisor records durable transitions, then invokes the existing
 SubmitMission and RunMission path. It never constructs Mission ECS state
-itself and never fabricates a succeeded or failed provider outcome.
+itself, never fabricates a succeeded or failed provider outcome, and never
+re-dispatches provider work whose completion it cannot prove: a run
+recovered mid-``run_mission`` becomes an explicit ``interrupted`` fact with
+cleanup pending instead of a blind retry.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Literal, Protocol
+from typing import Protocol
 
 from archetype.missions.contracts import MissionResult, SubmittedMission
 from archetype.missions.run_contracts import (
@@ -23,21 +26,22 @@ from archetype.missions.run_contracts import (
 )
 from archetype.missions.run_lifecycle import MissionRunLifecycle, submitted_from_run
 
-type ProviderReconciliation = Literal["retry", "settled", "unknown"]
+_MAX_FAILURE_REASON_CHARS = 4096
+
+# ``mark_running(operation="run_mission")`` commits durably before the
+# governed RunMission dispatch, so this marker is exactly the window in
+# which provider work may have started without a provable completion.
+_RUN_MISSION_OPERATION = "run_mission"
 
 
 class MissionRunExecutor(Protocol):
-    """Ports over governed submit/run and Activity reconciliation."""
+    """Ports over the governed SubmitMission and RunMission dispatch path."""
 
     async def submit(self, run: MissionRun) -> SubmittedMission: ...
 
     async def load_existing(self, run: MissionRun) -> SubmittedMission | None: ...
 
     async def run(self, run: MissionRun, mission: SubmittedMission) -> MissionResult: ...
-
-    async def reconcile(self, run: MissionRun) -> ProviderReconciliation: ...
-
-    async def active_activity(self, run: MissionRun) -> tuple[str, str] | None: ...
 
 
 class MissionRunSupervisor:
@@ -49,10 +53,12 @@ class MissionRunSupervisor:
         executor: MissionRunExecutor,
         *,
         spawn: Callable[[Callable[[], Awaitable[None]], str], asyncio.Task[None]],
+        redact: Callable[[str], str] | None = None,
     ) -> None:
         self._lifecycle = lifecycle
         self._executor = executor
         self._spawn = spawn
+        self._redact = redact if redact is not None else lambda text: text
         self._inflight: dict[str, asyncio.Task[None]] = {}
 
     def ensure(self, run: MissionRun) -> asyncio.Task[None] | None:
@@ -78,6 +84,9 @@ class MissionRunSupervisor:
             self.ensure(run)
         return open_runs
 
+    def _failure_reason(self, exc: BaseException) -> str:
+        return self._redact(str(exc))[:_MAX_FAILURE_REASON_CHARS]
+
     async def _drive(self, run_id: str) -> None:
         run = await self._lifecycle.get(run_id)
         try:
@@ -86,8 +95,17 @@ class MissionRunSupervisor:
             raise
         except BaseException as exc:
             current = await self._lifecycle.get(run_id)
-            if current.status not in TERMINAL_MISSION_RUN_STATUSES:
-                await self._lifecycle.mark_failed(current, reason=str(exc)[:4096])
+            # Record the honest legal outcome instead of masking the original
+            # failure behind an illegal-transition ValueError. From ACCEPTED
+            # neither failed nor interrupted is a legal edge: the durable row
+            # stays accepted and recovery re-drives admission.
+            if current.status is MissionRunStatus.RUNNING:
+                await self._lifecycle.mark_failed(current, reason=self._failure_reason(exc))
+            elif current.status is MissionRunStatus.CANCELLING:
+                await self._lifecycle.mark_interrupted(
+                    current,
+                    reason=self._failure_reason(exc),
+                )
             raise
 
     async def _execute(self, run: MissionRun) -> None:
@@ -102,36 +120,37 @@ class MissionRunSupervisor:
         if run.status in TERMINAL_MISSION_RUN_STATUSES:
             return
         if run.status is MissionRunStatus.CANCELLING:
-            await self._lifecycle.mark_cancelled(run)
-            return
-
-        activity = await self._executor.active_activity(run)
-        if activity is not None:
-            run = await self._lifecycle.bind_activity(
-                run,
-                kind=activity[0],
-                activity_id=activity[1],
-            )
-            if run.status in TERMINAL_MISSION_RUN_STATUSES:
-                return
-            reconciliation = await self._executor.reconcile(run)
-            if reconciliation == "unknown":
-                run = await self._lifecycle.mark_interrupted(
+            # This path is reached only when no in-process drive owns the run
+            # (restart, or the owning drive died): consult the durable
+            # admission evidence exactly as ``_finish`` would. Before a
+            # Mission was admitted only the run_id-keyed SubmitMission could
+            # be in flight, so cancelled is a proven fact; afterwards
+            # provider completion cannot be proven and the honest outcome is
+            # interrupted. Both record pending cleanup.
+            if run.mission_id is None:
+                current = await self._lifecycle.mark_cancelled(run)
+            else:
+                current = await self._lifecycle.mark_interrupted(
                     run,
-                    reason="provider completion cannot be proven",
+                    reason="cancelled while provider outcome was not proven",
                 )
-                await self._lifecycle.mark_cleanup(run, MissionRunCleanupState.PENDING)
-                return
-            if reconciliation == "settled" and run.mission_id is not None:
-                mission = submitted_from_run(run)
-                result = await self._executor.run(run, mission)
-                await self._finish(run, result)
-                return
+            await self._lifecycle.mark_cleanup(current, MissionRunCleanupState.PENDING)
+            return
+        if run.status is MissionRunStatus.RUNNING and run.active_operation == _RUN_MISSION_OPERATION:
+            # RunMission may have dispatched provider work before this
+            # process took over; completion cannot be proven, so record the
+            # explicit interruption instead of blindly re-dispatching.
+            current = await self._lifecycle.mark_interrupted(
+                run,
+                reason="supervision restarted while provider work was in flight",
+            )
+            await self._lifecycle.mark_cleanup(current, MissionRunCleanupState.PENDING)
+            return
 
         run = await self._admit_mission(run)
         if run.status in TERMINAL_MISSION_RUN_STATUSES:
             return
-        run = await self._lifecycle.mark_running(run, operation="run_mission")
+        run = await self._lifecycle.mark_running(run, operation=_RUN_MISSION_OPERATION)
         current = await self._lifecycle.get(run.run_id)
         if current.cancellation_intent and current.status is MissionRunStatus.RUNNING:
             current = await self._lifecycle.record_cancellation_intent(

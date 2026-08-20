@@ -16,13 +16,25 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
 
 import archetype.missions._extension as missions_extension
 from archetype.api.app import create_app
-from archetype.missions.contracts import MissionResult, SubmittedMission, TaskResult
+from archetype.missions.config import MissionsExtensionConfig
+from archetype.missions.contracts import (
+    AgentMissionConfig,
+    MissionResult,
+    SubmittedMission,
+    TaskResult,
+)
+from archetype.missions.execution_profiles import (
+    ExecutionProfile,
+    ExecutionProfileBinding,
+    ExecutionProfileCatalog,
+)
 from quality.secret_corpus import SECRET_LEAK_CORPUS
 
 _AGENT_TOKEN = "mission-agent-credential-aaaa-0001"
@@ -57,41 +69,59 @@ allowed_profile_ids = ["coding-default"]
     )
 
 
-_PROFILE_TEMPLATE = """
-[[profile]]
-profile_id = "{profile_id}"
-version = "1"
-allowed_repositories = ["VangelisTech/archetype"]
-allowed_base_refs = ["main"]
-branch_namespace = "agent/"
-sandbox_backend = "modal"
-sandbox_environment = "coding-agent:v1"
-agent_driver = "codex-app-server"
-critic_driver = "codex-app-server"
-model = "gpt-5"
-timeout_seconds = 3600
-max_ticks = 100
-max_retries = 3
-max_concurrency = 1
-cost_ceiling_usd_cents = 5000
-max_validators_per_task = 8
-max_validator_timeout_seconds = 900
-publication_policy = "commit_and_push"
-checkpoint_after_dispatch = true
-secret_names = ["codex-auth"]
-provider_credential_names = ["modal"]
-allow_cancel = {allow_cancel}
-allow_attach = false
-allow_steer = false
-allow_takeover = false
-"""
+def _profile(profile_id: str, *, allow_cancel: bool) -> ExecutionProfile:
+    """One host-owned server profile; secrets and providers never leave code."""
+
+    return ExecutionProfile.model_validate(
+        {
+            "profile_id": profile_id,
+            "version": "1",
+            "allowed_repositories": ("VangelisTech/archetype",),
+            "allowed_base_refs": ("main",),
+            "branch_namespace": "agent/",
+            "sandbox_backend": "modal",
+            "sandbox_environment": "coding-agent:v1",
+            "agent_driver": "codex-app-server",
+            "critic_driver": "codex-app-server",
+            "model": "gpt-5",
+            "timeout_seconds": 3600,
+            "max_ticks": 100,
+            "max_retries": 3,
+            "max_concurrency": 1,
+            "cost_ceiling_usd_cents": 5000,
+            "max_validators_per_task": 8,
+            "max_validator_timeout_seconds": 900,
+            "publication_policy": "commit_and_push",
+            "checkpoint_after_dispatch": True,
+            "secret_names": ("codex-auth",),
+            "provider_credential_names": ("modal",),
+            "allow_cancel": allow_cancel,
+        }
+    )
 
 
-def _write_profiles(path) -> None:
-    path.write_text(
-        _PROFILE_TEMPLATE.format(profile_id="coding-default", allow_cancel="true")
-        + _PROFILE_TEMPLATE.format(profile_id="no-cancel", allow_cancel="false"),
-        encoding="utf-8",
+def _binding(profile: ExecutionProfile) -> ExecutionProfileBinding:
+    def build(selected: ExecutionProfile) -> AgentMissionConfig:
+        return AgentMissionConfig(
+            sandbox_backend=cast(Any, SimpleNamespace(name=selected.sandbox_backend)),
+            sandbox_environment=selected.sandbox_environment,
+            model=selected.model,
+            max_ticks=selected.max_ticks,
+            checkpoint_after_dispatch=selected.checkpoint_after_dispatch,
+        )
+
+    return ExecutionProfileBinding(profile=profile, config_factory=build)
+
+
+def _missions_config() -> MissionsExtensionConfig:
+    return MissionsExtensionConfig(
+        execution_profiles=ExecutionProfileCatalog(
+            (
+                _binding(_profile("coding-default", allow_cancel=True)),
+                _binding(_profile("no-cancel", allow_cancel=False)),
+            ),
+            current_versions={"coding-default": "1", "no-cancel": "1"},
+        )
     )
 
 
@@ -101,19 +131,17 @@ class _ExecutorGate:
     def __init__(self) -> None:
         self.release = threading.Event()
         self.submitted = threading.Event()
+        self.running = threading.Event()
         self.result_status = "succeeded"
 
 
 @pytest.fixture
 def mission_api(tmp_path, monkeypatch) -> Iterator[SimpleNamespace]:
     principals = tmp_path / "principals.toml"
-    profiles = tmp_path / "profiles.toml"
     _write_principals(principals)
-    _write_profiles(profiles)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "catalogs"))
     monkeypatch.setenv("ARCHETYPE_MISSION_PRINCIPALS_PATH", str(principals))
-    monkeypatch.setenv("ARCHETYPE_MISSION_PROFILES_PATH", str(profiles))
     monkeypatch.setenv("ARCHETYPE_MISSION_PRINCIPAL_AGENT_TOKEN", _AGENT_TOKEN)
     monkeypatch.setenv("ARCHETYPE_MISSION_PRINCIPAL_READER_TOKEN", _READER_TOKEN)
     monkeypatch.setenv("ARCHETYPE_MISSION_PRINCIPAL_STRANGER_TOKEN", _STRANGER_TOKEN)
@@ -143,6 +171,7 @@ def mission_api(tmp_path, monkeypatch) -> Iterator[SimpleNamespace]:
         del self, run
         import asyncio
 
+        gate.running.set()
         while not gate.release.is_set():
             await asyncio.sleep(0.005)
         return MissionResult(
@@ -170,7 +199,9 @@ def mission_api(tmp_path, monkeypatch) -> Iterator[SimpleNamespace]:
     monkeypatch.setattr(executor, "run", fake_run)
 
     def make_client() -> TestClient:
-        return TestClient(create_app())
+        # The profile catalog rides the same ``world_library_configs`` wiring
+        # input the Missions extension consumes; there is no file/env seam.
+        return TestClient(create_app(world_library_configs={"missions": _missions_config()}))
 
     yield SimpleNamespace(make_client=make_client, gate=gate)
 
@@ -664,9 +695,15 @@ def test_cancel_fails_closed_when_the_pinned_profile_forbids_it(
         assert denied.status_code == 403
 
 
-def test_api_restart_during_run_resumes_one_run_with_a_truthful_outcome(
+def test_api_restart_during_run_records_an_honest_interrupted_outcome(
     mission_api: SimpleNamespace,
 ) -> None:
+    """A crashed supervisor never blindly re-dispatches provider work.
+
+    Recovery is driven by ``recover_open`` on the first run-control dispatch
+    of the new process — no client ever polls the crashed run to trigger it.
+    """
+
     gate = mission_api.gate
     with mission_api.make_client() as client:
         created = client.post(
@@ -675,21 +712,28 @@ def test_api_restart_during_run_resumes_one_run_with_a_truthful_outcome(
             headers=_submit_headers("crash-key"),
         )
         run_id = created.json()["run_id"]
-        assert gate.submitted.wait(_DEADLINE_SECONDS)
+        # Wait until RunMission provider work is durably marked in flight so
+        # the crash lands inside the unprovable window.
+        assert gate.running.wait(_DEADLINE_SECONDS)
         # The client (and its supervised execution) disappears mid-run here.
 
+    gate.release.set()
     with mission_api.make_client() as restarted:
-        status = restarted.get(
-            f"/v1/mission-runs/{run_id}",
-            headers=_auth(_AGENT_TOKEN),
+        # An unrelated submission constructs run control; recovery of the
+        # crashed run rides that construction, not a per-run poll.
+        unrelated = restarted.post(
+            "/v1/mission-runs",
+            json=_submit_body(),
+            headers=_submit_headers("crash-key-unrelated"),
         )
-        assert status.status_code == 200, status.text
-        assert status.json()["state"] == "running"
+        assert unrelated.status_code == 202, unrelated.text
 
-        gate.release.set()
-        final = _poll(restarted, run_id, lambda body: body["state"] == "succeeded")
+        final = _poll(
+            restarted,
+            run_id,
+            lambda body: body["state"] == "interrupted" and body["cleanup_state"] == "pending",
+        )
         assert final["run_id"] == run_id
-        assert final["mission_id"] == 1
 
         events = restarted.get(
             f"/v1/mission-runs/{run_id}/events",
@@ -698,12 +742,29 @@ def test_api_restart_during_run_resumes_one_run_with_a_truthful_outcome(
         types = [event["event_type"] for event in events]
         assert types.count("mission_bound") == 1
         assert types.count("running") == 1
-        assert types.count("succeeded") == 1
+        assert types.count("interrupted") == 1
+        assert types.count("succeeded") == 0
+
+        result = restarted.get(
+            f"/v1/mission-runs/{run_id}/result",
+            headers=_auth(_AGENT_TOKEN),
+        )
+        assert result.status_code == 200, result.text
+        assert result.json()["state"] == "interrupted"
+        assert result.json()["result"] is None
+        assert result.json()["interrupted_reason"]
 
 
-def test_api_restart_during_cancel_converges_durably(
+def test_api_restart_during_cancel_records_honest_interruption(
     mission_api: SimpleNamespace,
 ) -> None:
+    """A cancel interrupted by process loss never fabricates a proven cancel.
+
+    Provider work had been admitted when the process died, so its completion
+    cannot be proven; the durable outcome is ``interrupted`` with cleanup
+    pending and the recorded cancellation intent preserved.
+    """
+
     gate = mission_api.gate
     with mission_api.make_client() as client:
         created = client.post(
@@ -712,7 +773,7 @@ def test_api_restart_during_cancel_converges_durably(
             headers=_submit_headers("cancel-crash-key"),
         )
         run_id = created.json()["run_id"]
-        assert gate.submitted.wait(_DEADLINE_SECONDS)
+        assert gate.running.wait(_DEADLINE_SECONDS)
         cancelling = client.post(
             f"/v1/mission-runs/{run_id}/cancel",
             json={"reason": "operator stop"},
@@ -730,7 +791,11 @@ def test_api_restart_during_cancel_converges_durably(
         assert status.status_code == 200, status.text
         assert status.json()["cancellation_requested"] is True
 
-        final = _poll(restarted, run_id, lambda body: body["state"] == "cancelled")
+        final = _poll(
+            restarted,
+            run_id,
+            lambda body: body["state"] == "interrupted" and body["cleanup_state"] == "pending",
+        )
         assert final["cancellation_requested"] is True
         assert final["cancellation_reason"] == "operator stop"
 
@@ -743,14 +808,15 @@ def test_api_restart_during_cancel_converges_durably(
         types = [event["event_type"] for event in events]
         assert types.count("cancel_requested") == 1
         assert types.count("cancelling") == 1
-        assert types.count("cancelled") == 1
+        assert types.count("interrupted") == 1
+        assert types.count("cancelled") == 0
 
         result = restarted.get(
             f"/v1/mission-runs/{run_id}/result",
             headers=_auth(_AGENT_TOKEN),
         )
         assert result.status_code == 200, result.text
-        assert result.json()["state"] == "cancelled"
+        assert result.json()["state"] == "interrupted"
 
 
 def test_result_and_status_projections_truncate_oversized_text() -> None:
@@ -865,20 +931,111 @@ def test_openapi_documents_every_run_route_state_and_error(
         assert state in serialized, state
 
 
-def test_existing_mission_and_mission_control_routes_remain_compatible(
+def test_existing_routes_remain_compatible_and_no_pin_router_is_published(
     mission_api: SimpleNamespace,
 ) -> None:
     with mission_api.make_client() as client:
         assert client.get("/healthz").status_code == 200
         assert client.get("/worlds", headers=_auth("player")).status_code == 200
-        pin = client.post(
-            "/v1/mission-control/runs",
-            json={
-                "profile_id": "coding-default",
-                "repository": "VangelisTech/archetype",
-                "branch": "agent/issue-809",
-                "base_ref": "main",
-            },
+        # The superseded in-memory pin surface must not resurface.
+        paths = {route.path for route in client.app.routes}
+        assert not any(path.startswith("/v1/mission-control") for path in paths)
+
+
+def test_provider_exception_text_never_reaches_any_projection(
+    mission_api: SimpleNamespace, monkeypatch
+) -> None:
+    """Credential-shaped provider errors are redacted before durability."""
+
+    secret = SECRET_LEAK_CORPUS[0].payload
+
+    async def leaking_run(self, run, mission):
+        del self, run, mission
+        raise RuntimeError(f"provider rejected credential {secret} during dispatch")
+
+    monkeypatch.setattr(
+        missions_extension._DispatchedMissionRunExecutor,
+        "run",
+        leaking_run,
+    )
+    with mission_api.make_client() as client:
+        created = client.post(
+            "/v1/mission-runs",
+            json=_submit_body(),
+            headers=_submit_headers("leak-key"),
+        )
+        assert created.status_code == 202, created.text
+        run_id = created.json()["run_id"]
+
+        final = _poll(client, run_id, lambda body: body["state"] == "failed")
+        assert final["interrupted_reason"]
+        assert secret not in str(final)
+
+        events = client.get(
+            f"/v1/mission-runs/{run_id}/events",
             headers=_auth(_AGENT_TOKEN),
         )
-        assert pin.status_code == 202, pin.text
+        result = client.get(
+            f"/v1/mission-runs/{run_id}/result",
+            headers=_auth(_AGENT_TOKEN),
+        )
+        assert result.status_code == 200
+        for payload in (events.text, result.text):
+            assert secret not in payload
+
+
+def test_result_projection_bounds_commit_sha_lists() -> None:
+    from archetype.missions.api import _MAX_COMMIT_SHAS, _run_result_response
+    from archetype.missions.contracts import (
+        AgentTask,
+        CommandValidator,
+        MissionSubmission,
+    )
+    from archetype.missions.run_contracts import (
+        ExecutionProfileIdentity,
+        MissionRun,
+        MissionRunStatus,
+    )
+
+    run = MissionRun(
+        run_id="run-sha-bound",
+        principal="agent",
+        idempotency_key="sha-bound-key",
+        request_digest="0" * 64,
+        profile=ExecutionProfileIdentity(profile_id="p", version="1", digest="0" * 64),
+        status=MissionRunStatus.FAILED,
+        submission=MissionSubmission(
+            repository="VangelisTech/archetype",
+            branch="agent/sha-bound",
+            tasks=(
+                AgentTask(
+                    name="implementation",
+                    prompt="Implement the requested change.",
+                    validators=(CommandValidator(name="tests", command=("true",)),),
+                ),
+            ),
+        ),
+        result=MissionResult(
+            mission_id=1,
+            episode_id="episode-sha-bound",
+            status="failed",
+            repository="VangelisTech/archetype",
+            branch="agent/sha-bound",
+            ticks_completed=1,
+            tasks=(
+                TaskResult(
+                    task_id=2,
+                    name="implementation",
+                    status="failed",
+                    dispatches=1,
+                    commit_shas=tuple(f"{index:040x}" for index in range(_MAX_COMMIT_SHAS + 200)),
+                ),
+            ),
+        ),
+        accepted_at_ms=1,
+        terminal_at_ms=2,
+    )
+
+    view = _run_result_response(run)
+    assert view.result is not None
+    assert len(view.result.tasks[0].commit_shas) == _MAX_COMMIT_SHAS

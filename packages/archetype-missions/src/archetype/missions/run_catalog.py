@@ -3,21 +3,22 @@
 
 """SQLite persistence for missions-owned MissionRun control records.
 
-Physical durability follows the Activity-catalog pattern: the path is a pure
-function of storage identity. Semantic transitions stay in ``run_lifecycle``.
+Physical durability rides the shared hardened-SQLite control-plane base in
+``archetype.storage``; the ``mission_runs`` schema, CAS queries, and the
+same-transaction event append stay mission-owned. Semantic transitions stay
+in ``run_lifecycle``.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
-import time
 from pathlib import Path
 
 from archetype.core.config import StorageConfig
 from archetype.storage.catalog.sqlite import catalog_path_for
 from archetype.storage.config import ControlCatalogConfig
+from archetype.storage.hardened_sqlite import HardenedSqliteCatalog
 
 _SCHEMA_VERSION = 1
 
@@ -41,13 +42,10 @@ CREATE TABLE IF NOT EXISTS mission_runs (
     episode_id TEXT NOT NULL DEFAULT '',
     task_ids_json TEXT NOT NULL DEFAULT '[]',
     active_operation TEXT NOT NULL DEFAULT '',
-    active_activity_kind TEXT NOT NULL DEFAULT '',
-    active_activity_id TEXT NOT NULL DEFAULT '',
     cancellation_intent INTEGER NOT NULL DEFAULT 0,
     cancellation_reason TEXT NOT NULL DEFAULT '',
     result_json TEXT,
     cleanup_state TEXT NOT NULL DEFAULT 'none',
-    cleanup_error TEXT NOT NULL DEFAULT '',
     accepted_at_ms INTEGER NOT NULL,
     running_at_ms INTEGER,
     terminal_at_ms INTEGER,
@@ -84,86 +82,13 @@ def mission_run_catalog_path_for(
     return control_path.with_name(f"{control_path.stem}-mission-runs{control_path.suffix}")
 
 
-class SqliteMissionRunCatalog:
+class SqliteMissionRunCatalog(HardenedSqliteCatalog):
     """Single-host SQLite control plane for MissionRun records."""
 
-    def __init__(self, path: str | Path, *, busy_timeout_ms: int = 5_000) -> None:
-        self.path = Path(path)
-        self._busy_timeout_ms = busy_timeout_ms
-        self._conn: sqlite3.Connection | None = None
-        self._lock = asyncio.Lock()
-
-    def _connect_sync(self) -> sqlite3.Connection:
-        if self._conn is not None:
-            return self._conn
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        deadline = time.monotonic() + (self._busy_timeout_ms / 1000)
-        delay = 0.001
-        while True:
-            conn = sqlite3.connect(self.path, check_same_thread=False)
-            try:
-                conn.row_factory = sqlite3.Row
-                conn.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms}")
-                conn.execute("PRAGMA foreign_keys=ON")
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA synchronous=FULL")
-                conn.executescript(_DDL)
-                row = conn.execute(
-                    "SELECT value FROM mission_run_catalog_meta WHERE key='schema_version'"
-                ).fetchone()
-                assert row is not None
-                version = int(row["value"])
-                if version != _SCHEMA_VERSION:
-                    raise RuntimeError(
-                        f"mission-run catalog {self.path} has schema_version={version}, "
-                        f"this build expects {_SCHEMA_VERSION}"
-                    )
-                self._conn = conn
-                return conn
-            except sqlite3.OperationalError as exc:
-                conn.close()
-                busy = "locked" in str(exc).lower() or "busy" in str(exc).lower()
-                remaining = deadline - time.monotonic()
-                if not busy or remaining <= 0:
-                    raise
-                time.sleep(min(delay, remaining))
-                delay = min(delay * 2, 0.1)
-            except BaseException:
-                conn.close()
-                raise
-
-    async def _run(self, fn, *args):
-        async with self._lock:
-            worker = asyncio.create_task(asyncio.to_thread(fn, *args))
-            cancellation: asyncio.CancelledError | None = None
-            while True:
-                try:
-                    await asyncio.shield(worker)
-                except asyncio.CancelledError as exc:
-                    cancellation = cancellation or exc
-                    if worker.done():
-                        break
-                except BaseException:
-                    if cancellation is None:
-                        raise
-                    break
-                else:
-                    break
-            if cancellation is not None:
-                try:
-                    worker.result()
-                except BaseException:
-                    pass
-                raise cancellation
-            return worker.result()
-
-    async def close(self) -> None:
-        def _close() -> None:
-            if self._conn is not None:
-                self._conn.close()
-                self._conn = None
-
-        await self._run(_close)
+    _DDL = _DDL
+    _META_TABLE = "mission_run_catalog_meta"
+    _SCHEMA_VERSION = _SCHEMA_VERSION
+    _CATALOG_LABEL = "mission-run catalog"
 
     async def insert_accepted(
         self,
@@ -227,24 +152,6 @@ class SqliteMissionRunCatalog:
                 .execute(
                     "SELECT * FROM mission_runs WHERE run_id=?",
                     (run_id,),
-                )
-                .fetchone()
-            )
-            return dict(row) if row is not None else None
-
-        return await self._run(_get)
-
-    async def get_by_idempotency(
-        self,
-        principal: str,
-        idempotency_key: str,
-    ) -> dict[str, object] | None:
-        def _get() -> dict[str, object] | None:
-            row = (
-                self._connect_sync()
-                .execute(
-                    "SELECT * FROM mission_runs WHERE principal=? AND idempotency_key=?",
-                    (principal, idempotency_key),
                 )
                 .fetchone()
             )

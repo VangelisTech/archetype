@@ -15,6 +15,7 @@ from archetype.missions.contracts import (
     CommandValidator,
     MissionResult,
     MissionSubmission,
+    SubmittedMission,
     TaskResult,
 )
 from archetype.missions.run_catalog import SqliteMissionRunCatalog
@@ -216,10 +217,9 @@ class _FakeExecutor:
     def __init__(self) -> None:
         self.submits = 0
         self.runs = 0
-        self.reconciles = 0
         self.submit_gate: asyncio.Event | None = None
-        self.reconciliation = "retry"
-        self.activity: tuple[str, str] | None = None
+        self.run_gate: asyncio.Event | None = None
+        self.run_error: BaseException | None = None
         self.existing = None
         self.result = _result()
         self.submitted = None
@@ -247,20 +247,18 @@ class _FakeExecutor:
     async def run(self, run, mission):
         del run, mission
         self.runs += 1
+        if self.run_gate is not None:
+            await self.run_gate.wait()
+        if self.run_error is not None:
+            raise self.run_error
         return self.result
-
-    async def reconcile(self, run):
-        del run
-        self.reconciles += 1
-        return self.reconciliation
-
-    async def active_activity(self, run):
-        del run
-        return self.activity
 
 
 def _supervisor(
-    tmp_path, executor: _FakeExecutor
+    tmp_path,
+    executor: _FakeExecutor,
+    *,
+    redact=None,
 ) -> tuple[MissionRunLifecycle, MissionRunSupervisor]:
     lifecycle = MissionRunLifecycle(SqliteMissionRunCatalog(tmp_path / "runs.db"))
     tasks: list[asyncio.Task[None]] = []
@@ -271,7 +269,7 @@ def _supervisor(
         tasks.append(task)
         return task
 
-    return lifecycle, MissionRunSupervisor(lifecycle, executor, spawn=spawn)
+    return lifecycle, MissionRunSupervisor(lifecycle, executor, spawn=spawn, redact=redact)
 
 
 @pytest.mark.asyncio
@@ -344,10 +342,10 @@ async def test_existing_mission_is_not_created_twice(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unknown_provider_outcome_is_interrupted_not_failed(tmp_path) -> None:
+async def test_recovered_running_run_is_interrupted_without_redispatch(tmp_path) -> None:
+    """RunMission may already be in flight; recovery must not blindly retry."""
+
     executor = _FakeExecutor()
-    executor.activity = ("missions.author", "dispatch-1")
-    executor.reconciliation = "unknown"
     lifecycle, supervisor = _supervisor(tmp_path, executor)
     run = await lifecycle.accept(_request(), execution_profile_identity(_config()))
     run = await lifecycle.mark_running(run, operation="run_mission")
@@ -358,7 +356,132 @@ async def test_unknown_provider_outcome_is_interrupted_not_failed(tmp_path) -> N
     assert finished.status is MissionRunStatus.INTERRUPTED
     assert finished.cleanup_state is MissionRunCleanupState.PENDING
     assert executor.runs == 0
-    assert executor.reconciles == 1
+    assert executor.submits == 0
+
+
+@pytest.mark.asyncio
+async def test_recovered_cancelling_run_records_cleanup_evidence(tmp_path) -> None:
+    """The cancelling fast-path consults admission evidence like ``_finish``."""
+
+    executor = _FakeExecutor()
+    lifecycle, supervisor = _supervisor(tmp_path, executor)
+
+    # Before a Mission was admitted only the run_id-keyed submit could be in
+    # flight: cancellation is a proven fact and cleanup is still recorded.
+    early = await lifecycle.accept(_request(), execution_profile_identity(_config()))
+    early = await lifecycle.mark_running(early, operation="submit_mission")
+    early = await lifecycle.record_cancellation_intent(early, reason="stop")
+    assert early.status is MissionRunStatus.CANCELLING
+    task = supervisor.ensure(early)
+    assert task is not None
+    await asyncio.wait_for(task, timeout=2)
+    cancelled = await lifecycle.get(early.run_id)
+    assert cancelled.status is MissionRunStatus.CANCELLED
+    assert cancelled.cleanup_state is MissionRunCleanupState.PENDING
+
+    # After admission provider completion cannot be proven, so the honest
+    # outcome is interrupted with cleanup pending — never a fabricated cancel.
+    late = await lifecycle.accept(
+        _request(idempotency_key="mission-2"),
+        execution_profile_identity(_config()),
+    )
+    late = await lifecycle.mark_running(late, operation="submit_mission")
+    late = await lifecycle.bind_mission(
+        late,
+        SubmittedMission(
+            mission_id=7,
+            task_ids=(("implementation", 8),),
+            episode_id="mission-episode-7",
+            repository="VangelisTech/archetype",
+            branch="agent/run",
+            world_id=late.world_id,
+        ),
+    )
+    late = await lifecycle.mark_running(late, operation="run_mission")
+    late = await lifecycle.record_cancellation_intent(late, reason="stop")
+    assert late.status is MissionRunStatus.CANCELLING
+    task = supervisor.ensure(late)
+    assert task is not None
+    await asyncio.wait_for(task, timeout=2)
+    interrupted = await lifecycle.get(late.run_id)
+    assert interrupted.status is MissionRunStatus.INTERRUPTED
+    assert interrupted.cleanup_state is MissionRunCleanupState.PENDING
+    assert executor.runs == 0
+
+
+@pytest.mark.asyncio
+async def test_exception_while_cancelling_records_interrupted_with_redacted_reason(
+    tmp_path,
+) -> None:
+    """A cancelling run whose executor dies must not be masked or orphaned."""
+
+    executor = _FakeExecutor()
+    executor.run_gate = asyncio.Event()
+    executor.run_error = RuntimeError("provider rejected HUSH-TOKEN-123 during teardown")
+    lifecycle, supervisor = _supervisor(
+        tmp_path,
+        executor,
+        redact=lambda text: text.replace("HUSH-TOKEN-123", "[REDACTED]"),
+    )
+    run = await lifecycle.accept(_request(), execution_profile_identity(_config()))
+    task = supervisor.ensure(run)
+    assert task is not None
+    while executor.runs == 0:
+        await asyncio.sleep(0.005)
+    current = await lifecycle.get(run.run_id)
+    current = await lifecycle.record_cancellation_intent(current, reason="stop")
+    assert current.status is MissionRunStatus.CANCELLING
+    executor.run_gate.set()
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(task, timeout=2)
+    finished = await lifecycle.get(run.run_id)
+    assert finished.status is MissionRunStatus.INTERRUPTED
+    assert "[REDACTED]" in finished.interrupted_reason
+    assert "HUSH-TOKEN-123" not in finished.interrupted_reason
+
+
+@pytest.mark.asyncio
+async def test_restart_without_poll_recovers_supervision(tmp_path) -> None:
+    """recover_open resumes every durable open run with no per-run caller."""
+
+    executor = _FakeExecutor()
+    lifecycle, _unused = _supervisor(tmp_path, executor)
+    run = await lifecycle.accept(_request(), execution_profile_identity(_config()))
+
+    _recovered_lifecycle, recovered_supervisor = _supervisor(tmp_path, executor)
+    open_runs = await recovered_supervisor.recover_open()
+    assert [item.run_id for item in open_runs] == [run.run_id]
+    deadline = asyncio.get_event_loop().time() + 2
+    while asyncio.get_event_loop().time() < deadline:
+        finished = await _recovered_lifecycle.get(run.run_id)
+        if finished.status is MissionRunStatus.SUCCEEDED:
+            break
+        await asyncio.sleep(0.01)
+    assert finished.status is MissionRunStatus.SUCCEEDED
+    assert executor.submits == 1
+
+
+def test_recovered_submission_mismatch_fails_closed() -> None:
+    from archetype.errors import ConflictError
+    from archetype.missions._extension import _require_recovered_submission_matches
+
+    recovered = SubmittedMission(
+        mission_id=1,
+        task_ids=(("implementation", 2),),
+        episode_id="mission-episode-1",
+        repository="VangelisTech/archetype",
+        branch="agent/run",
+        world_id="world-1",
+    )
+    assert _require_recovered_submission_matches(recovered, _submission()) is recovered
+
+    foreign = MissionSubmission(
+        repository="VangelisTech/other",
+        branch="agent/run",
+        tasks=(_task(),),
+    )
+    with pytest.raises(ConflictError, match="does not correspond"):
+        _require_recovered_submission_matches(recovered, foreign)
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from archetype.activities import ActivityCoordinator
 from archetype.commands.registry import OperationSpec
 from archetype.core.config import StorageConfig
-from archetype.errors import WorldNotFoundError
+from archetype.errors import ConflictError, WorldNotFoundError
 from archetype.missions.activity_binding import MissionActivityBinding
 from archetype.missions.activity_coordinator import MissionAuthorActivityCoordinator
 from archetype.missions.activity_world import (
@@ -30,6 +30,7 @@ from archetype.missions.coding_agents.harness import (
     CodingAgentHarnessConfig,
 )
 from archetype.missions.config import MissionsExtensionConfig
+from archetype.missions.contracts import MissionSubmission, SubmittedMission
 from archetype.missions.critic_activity_coordinator import MissionCriticActivityCoordinator
 from archetype.missions.critic_activity_world import (
     MissionCriticActivityBinding,
@@ -492,7 +493,10 @@ async def _handle_mission(
             if intended_world_id:
                 recovered = await service.recover_submitted()
                 if recovered is not None:
-                    return recovered
+                    return _require_recovered_submission_matches(
+                        recovered,
+                        operation.submission,
+                    )
             submission = operation.submission
             return await service.submit(
                 repository=submission.repository,
@@ -502,6 +506,37 @@ async def _handle_mission(
                 base_ref=submission.base_ref,
             )
         return await service.run(operation.mission, max_ticks=operation.max_ticks)
+
+
+def _require_recovered_submission_matches(
+    recovered: SubmittedMission,
+    submission: MissionSubmission,
+) -> SubmittedMission:
+    """Refuse recovery evidence that does not correspond to the request.
+
+    ``recover_submitted`` trusts the predetermined world alone; comparing the
+    recovered repository coordinates and task-name inventory against the
+    requested submission keeps a reused world id from silently binding a
+    different mission.
+    """
+
+    expected = (
+        submission.repository,
+        submission.branch,
+        submission.base_ref,
+        tuple(sorted(task.name for task in submission.tasks)),
+    )
+    actual = (
+        recovered.repository,
+        recovered.branch,
+        recovered.base_ref,
+        tuple(sorted(name for name, _task_id in recovered.task_ids)),
+    )
+    if expected != actual:
+        raise ConflictError(
+            "recovered Mission evidence does not correspond to the requested submission"
+        )
+    return recovered
 
 
 class _DispatchedMissionRunExecutor:
@@ -559,7 +594,6 @@ class _DispatchedMissionRunExecutor:
         )
 
     async def load_existing(self, run: MissionRun) -> Any:
-        del run
         reservation = self._context.resources.owner(self._owner_id)
         try:
             service = reservation.require_bound()
@@ -568,7 +602,10 @@ class _DispatchedMissionRunExecutor:
         recover = getattr(service, "recover_submitted", None)
         if recover is None:
             return None
-        return await recover()
+        recovered = await recover()
+        if recovered is None:
+            return None
+        return _require_recovered_submission_matches(recovered, run.submission)
 
     async def run(self, run: MissionRun, mission: Any) -> Any:
         return await self._context.resources.dispatcher.apply(
@@ -580,15 +617,6 @@ class _DispatchedMissionRunExecutor:
                 mission=mission,
             )
         )
-
-    async def reconcile(self, run: MissionRun) -> Any:
-        del run
-        return "retry"
-
-    async def active_activity(self, run: MissionRun) -> tuple[str, str] | None:
-        if run.active_activity_kind and run.active_activity_id:
-            return (run.active_activity_kind, run.active_activity_id)
-        return None
 
 
 type _RunControlOperation = (
@@ -640,10 +668,18 @@ def _run_control(
             storage=operation.storage,
         ),
         spawn=lambda factory, label: reservation.spawn(factory, label=label),
+        redact=lambda text: context.redaction.redact_text(
+            text,
+            scope="mission-run-control",
+        ).text,
     )
     control = (lifecycle, supervisor, catalog)
     reservation.retain_anchor(control)
     object.__setattr__(reservation, "_mission_run_control", control)
+    # A fresh supervisor means this process has not yet reconstructed
+    # supervision for durable non-terminal runs; recover them now instead of
+    # waiting for a caller to poll each one individually.
+    reservation.spawn(supervisor.recover_open, label="mission-run-recovery")
     return control
 
 

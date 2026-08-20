@@ -15,11 +15,7 @@ from typing import Any
 from uuid_utils import uuid7
 
 from archetype.missions.contracts import MissionResult, SubmittedMission
-from archetype.missions.run_catalog import (
-    SqliteMissionRunCatalog,
-    decode_json,
-    encode_json,
-)
+from archetype.missions.run_catalog import SqliteMissionRunCatalog, encode_json
 from archetype.missions.run_contracts import (
     MISSION_RUN_EVENT_MAX_PAGE,
     MISSION_RUN_EVENT_PHASES,
@@ -34,11 +30,13 @@ from archetype.missions.run_contracts import (
     MissionRunRequest,
     MissionRunStatus,
     mission_request_digest,
-    mission_result_from_payload,
+    mission_result_from_json,
     mission_result_payload,
     require_mission_run_transition,
-    submission_from_payload,
+    submission_from_json,
     submission_payload,
+    task_ids_from_json,
+    task_ids_payload,
 )
 
 _MAX_EVENT_REASON_CHARS = 512
@@ -101,17 +99,11 @@ class MissionRunLifecycle:
             events=(self._event("accepted", {"status": "accepted"}, now_ms=now_ms),),
         )
         run = record_to_run(inserted)
+        # The canonical digest already folds the pinned profile identity, so
+        # one comparison covers both a changed submission and a rolled profile.
         if run.request_digest != digest:
             raise MissionRunConflictError(
                 "idempotency key reused with a different canonical mission request"
-            )
-        if (
-            run.profile.profile_id != profile.profile_id
-            or run.profile.version != profile.version
-            or run.profile.digest != profile.digest
-        ):
-            raise MissionRunConflictError(
-                "idempotency key reused with a different execution profile"
             )
         return run
 
@@ -167,27 +159,10 @@ class MissionRunLifecycle:
                 "world_id": submitted.world_id or run.world_id,
                 "mission_id": submitted.mission_id,
                 "episode_id": submitted.episode_id,
-                "task_ids_json": encode_json([list(item) for item in submitted.task_ids]),
+                "task_ids_json": encode_json(task_ids_payload(submitted.task_ids)),
                 "updated_at_ms": now_ms,
             },
             events=events,
-        )
-
-    async def bind_activity(
-        self,
-        run: MissionRun,
-        *,
-        kind: str,
-        activity_id: str,
-    ) -> MissionRun:
-        now_ms = self._now_ms()
-        return await self._replace(
-            run,
-            {
-                "active_activity_kind": kind,
-                "active_activity_id": activity_id,
-                "updated_at_ms": now_ms,
-            },
         )
 
     async def record_cancellation_intent(self, run: MissionRun, *, reason: str = "") -> MissionRun:
@@ -262,16 +237,12 @@ class MissionRunLifecycle:
         self,
         run: MissionRun,
         state: MissionRunCleanupState,
-        *,
-        error: str = "",
     ) -> MissionRun:
-        now_ms = self._now_ms()
         return await self._replace(
             run,
             {
                 "cleanup_state": state.value,
-                "cleanup_error": error,
-                "updated_at_ms": now_ms,
+                "updated_at_ms": self._now_ms(),
             },
         )
 
@@ -397,21 +368,7 @@ class MissionRunLifecycle:
 def record_to_run(record: dict[str, Any]) -> MissionRun:
     """Rehydrate one MissionRun from a physical catalog row."""
 
-    submission = submission_from_payload(
-        _payload_map(decode_json(str(record["submission_json"])), "submission")
-    )
     result_json = record.get("result_json")
-    task_ids = tuple(
-        _task_id_pair(item)
-        for item in _payload_list(
-            decode_json(str(record.get("task_ids_json") or "[]")),
-            "task_ids",
-        )
-    )
-    mission_id = record.get("mission_id")
-    result = None
-    if result_json:
-        result = mission_result_from_payload(_payload_map(decode_json(str(result_json)), "result"))
     return MissionRun(
         run_id=str(record["run_id"]),
         principal=str(record["principal"]),
@@ -423,19 +380,16 @@ def record_to_run(record: dict[str, Any]) -> MissionRun:
             digest=str(record["profile_digest"]),
         ),
         status=MissionRunStatus(str(record["status"])),
-        submission=submission,
+        submission=submission_from_json(str(record["submission_json"])),
         world_id=str(record.get("world_id") or ""),
-        mission_id=_optional_int(mission_id),
+        mission_id=_optional_int(record.get("mission_id")),
         episode_id=str(record.get("episode_id") or ""),
-        task_ids=task_ids,
+        task_ids=task_ids_from_json(str(record.get("task_ids_json") or "[]")),
         active_operation=str(record.get("active_operation") or ""),
-        active_activity_kind=str(record.get("active_activity_kind") or ""),
-        active_activity_id=str(record.get("active_activity_id") or ""),
         cancellation_intent=bool(record.get("cancellation_intent")),
         cancellation_reason=str(record.get("cancellation_reason") or ""),
-        result=result,
+        result=mission_result_from_json(str(result_json)) if result_json else None,
         cleanup_state=MissionRunCleanupState(str(record.get("cleanup_state") or "none")),
-        cleanup_error=str(record.get("cleanup_error") or ""),
         accepted_at_ms=int(record["accepted_at_ms"]),
         running_at_ms=_optional_int(record.get("running_at_ms")),
         terminal_at_ms=_optional_int(record.get("terminal_at_ms")),
@@ -458,30 +412,6 @@ def submitted_from_run(run: MissionRun) -> SubmittedMission:
         base_ref=run.submission.base_ref,
         world_id=run.world_id,
     )
-
-
-def _payload_map(value: object, label: str) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} must be an object")
-    return {str(key): item for key, item in value.items()}
-
-
-def _payload_list(value: object, label: str) -> list[object]:
-    if not isinstance(value, list):
-        raise ValueError(f"{label} must be a list")
-    return list(value)
-
-
-def _task_id_pair(value: object) -> tuple[str, int]:
-    pair = _payload_list(value, "task_id")
-    if len(pair) != 2:
-        raise ValueError("task_ids entries must be [name, entity_id]")
-    name, entity_id = pair
-    if not isinstance(name, str):
-        raise ValueError("task name must be a string")
-    if isinstance(entity_id, bool) or not isinstance(entity_id, int):
-        raise ValueError("task entity_id must be an integer")
-    return name, entity_id
 
 
 def _required_int(value: object) -> int:

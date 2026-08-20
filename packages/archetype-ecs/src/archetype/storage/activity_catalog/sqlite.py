@@ -33,6 +33,7 @@ from archetype.storage.activity_catalog.records import (
 )
 from archetype.storage.catalog.sqlite import catalog_path_for
 from archetype.storage.config import ControlCatalogConfig
+from archetype.storage.hardened_sqlite import HardenedSqliteCatalog
 
 _SCHEMA_VERSION = 1
 
@@ -296,8 +297,13 @@ class SqliteActivityCatalogMigrationInspector:
         return await asyncio.to_thread(inspect_sqlite_activity_catalog, self.path)
 
 
-class SqliteActivityCatalog:
+class SqliteActivityCatalog(HardenedSqliteCatalog):
     """Single-host durable authority for activity claims and settlement."""
+
+    _DDL = _DDL
+    _META_TABLE = "activity_catalog_meta"
+    _SCHEMA_VERSION = _SCHEMA_VERSION
+    _CATALOG_LABEL = "activity catalog"
 
     def __init__(
         self,
@@ -306,91 +312,8 @@ class SqliteActivityCatalog:
         busy_timeout_ms: int = 5000,
         now_seconds: Callable[[], float] = time.time,
     ) -> None:
-        if busy_timeout_ms < 0:
-            raise ValueError("busy_timeout_ms must be non-negative")
-        self.path = Path(path)
-        self._busy_timeout_ms = busy_timeout_ms
+        super().__init__(path, busy_timeout_ms=busy_timeout_ms)
         self._now_seconds = now_seconds
-        self._conn: sqlite3.Connection | None = None
-        self._lock = asyncio.Lock()
-
-    def _connect_sync(self) -> sqlite3.Connection:
-        if self._conn is not None:
-            return self._conn
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        deadline = time.monotonic() + self._busy_timeout_ms / 1000
-        delay = 0.005
-        while True:
-            conn = sqlite3.connect(
-                self.path,
-                timeout=self._busy_timeout_ms / 1000,
-                check_same_thread=False,
-            )
-            try:
-                conn.row_factory = sqlite3.Row
-                conn.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms}")
-                conn.execute("PRAGMA foreign_keys=ON")
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA synchronous=FULL")
-                conn.executescript(_DDL)
-                row = conn.execute(
-                    "SELECT value FROM activity_catalog_meta WHERE key='schema_version'"
-                ).fetchone()
-                assert row is not None
-                version = int(row["value"])
-                if version != _SCHEMA_VERSION:
-                    raise RuntimeError(
-                        f"activity catalog {self.path} has schema_version={version}, "
-                        f"this build expects {_SCHEMA_VERSION}"
-                    )
-                self._conn = conn
-                return conn
-            except sqlite3.OperationalError as exc:
-                conn.close()
-                busy = "locked" in str(exc).lower() or "busy" in str(exc).lower()
-                remaining = deadline - time.monotonic()
-                if not busy or remaining <= 0:
-                    raise
-                time.sleep(min(delay, remaining))
-                delay = min(delay * 2, 0.1)
-            except BaseException:
-                conn.close()
-                raise
-
-    async def _run(self, fn, *args):
-        async with self._lock:
-            worker = asyncio.create_task(asyncio.to_thread(fn, *args))
-            cancellation: asyncio.CancelledError | None = None
-            while True:
-                try:
-                    await asyncio.shield(worker)
-                except asyncio.CancelledError as exc:
-                    cancellation = cancellation or exc
-                    if worker.done():
-                        break
-                except BaseException:
-                    if cancellation is None:
-                        raise
-                    break
-                else:
-                    break
-            if cancellation is not None:
-                try:
-                    worker.result()
-                except BaseException:
-                    # Caller cancellation remains the public outcome, but
-                    # retrieving the worker outcome prevents an orphaned task.
-                    pass
-                raise cancellation
-            return worker.result()
-
-    async def close(self) -> None:
-        def _close() -> None:
-            if self._conn is not None:
-                self._conn.close()
-                self._conn = None
-
-        await self._run(_close)
 
     async def admit_activity(self, admission: ActivityAdmissionRecord) -> ActivityRecord:
         """Idempotently admit immutable activity content."""
