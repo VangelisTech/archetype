@@ -216,7 +216,7 @@ def test_publisher_tag_check_rejects_malformed_output(
 def test_publisher_tag_check_rejects_an_unexpected_ref(tmp_path: Path) -> None:
     result = _run_tag_check(
         tmp_path,
-        output=f"{EXPECTED_COMMIT}\trefs/tags/v0.6.1\n",
+        output=f"{EXPECTED_COMMIT}\trefs/tags/v0.6.2\n",
     )
 
     assert result.returncode != 0

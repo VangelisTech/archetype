@@ -101,7 +101,7 @@ def test_wheel_validation_binds_project_and_version_metadata(tmp_path: Path) -> 
     with pytest.raises(RuntimeError, match="unexpected project name"):
         package_smoke._validate_wheel_contents("archetype-research", wrong_project)
 
-    wrong_version = _research_wheel(tmp_path / "wrong-version.whl", version="0.6.1")
+    wrong_version = _research_wheel(tmp_path / "wrong-version.whl", version="0.6.2")
     with pytest.raises(RuntimeError, match="does not match the attested wheel version"):
         package_smoke._validate_wheel_contents(
             "archetype-research",
