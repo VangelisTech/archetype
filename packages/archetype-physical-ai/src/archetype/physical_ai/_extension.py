@@ -196,7 +196,7 @@ def get_manifest() -> WorldLibraryManifest:
     return WorldLibraryManifest(
         name=_LIBRARY_NAME,
         distribution="archetype-physical-ai",
-        version="0.6.1",
+        version="0.6.2",
         requires_framework=">=0.6,<0.7",
         operation_models=(RunHostedEpisode,),
         install=_install,

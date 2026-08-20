@@ -203,7 +203,7 @@ def test_entry_point_distribution_mismatch_is_rejected(
     ("entry_name", "distribution_version", "message"),
     [
         ("metadata-name", "0.6.0", "entry point 'metadata-name' loaded manifest 'alpha'"),
-        ("alpha", "0.6.1", "declares version '0.6.0', loaded from '0.6.1'"),
+        ("alpha", "0.6.2", "declares version '0.6.0', loaded from '0.6.2'"),
     ],
 )
 def test_entry_point_identity_must_match_manifest_metadata(

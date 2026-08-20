@@ -79,7 +79,7 @@ def get_manifest() -> WorldLibraryManifest:
     return WorldLibraryManifest(
         name=_LIBRARY_NAME,
         distribution="archetype-research",
-        version="0.6.1",
+        version="0.6.2",
         requires_framework=">=0.6,<0.7",
         operation_models=(AutoResearch,),
         install=_install,

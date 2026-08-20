@@ -1,6 +1,6 @@
 [project]
 name = "archetype-research"
-version = "0.6.1"
+version = "0.6.2"
 description = "Minimal world-library optimization and AutoResearch workflows for Archetype."
 readme = "README.md"
 requires-python = ">=3.12"
