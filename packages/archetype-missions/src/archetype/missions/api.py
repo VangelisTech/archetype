@@ -1,8 +1,9 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Optional Agent Missions read-projection and mission-control routers."""
+"""Optional Agent Missions read-projection and MissionRun control routers."""
 
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal, cast
 
 from daft import DataFrame, Expression, col
@@ -28,22 +29,22 @@ from archetype.missions.components import (
     TaskValidator,
     ValidationResult,
 )
+from archetype.missions.authorization import (
+    MISSION_CAPABILITY,
+    MissionAuthorizer,
+    require_capability,
+    require_run_access,
+)
+from archetype.missions.config import MissionsExtensionConfig
 from archetype.missions.contracts import (
     AgentTask,
     CommandValidator,
     MissionSubmission,
 )
-from archetype.missions.control import (
-    MISSION_CONTROL_CAPABILITY,
-    MissionControlCatalog,
-    MissionRunPin,
-    require_capability,
-    require_profile_access,
-)
 from archetype.missions.execution_profiles import (
     ExecutionProfile,
+    ExecutionProfileCatalog,
     MissionProfileRequest,
-    authorize_profile_request,
 )
 from archetype.missions.models import (
     AcceptMissionRun,
@@ -58,10 +59,10 @@ from archetype.missions.run_contracts import (
     MissionRunEvent,
     MissionRunRequest,
 )
+from archetype.redaction import RedactionService
 from archetype.world.models import ComponentTypeRef, GetWorldInfo, QueryComponents
 
 _TASK_TYPES: list[type[Component]] = [Task, TaskState, TaskDispatch, TaskPolicy]
-_MISSION_CONTROL_CAPABILITY = "missions:control"
 
 # One stable process owner for every REST-dispatched MissionRun operation, so
 # an API restart resumes the same durable catalog under the same reservation.
@@ -79,6 +80,7 @@ _MAX_NAME_CHARS = 128
 _MAX_CANCEL_REASON_CHARS = 512
 _MAX_RESULT_REASON_CHARS = 4_096
 _MAX_IDEMPOTENCY_KEY_CHARS = 255
+_MAX_COMMIT_SHAS = 64
 
 
 class MissionRunLimitError(PayloadRejectedError):
@@ -91,51 +93,35 @@ class _FrozenRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class MissionControlSubmitRequest(_FrozenRequest):
-    """Client-owned mission-control coordinates. Host execution stays off this body."""
-
-    profile_id: str
-    repository: str
-    branch: str
-    base_ref: str = "main"
-    name: str = "agent-mission"
+# Projection-time redaction is defense in depth: durable reason text is
+# already redacted at its write sites, and this deterministic default-policy
+# scanner keeps client-echoed and legacy text credential-free on the wire.
+_PROJECTION_REDACTION = RedactionService()
+_PROJECTION_REDACTION_SCOPE = "mission-run-projection"
 
 
-class MissionRunPinResponse(_FrozenRequest):
-    """Bounded accepted-run projection with no host secrets or credentials."""
-
-    run_id: str
-    owner_principal_id: str
-    profile_id: str
-    profile_version: str
-    profile_digest: str
-    state: Literal["accepted"] = "accepted"
+def _redacted_text(value: str, limit: int) -> str:
+    if not value:
+        return value
+    return _PROJECTION_REDACTION.redact_text(
+        value,
+        scope=_PROJECTION_REDACTION_SCOPE,
+    ).text[:limit]
 
 
-def _pin_response(pin: MissionRunPin) -> MissionRunPinResponse:
-    return MissionRunPinResponse(
-        run_id=pin.run_id,
-        owner_principal_id=pin.owner_principal_id,
-        profile_id=pin.profile_id,
-        profile_version=pin.profile_version,
-        profile_digest=pin.profile_digest,
-    )
+def get_execution_profiles(request: Request) -> ExecutionProfileCatalog:
+    """Return the host-bound execution-profile catalog, or an empty one.
 
+    The catalog rides the same ``world_library_configs`` wiring input that
+    installed the Missions extension; no parallel service locator exists. An
+    unconfigured host resolves no profile, so submission fails closed.
+    """
 
-def get_mission_control(request: Request) -> MissionControlCatalog:
-    """Return the host-composed mission-control catalog or fail closed."""
-
-    resources = getattr(request.app.state, "resources", None)
-    lookup = getattr(resources, "host_capability", None)
-    if not callable(lookup):
-        raise HTTPException(status_code=401, detail="Authentication required")
-    try:
-        catalog = lookup(_MISSION_CONTROL_CAPABILITY)
-    except (KeyError, ValueError, RuntimeError):
-        raise HTTPException(status_code=401, detail="Authentication required") from None
-    if not isinstance(catalog, MissionControlCatalog):
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return catalog
+    configs = getattr(request.app.state, "world_library_configs", None)
+    config = configs.get("missions") if isinstance(configs, Mapping) else None
+    if isinstance(config, MissionsExtensionConfig):
+        return config.execution_profiles
+    return ExecutionProfileCatalog.empty()
 
 
 async def _components_frame(
@@ -344,93 +330,6 @@ async def get_task_card(
         raise_api_error(exc)
 
 
-async def submit_mission_control_run(
-    req: MissionControlSubmitRequest,
-    principal: Annotated[MissionPrincipal, Depends(get_mission_principal)],
-    catalog: Annotated[MissionControlCatalog, Depends(get_mission_control)],
-) -> MissionRunPinResponse:
-    """Accept a profile-bound mission run pin for a verified principal."""
-
-    try:
-        pin = catalog.submit(
-            principal,
-            MissionProfileRequest(
-                profile_id=req.profile_id,
-                repository=req.repository,
-                branch=req.branch,
-                base_ref=req.base_ref,
-            ),
-        )
-        return _pin_response(pin)
-    except Exception as exc:
-        raise_api_error(exc)
-
-
-async def get_mission_control_run(
-    run_id: str,
-    principal: Annotated[MissionPrincipal, Depends(get_mission_principal)],
-    catalog: Annotated[MissionControlCatalog, Depends(get_mission_control)],
-) -> MissionRunPinResponse:
-    """Read one accepted run pin the principal is allowed to see."""
-
-    try:
-        return _pin_response(catalog.pin_for(principal, run_id))
-    except Exception as exc:
-        raise_api_error(exc)
-
-
-async def cancel_mission_control_run(
-    run_id: str,
-    principal: Annotated[MissionPrincipal, Depends(get_mission_principal)],
-    catalog: Annotated[MissionControlCatalog, Depends(get_mission_control)],
-) -> MissionRunPinResponse:
-    """Authorize cancellation for one accepted run pin."""
-
-    try:
-        return _pin_response(catalog.cancel(principal, run_id))
-    except Exception as exc:
-        raise_api_error(exc)
-
-
-async def attach_mission_control_run(
-    run_id: str,
-    principal: Annotated[MissionPrincipal, Depends(get_mission_principal)],
-    catalog: Annotated[MissionControlCatalog, Depends(get_mission_control)],
-) -> MissionRunPinResponse:
-    """Authorize first-person attachment for one accepted run pin."""
-
-    try:
-        return _pin_response(catalog.attach(principal, run_id))
-    except Exception as exc:
-        raise_api_error(exc)
-
-
-async def steer_mission_control_run(
-    run_id: str,
-    principal: Annotated[MissionPrincipal, Depends(get_mission_principal)],
-    catalog: Annotated[MissionControlCatalog, Depends(get_mission_control)],
-) -> MissionRunPinResponse:
-    """Authorize steering for one accepted run pin."""
-
-    try:
-        return _pin_response(catalog.steer(principal, run_id))
-    except Exception as exc:
-        raise_api_error(exc)
-
-
-async def takeover_mission_control_run(
-    run_id: str,
-    principal: Annotated[MissionPrincipal, Depends(get_mission_principal)],
-    catalog: Annotated[MissionControlCatalog, Depends(get_mission_control)],
-) -> MissionRunPinResponse:
-    """Authorize writable takeover for one accepted run pin."""
-
-    try:
-        return _pin_response(catalog.takeover(principal, run_id))
-    except Exception as exc:
-        raise_api_error(exc)
-
-
 class MissionRunValidatorRequest(_FrozenRequest):
     """One bounded command validator; execution authority stays host-owned."""
 
@@ -566,7 +465,7 @@ class MissionRunTaskResultResponse(_FrozenRequest):
     name: str
     status: str
     dispatches: int
-    commit_shas: list[str]
+    commit_shas: list[str] = Field(max_length=_MAX_COMMIT_SHAS)
     reason: str
 
 
@@ -610,9 +509,9 @@ def _run_status_response(run: MissionRun) -> MissionRunStatusResponse:
         mission_id=run.mission_id,
         episode_id=run.episode_id,
         cancellation_requested=run.cancellation_intent,
-        cancellation_reason=run.cancellation_reason[:_MAX_CANCEL_REASON_CHARS],
+        cancellation_reason=_redacted_text(run.cancellation_reason, _MAX_CANCEL_REASON_CHARS),
         cleanup_state=run.cleanup_state.value,
-        interrupted_reason=run.interrupted_reason[:_MAX_RESULT_REASON_CHARS],
+        interrupted_reason=_redacted_text(run.interrupted_reason, _MAX_RESULT_REASON_CHARS),
         accepted_at_ms=run.accepted_at_ms,
         running_at_ms=run.running_at_ms,
         terminal_at_ms=run.terminal_at_ms,
@@ -630,15 +529,15 @@ def _run_result_response(run: MissionRun) -> MissionRunResultResponse:
             repository=run.result.repository,
             branch=run.result.branch,
             ticks_completed=run.result.ticks_completed,
-            reason=run.result.reason[:_MAX_RESULT_REASON_CHARS],
+            reason=_redacted_text(run.result.reason, _MAX_RESULT_REASON_CHARS),
             tasks=[
                 MissionRunTaskResultResponse(
                     task_id=task.task_id,
                     name=task.name,
                     status=task.status,
                     dispatches=task.dispatches,
-                    commit_shas=list(task.commit_shas),
-                    reason=task.reason[:_MAX_RESULT_REASON_CHARS],
+                    commit_shas=list(task.commit_shas[:_MAX_COMMIT_SHAS]),
+                    reason=_redacted_text(task.reason, _MAX_RESULT_REASON_CHARS),
                 )
                 for task in run.result.tasks
             ],
@@ -647,7 +546,7 @@ def _run_result_response(run: MissionRun) -> MissionRunResultResponse:
         run_id=run.run_id,
         state=run.status.value,
         result=detail,
-        interrupted_reason=run.interrupted_reason[:_MAX_RESULT_REASON_CHARS],
+        interrupted_reason=_redacted_text(run.interrupted_reason, _MAX_RESULT_REASON_CHARS),
     )
 
 
@@ -701,14 +600,19 @@ def _submission_from_request(
     )
 
 
-def _require_run_access(principal: MissionPrincipal, run: MissionRun) -> None:
-    """Fail closed unless the caller owns the durable run or holds a grant."""
+class _DurableRunAccess:
+    """Project one durable MissionRun into the Missions authorization facts.
 
-    if run.principal == principal.principal_id:
-        return
-    if run.run_id in principal.granted_run_ids:
-        return
-    raise PermissionError("Permission denied")
+    The durable record is the sole ownership authority. It carries no grant
+    store yet, so the granted-principal set is honestly empty; a future grant
+    fact extends this projection without changing the policy call.
+    """
+
+    __slots__ = ("granted_principal_ids", "owner_principal_id")
+
+    def __init__(self, run: MissionRun) -> None:
+        self.owner_principal_id = run.principal
+        self.granted_principal_ids: frozenset[str] = frozenset()
 
 
 async def _authorized_run(
@@ -728,29 +632,29 @@ async def _authorized_run(
             run_id=run_id,
         )
     )
-    _require_run_access(principal, run)
+    require_run_access(principal, cast(Any, _DurableRunAccess(run)))
     return run
 
 
-def _require_profile_allows_cancel(catalog: MissionControlCatalog, run: MissionRun) -> None:
+def _require_profile_allows_cancel(catalog: ExecutionProfileCatalog, run: MissionRun) -> None:
     """Fail closed unless the exact pinned profile version permits cancel."""
 
     try:
-        profile = catalog.profiles.resolve(
+        binding = catalog.resolve(
             run.profile.profile_id,
             version=run.profile.version,
             digest=run.profile.digest,
         )
     except (KeyError, ValueError):
         raise PermissionError("Permission denied") from None
-    if not profile.allow_cancel:
+    if not binding.profile.allow_cancel:
         raise PermissionError("Permission denied")
 
 
 async def submit_mission_run(
     req: MissionRunSubmitRequest,
     principal: Annotated[MissionPrincipal, Depends(get_mission_principal)],
-    catalog: Annotated[MissionControlCatalog, Depends(get_mission_control)],
+    profiles: Annotated[ExecutionProfileCatalog, Depends(get_execution_profiles)],
     dispatcher: Annotated[CommandDispatcher, Depends(get_dispatcher)],
     idempotency_key: Annotated[
         str,
@@ -771,11 +675,8 @@ async def submit_mission_run(
     """
 
     try:
-        require_capability(principal, MISSION_CONTROL_CAPABILITY["submit"])
-        require_profile_access(principal, req.profile_id)
-        profile = catalog.profiles.resolve(req.profile_id)
-        pinned = authorize_profile_request(
-            profile,
+        binding = MissionAuthorizer(profiles).submit(
+            principal,
             MissionProfileRequest(
                 profile_id=req.profile_id,
                 repository=req.repository,
@@ -783,7 +684,8 @@ async def submit_mission_run(
                 base_ref=req.base_ref,
             ),
         )
-        submission = _submission_from_request(req, profile)
+        pinned = binding.identity
+        submission = _submission_from_request(req, binding.profile)
         run = await dispatcher.apply(
             AcceptMissionRun(
                 owner_id=_MISSION_RUN_OWNER,
@@ -821,7 +723,7 @@ async def get_mission_run(
             dispatcher,
             principal,
             run_id,
-            capability=MISSION_CONTROL_CAPABILITY["read"],
+            capability=MISSION_CAPABILITY["read"],
         )
         return _run_status_response(run)
     except Exception as exc:
@@ -848,7 +750,7 @@ async def get_mission_run_events(
             dispatcher,
             principal,
             run_id,
-            capability=MISSION_CONTROL_CAPABILITY["read"],
+            capability=MISSION_CAPABILITY["read"],
         )
         events: tuple[MissionRunEvent, ...] = await dispatcher.apply(
             GetMissionRunEvents(
@@ -892,7 +794,7 @@ async def get_mission_run_result(
             dispatcher,
             principal,
             run_id,
-            capability=MISSION_CONTROL_CAPABILITY["read"],
+            capability=MISSION_CAPABILITY["read"],
         )
     except Exception as exc:
         raise_api_error(exc)
@@ -907,7 +809,7 @@ async def get_mission_run_result(
 async def cancel_mission_run(
     run_id: str,
     principal: Annotated[MissionPrincipal, Depends(get_mission_principal)],
-    catalog: Annotated[MissionControlCatalog, Depends(get_mission_control)],
+    profiles: Annotated[ExecutionProfileCatalog, Depends(get_execution_profiles)],
     dispatcher: Annotated[CommandDispatcher, Depends(get_dispatcher)],
     body: MissionRunCancelRequest | None = None,
 ) -> MissionRunStatusResponse:
@@ -923,15 +825,19 @@ async def cancel_mission_run(
             dispatcher,
             principal,
             run_id,
-            capability=MISSION_CONTROL_CAPABILITY["cancel"],
+            capability=MISSION_CAPABILITY["cancel"],
         )
-        _require_profile_allows_cancel(catalog, run)
+        _require_profile_allows_cancel(profiles, run)
         cancelled = await dispatcher.apply(
             CancelMissionRun(
                 owner_id=_MISSION_RUN_OWNER,
                 name=_MISSION_RUN_OPERATION_NAME,
                 run_id=run.run_id,
-                reason=body.reason if body is not None else "",
+                reason=(
+                    _redacted_text(body.reason, _MAX_CANCEL_REASON_CHARS)
+                    if body is not None
+                    else ""
+                ),
             )
         )
         return _run_status_response(cancelled)
@@ -985,43 +891,6 @@ def create_router() -> APIRouter:
         get_task_card,
         methods=["GET"],
         response_model=dict[str, Any],
-    )
-    router.add_api_route(
-        "/v1/mission-control/runs",
-        submit_mission_control_run,
-        methods=["POST"],
-        response_model=MissionRunPinResponse,
-        status_code=status.HTTP_202_ACCEPTED,
-    )
-    router.add_api_route(
-        "/v1/mission-control/runs/{run_id}",
-        get_mission_control_run,
-        methods=["GET"],
-        response_model=MissionRunPinResponse,
-    )
-    router.add_api_route(
-        "/v1/mission-control/runs/{run_id}/cancel",
-        cancel_mission_control_run,
-        methods=["POST"],
-        response_model=MissionRunPinResponse,
-    )
-    router.add_api_route(
-        "/v1/mission-control/runs/{run_id}/attach",
-        attach_mission_control_run,
-        methods=["POST"],
-        response_model=MissionRunPinResponse,
-    )
-    router.add_api_route(
-        "/v1/mission-control/runs/{run_id}/steer",
-        steer_mission_control_run,
-        methods=["POST"],
-        response_model=MissionRunPinResponse,
-    )
-    router.add_api_route(
-        "/v1/mission-control/runs/{run_id}/takeover",
-        takeover_mission_control_run,
-        methods=["POST"],
-        response_model=MissionRunPinResponse,
     )
     router.add_api_route(
         "/v1/mission-runs",

@@ -523,22 +523,28 @@ class _DispatchedMissionRunExecutor:
         self._storage = storage
 
     def _mission_config(self, run: MissionRun) -> Any:
-        """Return the process-bound config or the host's pinned-profile binding.
+        """Return the process-bound config or materialize the pinned profile.
 
-        REST-accepted runs carry no caller config; the retained
-        mission-control capability owns the profile-to-execution composition.
-        An unbound host fails here and supervision records an honest failed
-        run instead of fabricating provider work.
+        REST-accepted runs carry no caller config; the host-owned execution
+        profile bound through ``world_library_configs`` composes the live
+        ``AgentMissionConfig`` for the exact pinned identity. An unbound host
+        fails here and supervision records an honest failed run instead of
+        fabricating provider work.
         """
 
         if self._config is not None:
             return self._config
-        control = self._context.resources.host_capability("missions:control")
-        return control.run_execution_config(
+        config = self._context.config
+        if not isinstance(config, MissionsExtensionConfig):
+            raise RuntimeError(
+                "mission run execution requires host-bound execution profiles"
+            )
+        binding = config.execution_profiles.resolve(
             run.profile.profile_id,
-            run.profile.version,
-            run.profile.digest,
+            version=run.profile.version,
+            digest=run.profile.digest,
         )
+        return binding.build_config()
 
     async def submit(self, run: MissionRun) -> Any:
         return await self._context.resources.dispatcher.apply(

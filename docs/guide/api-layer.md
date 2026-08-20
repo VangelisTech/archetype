@@ -126,11 +126,15 @@ records intent durably before reporting acceptance; `cancelling` stays
 distinct from `cancelled`, and completion races resolve to the committed
 execution fact. Client disconnect is never cancellation.
 
-Executing a REST-accepted run requires host composition: the retained
-`missions:control` capability resolves a pinned profile to concrete mission
-execution configuration through `bind_run_execution`. An unbound host still
-accepts, observes, and cancels runs; supervision records an honest `failed`
-run instead of fabricating provider work.
+Executing a REST-accepted run requires host composition: the execution
+profile bound through the `world_library_configs` wiring input resolves the
+exact pinned `(profile_id, version, digest)` to its trusted
+`AgentMissionConfig` factory. An unbound host still accepts, observes, and
+cancels runs; supervision records an honest `failed` run instead of
+fabricating provider work. Reason text is redacted before it becomes a
+durable fact and again at every projection, and terminal task facts bound
+their commit lists, so provider errors cannot leak credential-shaped
+content to any `mission:read` principal.
 
 ## Route Structure
 
