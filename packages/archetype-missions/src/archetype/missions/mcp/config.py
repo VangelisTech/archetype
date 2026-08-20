@@ -56,6 +56,15 @@ def _positive_float(environ: dict[str, str], name: str, default: float) -> float
     return value
 
 
+def _bounded_result_bytes(environ: dict[str, str]) -> int:
+    value = _positive_int(environ, ENV_MAX_RESULT_BYTES, 65536)
+    if value < 256:
+        # The explicit truncation envelope needs structural room; below this
+        # floor a bounded rendering guarantee is unsatisfiable.
+        raise McpHostConfigError(f"{ENV_MAX_RESULT_BYTES} must be at least 256")
+    return value
+
+
 def _base_url(environ: dict[str, str]) -> str:
     raw = environ.get(ENV_BASE_URL, "").strip() or _DEFAULT_BASE_URL
     parts = urlsplit(raw)
@@ -111,5 +120,5 @@ class McpHostConfig:
             credential=_credential(source),
             timeout_seconds=_positive_float(source, ENV_TIMEOUT_SECONDS, 30.0),
             max_events_page=_positive_int(source, ENV_MAX_EVENTS_PAGE, 100),
-            max_result_bytes=_positive_int(source, ENV_MAX_RESULT_BYTES, 65536),
+            max_result_bytes=_bounded_result_bytes(source),
         )

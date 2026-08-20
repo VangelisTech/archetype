@@ -18,7 +18,12 @@ import pytest
 
 from archetype.missions.mcp.config import McpHostConfig
 from archetype.missions.mcp.server import MissionMcpServer
-from tests.missions.mcp.conftest import CREDENTIAL, call_tool, submit_arguments
+from tests.missions.mcp.conftest import (
+    CREDENTIAL,
+    call_tool,
+    host_environ,
+    submit_arguments,
+)
 
 HOSTILE_OPAQUE_IDS = [
     "../admin",
@@ -224,3 +229,57 @@ def test_upstream_body_echoing_the_credential_is_redacted(call, fake_control):
 def test_deeply_nested_hostile_frame_is_a_parse_error(mcp_server):
     frame = mcp_server.handle_line("[" * 20000)
     assert frame["error"]["code"] == -32700
+
+
+TRICKY_CREDENTIAL = 'mcp-cred-"quoted\\slash-0123456789abcdef'
+SURROGATE = "\udc80"
+
+
+def test_credential_with_json_escapables_is_still_redacted(fake_control):
+    """Redaction is structural: a credential containing a quote and a
+    backslash is no longer a contiguous substring after JSON escaping, yet
+    it must never survive into a model-visible tool result."""
+
+    fake_control.credential = TRICKY_CREDENTIAL
+    run = fake_control.seed_run(state="running")
+    fake_control.fail_next_status = 500
+    fake_control.fail_next_detail = f"leak {TRICKY_CREDENTIAL} end"
+    config = McpHostConfig.from_env(host_environ(fake_control))
+    server = MissionMcpServer(config, stderr=io.StringIO())
+    try:
+        is_error, payload = call_tool(server, "mission_get", {"run_id": run.run_id})
+    finally:
+        server.close()
+    assert is_error is True
+    assert TRICKY_CREDENTIAL not in json.dumps(payload)
+    assert "[redacted]" in payload["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        submit_arguments(repository=f"repo{SURROGATE}"),
+        submit_arguments(mission=f"m{SURROGATE}"),
+        submit_arguments(tasks=[{"name": f"t{SURROGATE}", "prompt": "p"}]),
+        submit_arguments(tasks=[{"name": "t", "prompt": f"p{SURROGATE}"}]),
+        submit_arguments(
+            tasks=[
+                {
+                    "name": "t",
+                    "prompt": "p",
+                    "validators": [{"name": "v", "argv": [f"a{SURROGATE}"]}],
+                }
+            ]
+        ),
+        submit_arguments(tasks=[{"name": "t", "prompt": "p", "depends_on": [f"d{SURROGATE}"]}]),
+    ],
+)
+def test_unpaired_surrogates_are_invalid_arguments_before_the_wire(call, fake_control, arguments):
+    """A permanently invalid input must surface as invalid_argument, never as
+    a transient-looking internal transport failure."""
+
+    is_error, payload = call("mission_submit", arguments)
+    assert is_error is True
+    assert payload["error"]["code"] == "invalid_argument"
+    assert "surrogate" in payload["error"]["message"]
+    assert fake_control.requests == []

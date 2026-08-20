@@ -1202,7 +1202,8 @@ Boundaries:
   `ARCHETYPE_MISSIONS_MCP_CREDENTIAL` (or `..._CREDENTIAL_FILE`),
   `ARCHETYPE_MISSIONS_MCP_TIMEOUT_SECONDS`,
   `ARCHETYPE_MISSIONS_MCP_MAX_EVENTS_PAGE`, and
-  `ARCHETYPE_MISSIONS_MCP_MAX_RESULT_BYTES` are read once at process
+  `ARCHETYPE_MISSIONS_MCP_MAX_RESULT_BYTES` (minimum 256, so the
+  truncation envelope always fits) are read once at process
   start; input caps (32 tasks, 64 KiB prompt bytes) are fixed module
   constants. Tool arguments carry domain inputs and opaque ids only; a model
   can never supply a URL, bearer token, REST path or method, execution

@@ -6,8 +6,11 @@
 from __future__ import annotations
 
 import io
+import json
 
-from archetype.missions.mcp.config import McpHostConfig
+import pytest
+
+from archetype.missions.mcp.config import McpHostConfig, McpHostConfigError
 from archetype.missions.mcp.server import MissionMcpServer
 from tests.missions.mcp.conftest import call_tool, host_environ, submit_arguments
 
@@ -166,16 +169,43 @@ def test_list_is_scoped_to_the_authenticated_principal(call, fake_control):
 
 
 def test_oversized_payload_is_truncated_with_an_explicit_marker(fake_control):
-    run = fake_control.seed_run(state="completed", result={"log": "x" * 5000})
+    """The FULL rendered tool text obeys max_result_bytes even for content
+    whose JSON escaping expands aggressively (control chars, quotes)."""
+
+    run = fake_control.seed_run(
+        state="completed",
+        result={"log": ('"' + "\x01\x02" + "\\") * 900},
+    )
     config = McpHostConfig.from_env(
         host_environ(fake_control, ARCHETYPE_MISSIONS_MCP_MAX_RESULT_BYTES="256")
     )
     server = MissionMcpServer(config, stderr=io.StringIO())
     try:
-        is_error, payload = call_tool(server, "mission_result", {"run_id": run.run_id})
+        frame = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "mission_result",
+                    "arguments": {"run_id": run.run_id},
+                },
+            }
+        )
     finally:
         server.close()
-    assert is_error is False
+    result = frame["result"]
+    assert result["isError"] is False
+    rendered = result["content"][0]["text"]
+    assert len(rendered.encode("utf-8")) <= 256
+    payload = json.loads(rendered)
     assert payload["truncated"] is True
     assert payload["limit_bytes"] == 256
-    assert len(payload["content_prefix"].encode("utf-8")) <= 256
+    assert payload["content_prefix"]
+
+
+def test_result_bytes_floor_fails_closed(fake_control):
+    with pytest.raises(McpHostConfigError):
+        McpHostConfig.from_env(
+            host_environ(fake_control, ARCHETYPE_MISSIONS_MCP_MAX_RESULT_BYTES="40")
+        )

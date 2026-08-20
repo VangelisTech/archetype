@@ -208,3 +208,19 @@ def test_declared_schemas_agree_with_runtime_validation():
             if "pattern" in fragment:
                 assert re.fullmatch(fragment["pattern"], good)
                 assert not re.fullmatch(fragment["pattern"], bad)
+
+
+def test_oversized_frame_is_rejected_boundedly(host_config, monkeypatch):
+    """A newline-less flood is discarded in bounded chunks and answered with
+    a parse error; the loop keeps serving later frames."""
+
+    from archetype.missions.mcp import server as server_module
+
+    monkeypatch.setattr(server_module, "_MAX_FRAME_CHARS", 128)
+    stdin = io.StringIO("x" * 300 + "\n" + json.dumps(_request("ping", 9)) + "\n")
+    stdout = io.StringIO()
+    server = MissionMcpServer(host_config, stderr=io.StringIO())
+    assert server.serve(stdin, stdout) == 0
+    frames = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert frames[0]["error"] == {"code": -32700, "message": "Frame too large"}
+    assert frames[1] == {"jsonrpc": "2.0", "id": 9, "result": {}}

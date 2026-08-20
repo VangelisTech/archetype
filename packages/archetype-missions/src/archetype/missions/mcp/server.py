@@ -42,6 +42,9 @@ _MAX_TASK_NAME_CHARS = 200
 _MAX_TASKS = 32
 _MAX_PROMPT_BYTES = 65536
 _MAX_DIAGNOSTIC_BYTES = 512
+# Largest accepted stdin frame; a newline-less flood is rejected in bounded
+# chunks instead of buffering an unbounded line.
+_MAX_FRAME_CHARS = 16 * 1024 * 1024
 
 _TASK_KEYS = {"name", "prompt", "validators", "depends_on"}
 
@@ -72,6 +75,19 @@ _TASK_SCHEMA = {
 }
 
 
+def _utf8_or_reject(value: str, label: str) -> bytes:
+    """Encode ``value`` or fail closed: an unpaired surrogate is a permanently
+    invalid argument, not a transient internal transport failure."""
+
+    try:
+        return value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise MissionToolError(
+            "invalid_argument",
+            f"{label} must not contain unpaired surrogate code points",
+        ) from None
+
+
 def _require_string(value: object, *, label: str, max_chars: int) -> str:
     if (
         not isinstance(value, str)
@@ -83,6 +99,7 @@ def _require_string(value: object, *, label: str, max_chars: int) -> str:
             "invalid_argument",
             f"{label} must be a non-empty single-line string of at most {max_chars} characters",
         )
+    _utf8_or_reject(value, label)
     return value
 
 
@@ -143,10 +160,17 @@ def _validate_validators(validators: object, *, label: str) -> list[dict[str, An
             raise MissionToolError(
                 "invalid_argument", f"{item_label}.name must be a non-empty string"
             )
-        if not isinstance(argv, list) or any(not isinstance(item, str) for item in argv):
+        if not isinstance(argv, list):
             raise MissionToolError(
                 "invalid_argument", f"{item_label}.argv must be an array of strings"
             )
+        _utf8_or_reject(name, f"{item_label}.name")
+        for position_argv, item in enumerate(argv):
+            if not isinstance(item, str):
+                raise MissionToolError(
+                    "invalid_argument", f"{item_label}.argv must be an array of strings"
+                )
+            _utf8_or_reject(item, f"{item_label}.argv[{position_argv}]")
         clean.append({"name": name, "argv": argv})
     return clean
 
@@ -167,11 +191,12 @@ def _validate_tasks(tasks: object, label: str) -> list[dict[str, Any]]:
             raise MissionToolError(
                 "invalid_argument", f"{label}[{index}].name must be a short string"
             )
+        _utf8_or_reject(name, f"{label}[{index}].name")
         prompt = task.get("prompt")
         if (
             not isinstance(prompt, str)
             or not prompt
-            or len(prompt.encode("utf-8")) > _MAX_PROMPT_BYTES
+            or len(_utf8_or_reject(prompt, f"{label}[{index}].prompt")) > _MAX_PROMPT_BYTES
         ):
             raise MissionToolError(
                 "invalid_argument",
@@ -185,13 +210,18 @@ def _validate_tasks(tasks: object, label: str) -> list[dict[str, Any]]:
             )
         if "depends_on" in task:
             depends_on = task["depends_on"]
-            if not isinstance(depends_on, list) or any(
-                not isinstance(item, str) or not item for item in depends_on
-            ):
+            if not isinstance(depends_on, list):
                 raise MissionToolError(
                     "invalid_argument",
                     f"{label}[{index}].depends_on must be an array of task names",
                 )
+            for position_dep, item in enumerate(depends_on):
+                if not isinstance(item, str) or not item:
+                    raise MissionToolError(
+                        "invalid_argument",
+                        f"{label}[{index}].depends_on must be an array of task names",
+                    )
+                _utf8_or_reject(item, f"{label}[{index}].depends_on[{position_dep}]")
             clean["depends_on"] = depends_on
         validated.append(clean)
     return validated
@@ -390,7 +420,22 @@ class MissionMcpServer:
         sink = stdout if stdout is not None else sys.stdout
         self._diagnostics.emit(f"serving mission tools for {self._config.base_url}")
         try:
-            for raw_line in source:
+            while True:
+                raw_line = source.readline(_MAX_FRAME_CHARS + 1)
+                if raw_line == "":
+                    break
+                if len(raw_line) > _MAX_FRAME_CHARS:
+                    # Discard the rest of the oversized frame in bounded
+                    # chunks; never buffer an unbounded line.
+                    while raw_line and not raw_line.endswith("\n"):
+                        raw_line = source.readline(_MAX_FRAME_CHARS + 1)
+                    response = _error_frame(None, -32700, "Frame too large")
+                    try:
+                        sink.write(json.dumps(response, sort_keys=True) + "\n")
+                        sink.flush()
+                    except OSError:
+                        break
+                    continue
                 line = raw_line.strip()
                 if not line:
                     continue
@@ -501,28 +546,51 @@ class MissionMcpServer:
     # -- rendering ----------------------------------------------------------
 
     def _tool_content(self, payload: dict[str, Any], *, is_error: bool) -> dict[str, Any]:
-        rendered = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        # Defense in depth: redact structurally, before serialization, so a
+        # credential containing JSON-escaped characters (quote, backslash)
+        # can never survive as a non-contiguous escaped substring.
         if self._config.credential:
-            # Defense in depth: even an upstream body that echoed the bearer
-            # credential must never enter a model-visible tool result.
-            rendered = rendered.replace(self._config.credential, "[redacted]")
-        encoded = rendered.encode("utf-8")
+            payload = _redact_value(payload, self._config.credential)
+        rendered = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         limit = self._config.max_result_bytes
-        if len(encoded) > limit:
-            prefix = encoded[:limit].decode("utf-8", errors="ignore")
-            rendered = json.dumps(
-                {
-                    "truncated": True,
-                    "limit_bytes": limit,
-                    "content_prefix": prefix,
-                },
-                sort_keys=True,
-                ensure_ascii=False,
-            )
+        if len(rendered.encode("utf-8")) > limit:
+            rendered = _truncation_envelope(rendered, limit)
         return {
             "content": [{"type": "text", "text": rendered}],
             "isError": is_error,
         }
+
+
+def _redact_value(value: Any, secret: str) -> Any:
+    """Replace ``secret`` inside every string of a JSON-shaped value."""
+
+    if isinstance(value, str):
+        return value.replace(secret, "[redacted]")
+    if isinstance(value, list):
+        return [_redact_value(item, secret) for item in value]
+    if isinstance(value, dict):
+        return {
+            _redact_value(key, secret): _redact_value(item, secret) for key, item in value.items()
+        }
+    return value
+
+
+def _truncation_envelope(rendered: str, limit: int) -> str:
+    """Render an explicit truncation marker whose FULL serialized form fits
+    ``limit`` bytes: shrink the raw prefix until the envelope, with all JSON
+    escaping applied, measures within the bound."""
+
+    prefix = rendered.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
+    while True:
+        envelope = json.dumps(
+            {"truncated": True, "limit_bytes": limit, "content_prefix": prefix},
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        overshoot = len(envelope.encode("utf-8")) - limit
+        if overshoot <= 0 or not prefix:
+            return envelope
+        prefix = prefix[: -max(1, overshoot)]
 
 
 def _result_frame(request_id: object, result: dict[str, Any]) -> dict[str, Any]:
