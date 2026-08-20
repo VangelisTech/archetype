@@ -562,6 +562,8 @@ async def test_fastapi_lifespan_owns_and_closes_runtime_resources(
 ) -> None:
     """Lifespan builds one resource owner and closes that exact owner once."""
 
+    # An undeclared bind host is fail-closed; this test exercises loopback.
+    monkeypatch.setenv("ARCHETYPE_BIND_HOST", "127.0.0.1")
     api_app = import_module("archetype.api.app")
     deps = import_module("archetype.api.deps")
     wiring = import_module("archetype.wiring")
@@ -597,6 +599,8 @@ async def test_fastapi_lifespan_retains_retryable_resources_after_close_failure(
 ) -> None:
     """A failed close keeps the exact owner reachable for a serialized retry."""
 
+    # An undeclared bind host is fail-closed; this test exercises loopback.
+    monkeypatch.setenv("ARCHETYPE_BIND_HOST", "127.0.0.1")
     api_app = import_module("archetype.api.app")
     wiring = import_module("archetype.wiring")
 
@@ -633,6 +637,8 @@ async def test_fastapi_lifespan_retries_retained_owner_before_reentry(
 ) -> None:
     """A restart cannot overwrite the exact graph retained by failed teardown."""
 
+    # An undeclared bind host is fail-closed; this test exercises loopback.
+    monkeypatch.setenv("ARCHETYPE_BIND_HOST", "127.0.0.1")
     api_app = import_module("archetype.api.app")
     wiring = import_module("archetype.wiring")
 

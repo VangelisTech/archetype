@@ -3,7 +3,6 @@
 
 """Optional Agent Missions read-projection and MissionRun control routers."""
 
-from collections.abc import Mapping
 from typing import Annotated, Any, Literal, cast
 
 from daft import DataFrame, Expression, col
@@ -35,7 +34,7 @@ from archetype.missions.authorization import (
     require_capability,
     require_run_access,
 )
-from archetype.missions.config import MissionsExtensionConfig
+from archetype.missions.config import installed_execution_profiles
 from archetype.missions.contracts import (
     AgentTask,
     CommandValidator,
@@ -110,19 +109,16 @@ def _redacted_text(value: str, limit: int) -> str:
     ).text[:limit]
 
 
-def get_execution_profiles(request: Request) -> ExecutionProfileCatalog:
-    """Return the host-bound execution-profile catalog, or an empty one.
+async def get_execution_profiles(request: Request) -> ExecutionProfileCatalog:
+    """Resolve the server-owned execution-profile catalog from lifespan state.
 
-    The catalog rides the same ``world_library_configs`` wiring input that
-    installed the Missions extension; no parallel service locator exists. An
-    unconfigured host resolves no profile, so submission fails closed.
+    Route handlers depend on this to turn a client ``profile_id`` into the
+    catalog's ``ExecutionProfileBinding`` and then a live ``build_config()``;
+    the catalog itself was bound through ``world_library_configs`` at wiring.
     """
 
-    configs = getattr(request.app.state, "world_library_configs", None)
-    config = configs.get("missions") if isinstance(configs, Mapping) else None
-    if isinstance(config, MissionsExtensionConfig):
-        return config.execution_profiles
-    return ExecutionProfileCatalog.empty()
+    installed = request.app.state.resources.world_library("missions")
+    return installed_execution_profiles(installed)
 
 
 async def _components_frame(
@@ -982,4 +978,4 @@ def create_router() -> APIRouter:
 router = create_router()
 
 
-__all__ = ["create_router", "router"]
+__all__ = ["create_router", "get_execution_profiles", "router"]

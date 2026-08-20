@@ -54,17 +54,22 @@ def _profile(**overrides: object) -> ExecutionProfile:
     return ExecutionProfile.model_validate(values)
 
 
-def _binding(profile: ExecutionProfile) -> ExecutionProfileBinding:
-    def build(selected: ExecutionProfile) -> AgentMissionConfig:
-        return AgentMissionConfig(
-            sandbox_backend=cast(Any, SimpleNamespace(name=selected.sandbox_backend)),
-            sandbox_environment=selected.sandbox_environment,
-            model=selected.model,
-            max_ticks=selected.max_ticks,
-            checkpoint_after_dispatch=selected.checkpoint_after_dispatch,
-        )
+def _config(profile: ExecutionProfile, **overrides: Any) -> AgentMissionConfig:
+    values: dict[str, Any] = {
+        "sandbox_backend": cast(Any, SimpleNamespace(name=profile.sandbox_backend)),
+        "sandbox_environment": profile.sandbox_environment,
+        "driver": cast(Any, SimpleNamespace(driver_id=profile.agent_driver)),
+        "critic_driver": cast(Any, SimpleNamespace(driver_id=profile.critic_driver)),
+        "model": profile.model,
+        "max_ticks": profile.max_ticks,
+        "checkpoint_after_dispatch": profile.checkpoint_after_dispatch,
+    }
+    values.update(overrides)
+    return AgentMissionConfig(**values)
 
-    return ExecutionProfileBinding(profile=profile, config_factory=build)
+
+def _binding(profile: ExecutionProfile) -> ExecutionProfileBinding:
+    return ExecutionProfileBinding(profile=profile, config_factory=_config)
 
 
 def _catalog(*profiles: ExecutionProfile, current: str = "1") -> ExecutionProfileCatalog:
@@ -138,18 +143,56 @@ def test_profile_binding_builds_live_config_and_detects_drift() -> None:
     config = _binding(profile).build_config()
     assert config.sandbox_environment == profile.sandbox_environment
     assert config.model == profile.model
+    assert config.driver is not None and config.driver.driver_id == profile.agent_driver
+    assert (
+        config.critic_driver is not None and config.critic_driver.driver_id == profile.critic_driver
+    )
 
     drifted = ExecutionProfileBinding(
         profile=profile,
-        config_factory=lambda _selected: AgentMissionConfig(
-            sandbox_backend=cast(Any, SimpleNamespace(name="modal")),
+        config_factory=lambda selected: _config(
+            selected,
             sandbox_environment="other-environment",
-            model=profile.model,
-            max_ticks=profile.max_ticks,
         ),
     )
     with pytest.raises(ValueError, match="environment"):
         drifted.build_config()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "label"),
+    [("driver", "agent driver"), ("critic_driver", "critic driver")],
+)
+def test_factory_dropping_or_renaming_a_declared_driver_fails_closed(
+    field_name: str,
+    label: str,
+) -> None:
+    profile = _profile()
+
+    dropped = ExecutionProfileBinding(
+        profile=profile,
+        config_factory=lambda selected: _config(selected, **{field_name: None}),
+    )
+    with pytest.raises(ValueError, match=label):
+        dropped.build_config()
+
+    renamed = ExecutionProfileBinding(
+        profile=profile,
+        config_factory=lambda selected: _config(
+            selected,
+            **{field_name: cast(Any, SimpleNamespace(driver_id="other-driver"))},
+        ),
+    )
+    with pytest.raises(ValueError, match=label):
+        renamed.build_config()
+
+
+def test_shipped_codex_agent_driver_declares_its_protocol_identity() -> None:
+    from archetype.missions.coding_agents.app_server import CodexAppServerDriver
+    from archetype.missions.coding_agents.contracts import CodingAgentDriver
+
+    assert "driver_id" in CodingAgentDriver.__annotations__
+    assert CodexAppServerDriver.driver_id == "codex"
 
 
 def test_submit_authorizes_only_profile_owned_coordinates_without_minting_a_run() -> None:

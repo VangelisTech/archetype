@@ -213,8 +213,11 @@ class ExecutionProfileBinding:
         for actual, declared, label in expected:
             if actual != declared:
                 raise ValueError(f"execution profile factory changed declared {label}")
-        critic_driver = config.critic_driver
-        if critic_driver is not None and critic_driver.driver_id != self.profile.critic_driver:
+        # Driver comparisons stay unconditional: a factory that drops a declared
+        # driver (None) erases declared authority exactly like a mismatched one.
+        if getattr(config.driver, "driver_id", None) != self.profile.agent_driver:
+            raise ValueError("execution profile factory changed declared agent driver")
+        if getattr(config.critic_driver, "driver_id", None) != self.profile.critic_driver:
             raise ValueError("execution profile factory changed declared critic driver")
         return config
 

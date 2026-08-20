@@ -24,6 +24,8 @@ from archetype.missions.relations import DependsOn, Guards, PartOfMission
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "catalogs"))
+    # An undeclared bind host is fail-closed; this suite exercises loopback.
+    monkeypatch.setenv("ARCHETYPE_BIND_HOST", "127.0.0.1")
     app = create_app()
     with TestClient(app) as c:
         yield c

@@ -29,7 +29,10 @@ from archetype.missions.coding_agents.harness import (
     CodingAgentHarness,
     CodingAgentHarnessConfig,
 )
-from archetype.missions.config import MissionsExtensionConfig
+from archetype.missions.config import (
+    MissionsExtensionConfig,
+    installed_execution_profiles,
+)
 from archetype.missions.contracts import MissionSubmission, SubmittedMission
 from archetype.missions.critic_activity_coordinator import MissionCriticActivityCoordinator
 from archetype.missions.critic_activity_world import (
@@ -564,20 +567,16 @@ class _DispatchedMissionRunExecutor:
         """Return the process-bound config or materialize the pinned profile.
 
         REST-accepted runs carry no caller config; the host-owned execution
-        profile bound through ``world_library_configs`` composes the live
-        ``AgentMissionConfig`` for the exact pinned identity. An unbound host
-        fails here and supervision records an honest failed run instead of
-        fabricating provider work.
+        profile bound through ``world_library_configs`` and retained on the
+        installed library composes the live ``AgentMissionConfig`` for the
+        exact pinned identity. An unbound host fails here and supervision
+        records an honest failed run instead of fabricating provider work.
         """
 
         if self._config is not None:
             return self._config
-        config = self._context.config
-        if not isinstance(config, MissionsExtensionConfig):
-            raise RuntimeError(
-                "mission run execution requires host-bound execution profiles"
-            )
-        binding = config.execution_profiles.resolve(
+        installed = self._context.resources.world_library("missions")
+        binding = installed_execution_profiles(installed).resolve(
             run.profile.profile_id,
             version=run.profile.version,
             digest=run.profile.digest,
@@ -819,6 +818,8 @@ def install(context: WorldLibraryContext) -> InstalledWorldLibrary:
     config = context.config
     if config is not None and not isinstance(config, MissionsExtensionConfig):
         raise TypeError("missions config must be a MissionsExtensionConfig")
+    if config is None:
+        config = MissionsExtensionConfig()
 
     transcripts = TranscriptIngestionService(
         context.redaction,
@@ -863,6 +864,7 @@ def install(context: WorldLibraryContext) -> InstalledWorldLibrary:
         name="missions",
         runtime_adapter=Missions,
         world_adapter=MissionWorld,
+        config=config,
     )
 
 

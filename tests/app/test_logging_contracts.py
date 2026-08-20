@@ -498,6 +498,8 @@ def test_host_configuration_is_a_semantic_noop_when_setup_fails(monkeypatch) -> 
 def test_api_factory_defers_host_configuration_to_each_lifespan(monkeypatch) -> None:
     from archetype.api import app as api_app
 
+    # An undeclared bind host is fail-closed; this test exercises loopback.
+    monkeypatch.setenv("ARCHETYPE_BIND_HOST", "127.0.0.1")
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(
         api_app,

@@ -33,7 +33,7 @@ from archetype.missions.components import (
     TaskWorkspace,
     ValidationResult,
 )
-from archetype.missions.config import MissionsExtensionConfig
+from archetype.missions.config import MissionsExtensionConfig, installed_execution_profiles
 from archetype.missions.contracts import (
     AgentMissionConfig,
     AgentTask,
@@ -163,4 +163,5 @@ __all__ = [
     "require_mission_transition",
     "require_task_transition",
     "load_runner_sessions",
+    "installed_execution_profiles",
 ]

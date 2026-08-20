@@ -32,6 +32,8 @@ runner = CliRunner()
 def api_client(tmp_path, monkeypatch):
     """Yield a TestClient wired to a fresh runtime resource owner."""
     monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "catalogs"))
+    # An undeclared bind host is fail-closed; this suite exercises loopback.
+    monkeypatch.setenv("ARCHETYPE_BIND_HOST", "127.0.0.1")
     fastapi_app = create_app()
     with TestClient(fastapi_app) as tc:
         yield tc
