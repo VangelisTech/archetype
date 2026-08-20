@@ -64,6 +64,7 @@ machine authority; this page is its review surface.
 | `missions.sandbox.checkpoint_restore` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — Supported sandbox backends | pytest: 3 | `pr`, `main`, `release` |
 | `release.package.installable` | `release` | high | [docs/guide/api-stability.md](../guide/api-stability.md) — What counts as public | pytest: 2; static: 1 | `release` |
 | `storage.remote.control_parity` | `storage` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 10. Supported durability profile | pytest: 2; static: 1 | `main`, `release` |
+| `missions.mcp.trusted_host_adapter` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 11. Mission MCP server | pytest: 3 | `pr`, `main`, `release` |
 | `missions.agent_v1.public_authoring` | `missions` | medium | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 2. Public authoring surface | pytest: 2 | `pr`, `main`, `release` |
 | `missions.agent_v1.validator_gated` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 4. State and transition protocol | pytest: 7; static: 2 | `pr`, `main`, `release` |
 | `missions.agent_v1.exact_head_critic` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — Independent exact-head critic | pytest: 4 | `pr`, `main`, `release` |
