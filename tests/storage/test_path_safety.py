@@ -241,6 +241,8 @@ class TestApiSurface:
         from archetype.api.app import create_app
 
         monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "control"))
+        # An undeclared bind host is fail-closed; this test exercises loopback.
+        monkeypatch.setenv("ARCHETYPE_BIND_HOST", "127.0.0.1")
         with TestClient(create_app()) as client:
             resp = client.post(
                 "/worlds",

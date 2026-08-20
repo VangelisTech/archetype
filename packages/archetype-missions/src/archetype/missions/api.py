@@ -6,7 +6,7 @@
 from typing import Annotated, Any, cast
 
 from daft import DataFrame, Expression, col
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from archetype.api.deps import get_actor_ctx, get_dispatcher
 from archetype.api.errors import raise_api_error
@@ -25,10 +25,24 @@ from archetype.missions.components import (
     TaskValidator,
     ValidationResult,
 )
+from archetype.missions.config import installed_execution_profiles
+from archetype.missions.execution_profiles import ExecutionProfileCatalog
 from archetype.missions.relations import DependsOn, Guards, PartOfMission
 from archetype.world.models import ComponentTypeRef, GetWorldInfo, QueryComponents
 
 _TASK_TYPES: list[type[Component]] = [Task, TaskState, TaskDispatch, TaskPolicy]
+
+
+async def get_execution_profiles(request: Request) -> ExecutionProfileCatalog:
+    """Resolve the server-owned execution-profile catalog from lifespan state.
+
+    Route handlers depend on this to turn a client ``profile_id`` into the
+    catalog's ``ExecutionProfileBinding`` and then a live ``build_config()``;
+    the catalog itself was bound through ``world_library_configs`` at wiring.
+    """
+
+    installed = request.app.state.resources.world_library("missions")
+    return installed_execution_profiles(installed)
 
 
 async def _components_frame(
@@ -267,4 +281,4 @@ def create_router() -> APIRouter:
 router = create_router()
 
 
-__all__ = ["create_router", "router"]
+__all__ = ["create_router", "get_execution_profiles", "router"]

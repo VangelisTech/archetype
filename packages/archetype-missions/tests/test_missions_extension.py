@@ -17,6 +17,13 @@ from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.missions import Missions, MissionWorld
 from archetype.missions._extension import MISSION_OPERATION_MODELS, get_manifest
+from archetype.missions.config import MissionsExtensionConfig, installed_execution_profiles
+from archetype.missions.contracts import AgentMissionConfig
+from archetype.missions.execution_profiles import (
+    ExecutionProfile,
+    ExecutionProfileBinding,
+    ExecutionProfileCatalog,
+)
 from archetype.missions.trajectories import ClaudeTranscriptSource, TrajectorySelection
 from archetype.missions.trajectories.models import (
     GradeTrajectory,
@@ -59,6 +66,14 @@ class _World:
         if require_storage and self.storage is None:
             raise ValueError(f"{capability} requires explicit storage coordinates")
         return await callback("world-1", self.storage, self.dispatcher)
+
+
+def cast_backend(name: str) -> Any:
+    return SimpleNamespace(name=name)
+
+
+def cast_driver(driver_id: str) -> Any:
+    return SimpleNamespace(driver_id=driver_id)
 
 
 def _context(tmp_path: Path) -> WorldLibraryContext:
@@ -109,6 +124,9 @@ def test_install_registers_only_the_seven_declared_operations(tmp_path: Path) ->
     assert installed.runtime_adapter is Missions
     assert installed.world_adapter is MissionWorld
     assert not hasattr(installed, "api_routers")
+    assert isinstance(installed.config, MissionsExtensionConfig)
+    with pytest.raises(KeyError, match="not configured"):
+        installed_execution_profiles(installed).resolve("coding-default")
     assert tuple(spec.model for spec in context.registry.specs) == MISSION_OPERATION_MODELS
     assert tuple(spec.name for spec in context.registry.specs) == get_manifest().operation_names
     assert all(spec.trusted and not spec.untrusted for spec in context.registry.specs)
@@ -117,9 +135,78 @@ def test_install_registers_only_the_seven_declared_operations(tmp_path: Path) ->
 def test_install_rejects_unknown_library_configuration(tmp_path: Path) -> None:
     context = replace(_context(tmp_path), config=object())
 
-    with pytest.raises(TypeError, match="does not accept"):
+    with pytest.raises(TypeError, match="MissionsExtensionConfig"):
         get_manifest().install(context)
     assert not context.registry.specs
+
+
+def test_install_accepts_exact_missions_configuration(tmp_path: Path) -> None:
+    context = replace(_context(tmp_path), config=MissionsExtensionConfig())
+
+    installed = get_manifest().install(context)
+
+    assert installed.name == "missions"
+    assert installed.config is context.config
+    assert tuple(spec.model for spec in context.registry.specs) == MISSION_OPERATION_MODELS
+
+
+def test_installed_library_resolves_bound_profiles_to_live_configuration(
+    tmp_path: Path,
+) -> None:
+    """profile_id -> ExecutionProfileBinding -> build_config through the seam."""
+
+    profile = ExecutionProfile.model_validate(
+        {
+            "profile_id": "coding-default",
+            "version": "1",
+            "allowed_repositories": ("VangelisTech/archetype",),
+            "allowed_base_refs": ("main",),
+            "branch_namespace": "agent/",
+            "sandbox_backend": "modal",
+            "sandbox_environment": "coding-agent:v1",
+            "agent_driver": "codex",
+            "critic_driver": "codex",
+            "model": "gpt-5",
+            "timeout_seconds": 3600,
+            "max_ticks": 100,
+            "max_retries": 3,
+            "max_concurrency": 1,
+            "cost_ceiling_usd_cents": 5000,
+            "max_validators_per_task": 8,
+            "max_validator_timeout_seconds": 900,
+            "publication_policy": "commit_and_push",
+            "checkpoint_after_dispatch": True,
+        }
+    )
+
+    def factory(selected: ExecutionProfile) -> AgentMissionConfig:
+        return AgentMissionConfig(
+            sandbox_backend=cast_backend(selected.sandbox_backend),
+            sandbox_environment=selected.sandbox_environment,
+            driver=cast_driver(selected.agent_driver),
+            critic_driver=cast_driver(selected.critic_driver),
+            model=selected.model,
+            max_ticks=selected.max_ticks,
+            checkpoint_after_dispatch=selected.checkpoint_after_dispatch,
+        )
+
+    binding = ExecutionProfileBinding(profile=profile, config_factory=factory)
+    catalog = ExecutionProfileCatalog(
+        (binding,),
+        current_versions={profile.profile_id: profile.version},
+    )
+    context = replace(
+        _context(tmp_path),
+        config=MissionsExtensionConfig(execution_profiles=catalog),
+    )
+
+    installed = get_manifest().install(context)
+
+    resolved = installed_execution_profiles(installed).resolve("coding-default")
+    assert resolved is binding
+    config = resolved.build_config()
+    assert config.model == profile.model
+    assert config.driver is not None and config.driver.driver_id == profile.agent_driver
 
 
 @pytest.mark.asyncio

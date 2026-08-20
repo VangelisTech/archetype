@@ -19,6 +19,12 @@ from __future__ import annotations
 from fastapi import Header, HTTPException, Request
 from uuid_utils import NAMESPACE_URL, uuid5
 
+from archetype.api.principals import (
+    AuthenticationError,
+    MissionPrincipal,
+    MissionPrincipalDirectory,
+    parse_bearer_credential,
+)
 from archetype.commands.dispatch import CommandDispatcher
 from archetype.commands.models import ActorCtx
 
@@ -54,3 +60,18 @@ async def get_actor_ctx(authorization: str | None = Header(None)) -> ActorCtx:
         id=uuid5(NAMESPACE_URL, f"archetype:development-principal:{role}"),
         roles={role},
     )
+
+
+async def get_mission_principal(
+    request: Request,
+    authorization: str | None = Header(None),
+) -> MissionPrincipal:
+    """Authenticate a future mission-control route with a verified principal."""
+
+    directory = getattr(request.app.state, "mission_principals", None)
+    if not isinstance(directory, MissionPrincipalDirectory):
+        directory = MissionPrincipalDirectory.empty()
+    try:
+        return directory.authenticate(parse_bearer_credential(authorization))
+    except AuthenticationError:
+        raise HTTPException(status_code=401, detail="Authentication required") from None

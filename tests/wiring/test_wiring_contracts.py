@@ -482,6 +482,8 @@ async def test_runtime_and_fastapi_have_identical_registered_handler_inventory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # An undeclared bind host is fail-closed; this test exercises loopback.
+    monkeypatch.setenv("ARCHETYPE_BIND_HOST", "127.0.0.1")
     wiring = _wiring()
     runtime_module = import_module("archetype.runtime.runtime")
     api_module = import_module("archetype.api.app")

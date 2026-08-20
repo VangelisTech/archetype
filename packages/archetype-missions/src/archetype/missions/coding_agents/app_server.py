@@ -16,7 +16,7 @@ import json
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from archetype.missions.coding_agents.contracts import (
     AgentProcessObservation,
@@ -711,6 +711,7 @@ class CodexAppServerDriver:
     """Coding-agent driver backed by app-server thread/turn facts."""
 
     connector: CodexAppServerConnector
+    driver_id: ClassVar[str] = "codex"
     model: str = ""
     workspace: str = "/workspace/repo"
     timeout_seconds: int = 45 * 60

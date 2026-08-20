@@ -42,11 +42,18 @@ class WorldLibraryContext:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InstalledWorldLibrary:
-    """Typed adapters retained after successful installation."""
+    """Typed adapters and validated configuration retained after installation.
+
+    ``config`` is the exact typed extension configuration the installer
+    accepted (or its typed default). Retaining it here keeps per-extension
+    authority reachable through ``RuntimeResources.world_library(name)``
+    without introducing a parallel service locator.
+    """
 
     name: str
     runtime_adapter: Callable[..., Any] | None = None
     world_adapter: Callable[..., Any] | None = None
+    config: object | None = None
 
     def __post_init__(self) -> None:
         _validate_library_name(self.name)
