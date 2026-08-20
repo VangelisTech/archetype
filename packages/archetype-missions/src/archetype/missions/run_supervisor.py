@@ -136,7 +136,10 @@ class MissionRunSupervisor:
                 )
             await self._lifecycle.mark_cleanup(current, MissionRunCleanupState.PENDING)
             return
-        if run.status is MissionRunStatus.RUNNING and run.active_operation == _RUN_MISSION_OPERATION:
+        if (
+            run.status is MissionRunStatus.RUNNING
+            and run.active_operation == _RUN_MISSION_OPERATION
+        ):
             # RunMission may have dispatched provider work before this
             # process took over; completion cannot be proven, so record the
             # explicit interruption instead of blindly re-dispatching.

@@ -514,7 +514,7 @@ async def test_future_mission_operations_are_trusted_direct_only_and_reject_all_
     assert provider_calls == []
     assert scheduler.admissions == []
     assert {"target_tick", "priority", "max_attempts"}.isdisjoint(_MissionOperation.model_fields)
-    assert len(access.rows) == 14
+    assert len(access.rows) == 16
     assert set(resolved_ticks) <= {"mission-world"}
     for evidence_value in access.rows:
         evidence = _evidence_dict(evidence_value)

@@ -670,10 +670,12 @@ def _run_control(
             storage=operation.storage,
         ),
         spawn=lambda factory, label: reservation.spawn(factory, label=label),
-        redact=lambda text: context.redaction.redact_text(
-            text,
-            scope="mission-run-control",
-        ).text,
+        redact=lambda text: (
+            context.redaction.redact_text(
+                text,
+                scope="mission-run-control",
+            ).text
+        ),
     )
     control = (lifecycle, supervisor, catalog)
     reservation.retain_anchor(control)
@@ -732,7 +734,17 @@ async def _handle_cancel_mission_run(
     async with context.resources.admit_owner_operation(reservation):
         lifecycle, supervisor, _catalog = _run_control(context, reservation, operation)
         run = await lifecycle.get(operation.run_id)
-        run = await lifecycle.record_cancellation_intent(run, reason=operation.reason)
+        # Caller-supplied text is redacted before it becomes a durable fact,
+        # matching every other write site in this family.
+        reason = (
+            context.redaction.redact_text(
+                operation.reason,
+                scope="mission-run-control",
+            ).text
+            if operation.reason
+            else ""
+        )
+        run = await lifecycle.record_cancellation_intent(run, reason=reason)
         supervisor.ensure(run)
         return await lifecycle.get(operation.run_id)
 
@@ -759,7 +771,7 @@ async def _handle_list_mission_runs(
     async with context.resources.admit_owner_operation(reservation):
         lifecycle, _supervisor, _catalog = _run_control(context, reservation, operation)
         return await lifecycle.list_for_principal(
-            operation.principal,
+            operation.owner_principal,
             limit=operation.limit,
         )
 

@@ -44,4 +44,4 @@ def test_full_composition_discovers_every_first_party_world_library() -> None:
     registry, installed = checker._composed_registry()
 
     assert installed == checker.EXPECTED_WORLD_LIBRARIES
-    assert len(registry.specs) == 50
+    assert len(registry.specs) == 51

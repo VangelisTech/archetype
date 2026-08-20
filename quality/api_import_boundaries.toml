@@ -69,6 +69,7 @@ allowed_dependencies = [
   "archetype.api.deps",
   "archetype.api.errors",
   "archetype.api.models",
+  "archetype.api.principals",
   "archetype.commands.dispatch",
   "archetype.commands.models",
   "archetype.missions.authorization",

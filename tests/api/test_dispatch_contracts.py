@@ -855,9 +855,7 @@ def test_supported_paths_statuses_and_response_shapes_are_unchanged() -> None:
     mission_routes = {
         key: value
         for key, value in _EXPECTED_DECLARED_ROUTES.items()
-        if "/missions" in key[1]
-        or "/tasks/{task_id}" in key[1]
-        or "/mission-runs" in key[1]
+        if "/missions" in key[1] or "/tasks/{task_id}" in key[1] or "/mission-runs" in key[1]
     }
     framework_routes = {
         key: value for key, value in _EXPECTED_DECLARED_ROUTES.items() if key not in mission_routes

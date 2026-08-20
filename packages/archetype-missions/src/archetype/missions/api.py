@@ -17,6 +17,12 @@ from archetype.commands.dispatch import CommandDispatcher
 from archetype.commands.models import ActorCtx
 from archetype.core.component import Component
 from archetype.errors import PayloadRejectedError
+from archetype.missions.authorization import (
+    MISSION_CAPABILITY,
+    MissionAuthorizer,
+    require_capability,
+    require_run_access,
+)
 from archetype.missions.components import (
     AgentExecution,
     Mission,
@@ -27,12 +33,6 @@ from archetype.missions.components import (
     TaskState,
     TaskValidator,
     ValidationResult,
-)
-from archetype.missions.authorization import (
-    MISSION_CAPABILITY,
-    MissionAuthorizer,
-    require_capability,
-    require_run_access,
 )
 from archetype.missions.config import installed_execution_profiles
 from archetype.missions.contracts import (
@@ -59,7 +59,6 @@ from archetype.missions.run_contracts import (
     MissionRunEvent,
     MissionRunRequest,
 )
-from archetype.redaction import RedactionService
 from archetype.world.models import ComponentTypeRef, GetWorldInfo, QueryComponents
 
 _TASK_TYPES: list[type[Component]] = [Task, TaskState, TaskDispatch, TaskPolicy]
@@ -91,22 +90,6 @@ class MissionRunLimitError(PayloadRejectedError):
 
 class _FrozenRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-# Projection-time redaction is defense in depth: durable reason text is
-# already redacted at its write sites, and this deterministic default-policy
-# scanner keeps client-echoed and legacy text credential-free on the wire.
-_PROJECTION_REDACTION = RedactionService()
-_PROJECTION_REDACTION_SCOPE = "mission-run-projection"
-
-
-def _redacted_text(value: str, limit: int) -> str:
-    if not value:
-        return value
-    return _PROJECTION_REDACTION.redact_text(
-        value,
-        scope=_PROJECTION_REDACTION_SCOPE,
-    ).text[:limit]
 
 
 async def get_execution_profiles(request: Request) -> ExecutionProfileCatalog:
@@ -512,9 +495,9 @@ def _run_status_response(run: MissionRun) -> MissionRunStatusResponse:
         mission_id=run.mission_id,
         episode_id=run.episode_id,
         cancellation_requested=run.cancellation_intent,
-        cancellation_reason=_redacted_text(run.cancellation_reason, _MAX_CANCEL_REASON_CHARS),
+        cancellation_reason=run.cancellation_reason[:_MAX_CANCEL_REASON_CHARS],
         cleanup_state=run.cleanup_state.value,
-        interrupted_reason=_redacted_text(run.interrupted_reason, _MAX_RESULT_REASON_CHARS),
+        interrupted_reason=run.interrupted_reason[:_MAX_RESULT_REASON_CHARS],
         accepted_at_ms=run.accepted_at_ms,
         running_at_ms=run.running_at_ms,
         terminal_at_ms=run.terminal_at_ms,
@@ -532,7 +515,7 @@ def _run_result_response(run: MissionRun) -> MissionRunResultResponse:
             repository=run.result.repository,
             branch=run.result.branch,
             ticks_completed=run.result.ticks_completed,
-            reason=_redacted_text(run.result.reason, _MAX_RESULT_REASON_CHARS),
+            reason=run.result.reason[:_MAX_RESULT_REASON_CHARS],
             tasks=[
                 MissionRunTaskResultResponse(
                     task_id=task.task_id,
@@ -540,7 +523,7 @@ def _run_result_response(run: MissionRun) -> MissionRunResultResponse:
                     status=task.status,
                     dispatches=task.dispatches,
                     commit_shas=list(task.commit_shas[:_MAX_COMMIT_SHAS]),
-                    reason=_redacted_text(task.reason, _MAX_RESULT_REASON_CHARS),
+                    reason=task.reason[:_MAX_RESULT_REASON_CHARS],
                 )
                 for task in run.result.tasks
             ],
@@ -549,7 +532,7 @@ def _run_result_response(run: MissionRun) -> MissionRunResultResponse:
         run_id=run.run_id,
         state=run.status.value,
         result=detail,
-        interrupted_reason=_redacted_text(run.interrupted_reason, _MAX_RESULT_REASON_CHARS),
+        interrupted_reason=run.interrupted_reason[:_MAX_RESULT_REASON_CHARS],
     )
 
 
@@ -736,7 +719,7 @@ async def list_mission_runs(
             ListMissionRuns(
                 owner_id=_MISSION_RUN_OWNER,
                 name=_MISSION_RUN_OPERATION_NAME,
-                principal=principal.principal_id,
+                owner_principal=principal.principal_id,
                 limit=limit,
             )
         )
@@ -867,11 +850,7 @@ async def cancel_mission_run(
                 owner_id=_MISSION_RUN_OWNER,
                 name=_MISSION_RUN_OPERATION_NAME,
                 run_id=run.run_id,
-                reason=(
-                    _redacted_text(body.reason, _MAX_CANCEL_REASON_CHARS)
-                    if body is not None
-                    else ""
-                ),
+                reason=body.reason if body is not None else "",
             )
         )
         return _run_status_response(cancelled)

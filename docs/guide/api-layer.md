@@ -137,10 +137,11 @@ profile bound through the `world_library_configs` wiring input resolves the
 exact pinned `(profile_id, version, digest)` to its trusted
 `AgentMissionConfig` factory. An unbound host still accepts, observes, and
 cancels runs; supervision records an honest `failed` run instead of
-fabricating provider work. Reason text is redacted before it becomes a
-durable fact and again at every projection, and terminal task facts bound
-their commit lists, so provider errors cannot leak credential-shaped
-content to any `mission:read` principal.
+fabricating provider work. Reason text — provider exception text and
+caller-supplied cancel reasons alike — is redacted through the composed
+redaction service before it becomes a durable fact, every projection stays
+bounded, and terminal task facts cap their commit lists, so provider errors
+cannot leak credential-shaped content to any `mission:read` principal.
 
 ## Route Structure
 

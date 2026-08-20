@@ -122,7 +122,7 @@ class ListMissionRuns(_MissionOperation):
     name: str
     config: AgentMissionConfig | None = None
     storage: str | Path | StorageConfig | None = None
-    principal: str = Field(min_length=1)
+    owner_principal: str = Field(min_length=1)
     limit: int = Field(default=100, ge=1)
 
 
