@@ -305,7 +305,7 @@ import asyncio
 import importlib.util
 import json
 import sys
-from importlib.metadata import version
+from importlib.metadata import entry_points, version
 from pathlib import Path
 
 import archetype
@@ -341,6 +341,14 @@ mission_paths = sorted(
     if "/missions" in path or "/tasks/" in path
 )
 assert len(mission_paths) == (3 if "missions" in expected else 0), mission_paths
+console_scripts = {{point.name: point for point in entry_points(group="console_scripts")}}
+if "missions" in expected:
+    mcp_point = console_scripts["archetype-missions-mcp"]
+    assert mcp_point.value == "archetype.missions.mcp.server:main", mcp_point.value
+    assert callable(mcp_point.load())
+    assert (Path(sys.executable).parent / "archetype-missions-mcp").exists()
+else:
+    assert "archetype-missions-mcp" not in console_scripts, sorted(console_scripts)
 print(json.dumps({{"matrix": {matrix!r}, "libraries": expected, "operations": operation_count, "module": str(package_root)}}))
 """
     process = subprocess.run(

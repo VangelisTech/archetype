@@ -31,6 +31,7 @@ def test_error_taxonomy_governs_registered_family_exceptions() -> None:
         "archetype.missions.coding_agents.app_server.CodexAppServerError",
         "archetype.missions.coding_agents.app_server.CodexTurnCompletionBarrierError",
         "archetype.missions.critics.harness._UnverifiableReview",
+        "archetype.missions.mcp.client.MissionToolError",
         "archetype.missions.sandboxes._subprocess._CleanupTimeout",
         "archetype.missions.sandboxes._subprocess._JoinTimeout",
     }

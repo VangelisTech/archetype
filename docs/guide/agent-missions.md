@@ -1180,6 +1180,53 @@ its execution sandbox after publishing exact evidence. Modal is paid and
 credentialed, so it remains an explicit release operation rather than ordinary
 CI.
 
+## 11. Mission MCP server
+
+Archetype ships a native agent-facing MCP server (issue #810) as the
+`archetype-missions-mcp` console entry point (equivalently
+`python -m archetype.missions.mcp`), implemented in
+`archetype.missions.mcp`. It is a thin typed stdio adapter over the
+supported MissionRun REST contract (issue #809): Archetype remains mission
+and policy authority, and the MCP process is replaceable transport.
+
+Tool surface — exactly six asynchronous tools: `mission_submit` (returns
+immediately with `run_id` and status coordinates), `mission_get`,
+`mission_events` (opaque cursor plus clamped limit), `mission_result`,
+`mission_cancel`, and `mission_list` (scoped to the authenticated
+principal). Interactive attachment tools belong to issue #811 and are
+absent, never stubbed.
+
+Boundaries:
+
+- Trusted host configuration only: `ARCHETYPE_MISSIONS_MCP_URL`,
+  `ARCHETYPE_MISSIONS_MCP_CREDENTIAL` (or `..._CREDENTIAL_FILE`),
+  `ARCHETYPE_MISSIONS_MCP_TIMEOUT_SECONDS`,
+  `ARCHETYPE_MISSIONS_MCP_MAX_EVENTS_PAGE`, and
+  `ARCHETYPE_MISSIONS_MCP_MAX_RESULT_BYTES` (minimum 256, so the
+  truncation envelope always fits) are read once at process
+  start; input caps (32 tasks, 64 KiB prompt bytes) are fixed module
+  constants. Tool arguments carry domain inputs and opaque ids only; a model
+  can never supply a URL, bearer token, REST path or method, execution
+  backend, secret, or configuration override, and the client never
+  follows redirects.
+- `mission_submit` requires an explicit call and a caller-owned
+  `idempotency_key` forwarded as the `Idempotency-Key` header, so submit
+  retries — including from a fresh process after a crash — converge on
+  the original run and cancellation stays idempotent by `run_id`.
+- JSON-RPC stdout carries protocol frames only; diagnostics go to
+  bounded stderr with credential redaction. Tool results are bounded by
+  the host byte limit and say explicitly when content is truncated.
+- MCP conformance: `initialize`, the `initialized` notification,
+  `tools/list`, `tools/call`, and `ping` work on the supported protocol
+  versions; unsupported request methods return `-32601`.
+
+Contract seam: until issue #809 lands, the executable oracle is the
+offline fake server in `tests/missions/mcp/conftest.py`, which implements
+the documented REST contract; `tests/missions/mcp/test_mission_mcp_live_loopback.py`
+activates route-drift enforcement when `archetype.missions.api` ships
+`/v1/mission-runs` and keeps the live loopback proof as an explicitly
+skipped test until a served surface exists.
+
 ## Companion contracts
 
 - [Runtime](runtime.md)
