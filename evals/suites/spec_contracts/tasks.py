@@ -323,6 +323,7 @@ _PULL_FORWARD_MODELS = frozenset(
         "GetMissionRun",
         "CancelMissionRun",
         "GetMissionRunEvents",
+        "ListMissionRuns",
         "RunGraders",
         "RunMission",
         "SubmitMission",

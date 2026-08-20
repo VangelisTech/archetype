@@ -68,6 +68,7 @@ _TRUSTED_ONLY = frozenset(
         "get_mission_run",
         "cancel_mission_run",
         "get_mission_run_events",
+        "list_mission_runs",
         "run_hosted_episode",
     }
 )
@@ -163,6 +164,7 @@ _PULL_FORWARD_SCOPES = {
     "get_mission_run": "application",
     "cancel_mission_run": "application",
     "get_mission_run_events": "application",
+    "list_mission_runs": "application",
     "run_hosted_episode": "live_world",
 }
 

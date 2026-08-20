@@ -70,6 +70,7 @@ _PULL_FORWARD_MODEL_BOUNDARIES = (
         "archetype.missions.models",
         "GetMissionRunEvents",
         "get_mission_run_events",
+        "list_mission_runs",
     ),
 )
 _ACTOR_MODEL_BOUNDARIES = (
@@ -804,6 +805,7 @@ _EXPECTED_DECLARED_ROUTES = {
     ("GET", "/worlds/{world_id}/missions/{mission_id}/tasks"): 200,
     ("GET", "/worlds/{world_id}/tasks/{task_id}"): 200,
     ("POST", "/v1/mission-runs"): 202,
+    ("GET", "/v1/mission-runs"): 200,
     ("GET", "/v1/mission-runs/{run_id}"): 200,
     ("GET", "/v1/mission-runs/{run_id}/events"): 200,
     ("GET", "/v1/mission-runs/{run_id}/result"): 200,

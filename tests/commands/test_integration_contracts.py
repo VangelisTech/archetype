@@ -402,6 +402,10 @@ class _GetMissionRunEvents(_MissionOperation):
     operation: Literal["get_mission_run_events"] = "get_mission_run_events"
 
 
+class _ListMissionRuns(_MissionOperation):
+    operation: Literal["list_mission_runs"] = "list_mission_runs"
+
+
 @pytest.mark.asyncio
 async def test_future_mission_operations_are_trusted_direct_only_and_reject_all_wire_paths() -> (
     None
@@ -418,6 +422,7 @@ async def test_future_mission_operations_are_trusted_direct_only_and_reject_all_
         _GetMissionRun,
         _CancelMissionRun,
         _GetMissionRunEvents,
+        _ListMissionRuns,
     )
 
     async def live_handler(operation: _MissionOperation) -> None:

@@ -10,181 +10,32 @@ These routes are contributed only when this trusted world-library manifest is ex
 
 ## Missions
 
-### Submit Mission Control Run
+### List Mission Runs
 
 ```text
-POST /v1/mission-control/runs
+GET /v1/mission-runs
 ```
 
-Accept a profile-bound mission run pin for a verified principal.
+Project one bounded page of the caller's own durable runs.
 
-**Request body:**
+Issue #809 documents no list route; the merged MCP adapter contract
+(#820, ``mission_list``) requires a principal-scoped GET collection, so
+the page is filtered to runs the caller owns — never another
+principal's — and stays a pure read: no supervision resumes here.
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `profile_id` | string | Yes | — | Profile Id |
-| `repository` | string | Yes | — | Repository |
-| `branch` | string | Yes | — | Branch |
-| `base_ref` | string | No | `"main"` | Base Ref |
-| `name` | string | No | `"agent-mission"` | Name |
+**Query parameters:**
 
-**Response** (`202`):
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `run_id` | string | Yes | — | Run Id |
-| `owner_principal_id` | string | Yes | — | Owner Principal Id |
-| `profile_id` | string | Yes | — | Profile Id |
-| `profile_version` | string | Yes | — | Profile Version |
-| `profile_digest` | string | Yes | — | Profile Digest |
-| `state` | string | No | `"accepted"` | State |
-
-**Error codes:** `422`
-
----
-
-### Get Mission Control Run
-
-```text
-GET /v1/mission-control/runs/{run_id}
-```
-
-Read one accepted run pin the principal is allowed to see.
-
-**Path parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `run_id` | string |  |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | integer | `100` | Bounded page size. |
 
 **Response** (`200`):
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `run_id` | string | Yes | — | Run Id |
-| `owner_principal_id` | string | Yes | — | Owner Principal Id |
-| `profile_id` | string | Yes | — | Profile Id |
-| `profile_version` | string | Yes | — | Profile Version |
-| `profile_digest` | string | Yes | — | Profile Digest |
-| `state` | string | No | `"accepted"` | State |
+| `runs` | array[MissionRunStatusResponse] | Yes | — | Runs |
 
-**Error codes:** `422`
-
----
-
-### Attach Mission Control Run
-
-```text
-POST /v1/mission-control/runs/{run_id}/attach
-```
-
-Authorize first-person attachment for one accepted run pin.
-
-**Path parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `run_id` | string |  |
-
-**Response** (`200`):
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `run_id` | string | Yes | — | Run Id |
-| `owner_principal_id` | string | Yes | — | Owner Principal Id |
-| `profile_id` | string | Yes | — | Profile Id |
-| `profile_version` | string | Yes | — | Profile Version |
-| `profile_digest` | string | Yes | — | Profile Digest |
-| `state` | string | No | `"accepted"` | State |
-
-**Error codes:** `422`
-
----
-
-### Cancel Mission Control Run
-
-```text
-POST /v1/mission-control/runs/{run_id}/cancel
-```
-
-Authorize cancellation for one accepted run pin.
-
-**Path parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `run_id` | string |  |
-
-**Response** (`200`):
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `run_id` | string | Yes | — | Run Id |
-| `owner_principal_id` | string | Yes | — | Owner Principal Id |
-| `profile_id` | string | Yes | — | Profile Id |
-| `profile_version` | string | Yes | — | Profile Version |
-| `profile_digest` | string | Yes | — | Profile Digest |
-| `state` | string | No | `"accepted"` | State |
-
-**Error codes:** `422`
-
----
-
-### Steer Mission Control Run
-
-```text
-POST /v1/mission-control/runs/{run_id}/steer
-```
-
-Authorize steering for one accepted run pin.
-
-**Path parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `run_id` | string |  |
-
-**Response** (`200`):
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `run_id` | string | Yes | — | Run Id |
-| `owner_principal_id` | string | Yes | — | Owner Principal Id |
-| `profile_id` | string | Yes | — | Profile Id |
-| `profile_version` | string | Yes | — | Profile Version |
-| `profile_digest` | string | Yes | — | Profile Digest |
-| `state` | string | No | `"accepted"` | State |
-
-**Error codes:** `422`
-
----
-
-### Takeover Mission Control Run
-
-```text
-POST /v1/mission-control/runs/{run_id}/takeover
-```
-
-Authorize writable takeover for one accepted run pin.
-
-**Path parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `run_id` | string |  |
-
-**Response** (`200`):
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `run_id` | string | Yes | — | Run Id |
-| `owner_principal_id` | string | Yes | — | Owner Principal Id |
-| `profile_id` | string | Yes | — | Profile Id |
-| `profile_version` | string | Yes | — | Profile Version |
-| `profile_digest` | string | Yes | — | Profile Digest |
-| `state` | string | No | `"accepted"` | State |
-
-**Error codes:** `422`
+**Error codes:** `401`, `403`, `422`
 
 ---
 

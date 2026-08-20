@@ -114,13 +114,10 @@
 | `episode_id` | `str` | `''` |
 | `task_ids` | `tuple[tuple[str, int], ...]` | `()` |
 | `active_operation` | `str` | `''` |
-| `active_activity_kind` | `str` | `''` |
-| `active_activity_id` | `str` | `''` |
 | `cancellation_intent` | `bool` | `False` |
 | `cancellation_reason` | `str` | `''` |
 | `result` | `MissionResult \| None` | `None` |
 | `cleanup_state` | `MissionRunCleanupState` | `'none'` |
-| `cleanup_error` | `str` | `''` |
 | `accepted_at_ms` | `int` | `0` |
 | `running_at_ms` | `int \| None` | `None` |
 | `terminal_at_ms` | `int \| None` | `None` |

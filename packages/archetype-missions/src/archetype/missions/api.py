@@ -51,6 +51,7 @@ from archetype.missions.models import (
     CancelMissionRun,
     GetMissionRun,
     GetMissionRunEvents,
+    ListMissionRuns,
 )
 from archetype.missions.relations import DependsOn, Guards, PartOfMission
 from archetype.missions.run_contracts import (
@@ -437,6 +438,12 @@ class MissionRunStatusResponse(_FrozenRequest):
     updated_at_ms: int
 
 
+class MissionRunListResponse(_FrozenRequest):
+    """One bounded newest-first page of the caller's own durable runs."""
+
+    runs: list[MissionRunStatusResponse]
+
+
 class MissionRunEventResponse(_FrozenRequest):
     """One ordered durable progress event with a deterministic identity."""
 
@@ -711,6 +718,37 @@ async def submit_mission_run(
         raise_api_error(exc)
 
 
+async def list_mission_runs(
+    principal: Annotated[MissionPrincipal, Depends(get_mission_principal)],
+    dispatcher: Annotated[CommandDispatcher, Depends(get_dispatcher)],
+    limit: Annotated[
+        int,
+        Query(ge=1, le=MISSION_RUN_EVENT_MAX_PAGE, description="Bounded page size."),
+    ] = 100,
+) -> MissionRunListResponse:
+    """Project one bounded page of the caller's own durable runs.
+
+    Issue #809 documents no list route; the merged MCP adapter contract
+    (#820, ``mission_list``) requires a principal-scoped GET collection, so
+    the page is filtered to runs the caller owns — never another
+    principal's — and stays a pure read: no supervision resumes here.
+    """
+
+    try:
+        require_capability(principal, MISSION_CAPABILITY["read"])
+        runs: tuple[MissionRun, ...] = await dispatcher.apply(
+            ListMissionRuns(
+                owner_id=_MISSION_RUN_OWNER,
+                name=_MISSION_RUN_OPERATION_NAME,
+                principal=principal.principal_id,
+                limit=limit,
+            )
+        )
+        return MissionRunListResponse(runs=[_run_status_response(run) for run in runs])
+    except Exception as exc:
+        raise_api_error(exc)
+
+
 async def get_mission_run(
     run_id: str,
     principal: Annotated[MissionPrincipal, Depends(get_mission_principal)],
@@ -899,6 +937,13 @@ def create_router() -> APIRouter:
         response_model=MissionRunAcceptedResponse,
         status_code=status.HTTP_202_ACCEPTED,
         responses=_MISSION_RUN_SUBMIT_RESPONSES,
+    )
+    router.add_api_route(
+        "/v1/mission-runs",
+        list_mission_runs,
+        methods=["GET"],
+        response_model=MissionRunListResponse,
+        responses=_MISSION_RUN_AUTH_RESPONSES,
     )
     router.add_api_route(
         "/v1/mission-runs/{run_id}",

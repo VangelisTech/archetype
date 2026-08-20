@@ -85,6 +85,7 @@ _PULL_FORWARD_OPERATIONS = frozenset(
         "get_mission_run",
         "cancel_mission_run",
         "get_mission_run_events",
+        "list_mission_runs",
         "run_hosted_episode",
     }
 )

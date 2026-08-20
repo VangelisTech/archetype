@@ -68,6 +68,7 @@ _MODEL_BOUNDARIES = (
         "GetMissionRunEvents",
         "get_mission_run_events",
     ),
+    ("archetype.missions.models", "ListMissionRuns", "list_mission_runs"),
 )
 _EXPECTED_LITERALS = {
     model_name: literal for _module_name, model_name, literal in _MODEL_BOUNDARIES

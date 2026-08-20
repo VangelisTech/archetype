@@ -116,6 +116,23 @@ class MissionRunLifecycle:
     async def list_open(self) -> tuple[MissionRun, ...]:
         return tuple(record_to_run(record) for record in await self._catalog.list_open())
 
+    async def list_for_principal(
+        self,
+        principal: str,
+        *,
+        limit: int = 100,
+    ) -> tuple[MissionRun, ...]:
+        """Return one bounded newest-first page owned by this principal."""
+
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        if limit > MISSION_RUN_EVENT_MAX_PAGE:
+            raise ValueError(f"limit must be at most {MISSION_RUN_EVENT_MAX_PAGE}")
+        return tuple(
+            record_to_run(record)
+            for record in await self._catalog.list_for_principal(principal, limit=limit)
+        )
+
     async def mark_running(self, run: MissionRun, *, operation: str) -> MissionRun:
         now_ms = self._now_ms()
         events: tuple[dict[str, object], ...] = ()

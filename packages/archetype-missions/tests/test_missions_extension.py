@@ -101,6 +101,7 @@ def test_manifest_declares_exact_missions_surface() -> None:
         "get_mission_run",
         "cancel_mission_run",
         "get_mission_run_events",
+        "list_mission_runs",
     )
     assert len(first.api_router_factories) == 1
 

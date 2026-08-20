@@ -115,6 +115,17 @@ class GetMissionRunEvents(_MissionOperation):
     limit: int = Field(default=100, ge=1)
 
 
+class ListMissionRuns(_MissionOperation):
+    """Read one bounded page of durable MissionRuns owned by a principal."""
+
+    operation: Literal["list_mission_runs"] = "list_mission_runs"
+    name: str
+    config: AgentMissionConfig | None = None
+    storage: str | Path | StorageConfig | None = None
+    principal: str = Field(min_length=1)
+    limit: int = Field(default=100, ge=1)
+
+
 def summarize_mission_operation(operation: _MissionOperation) -> Mapping[str, Any]:
     """Return only the discriminator; all mission evidence stays private."""
 
@@ -145,6 +156,7 @@ def _complete_mission_models() -> None:
     GetMissionRun.model_rebuild(force=True, _types_namespace=namespace)
     CancelMissionRun.model_rebuild(force=True, _types_namespace=namespace)
     GetMissionRunEvents.model_rebuild(force=True, _types_namespace=namespace)
+    ListMissionRuns.model_rebuild(force=True, _types_namespace=namespace)
 
 
 _complete_mission_models()
@@ -155,6 +167,7 @@ __all__ = [
     "CancelMissionRun",
     "GetMissionRun",
     "GetMissionRunEvents",
+    "ListMissionRuns",
     "RestoreMissionSandbox",
     "RunMission",
     "SubmitMission",

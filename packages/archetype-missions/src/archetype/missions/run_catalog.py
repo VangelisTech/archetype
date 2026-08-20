@@ -173,6 +173,28 @@ class SqliteMissionRunCatalog(HardenedSqliteCatalog):
 
         return await self._run(_list)
 
+    async def list_for_principal(
+        self,
+        principal: str,
+        *,
+        limit: int = 100,
+    ) -> tuple[dict[str, object], ...]:
+        """Return one bounded page of runs owned by exactly this principal."""
+
+        def _list() -> tuple[dict[str, object], ...]:
+            rows = (
+                self._connect_sync()
+                .execute(
+                    "SELECT * FROM mission_runs WHERE principal=? "
+                    "ORDER BY accepted_at_ms DESC, run_id DESC LIMIT ?",
+                    (principal, limit),
+                )
+                .fetchall()
+            )
+            return tuple(dict(row) for row in rows)
+
+        return await self._run(_list)
+
     async def compare_and_set(
         self,
         run_id: str,

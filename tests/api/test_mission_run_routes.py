@@ -890,6 +890,40 @@ def test_result_and_status_projections_truncate_oversized_text() -> None:
     assert len(status_view.cancellation_reason) == _MAX_CANCEL_REASON_CHARS
 
 
+def test_list_is_scoped_to_the_authenticated_principal(
+    mission_api: SimpleNamespace,
+) -> None:
+    """GET /v1/mission-runs pages only the caller's own durable runs."""
+
+    with mission_api.make_client() as client:
+        mine = client.post(
+            "/v1/mission-runs",
+            json=_submit_body(),
+            headers=_submit_headers("list-key-mine"),
+        )
+        assert mine.status_code == 202, mine.text
+        theirs = client.post(
+            "/v1/mission-runs",
+            json=_submit_body(branch="agent/other"),
+            headers={**_auth(_STRANGER_TOKEN), "Idempotency-Key": "list-key-theirs"},
+        )
+        assert theirs.status_code == 202, theirs.text
+
+        listed = client.get("/v1/mission-runs", headers=_auth(_AGENT_TOKEN))
+        assert listed.status_code == 200, listed.text
+        run_ids = {run["run_id"] for run in listed.json()["runs"]}
+        assert mine.json()["run_id"] in run_ids
+        assert theirs.json()["run_id"] not in run_ids
+        _assert_sanitized(listed.text)
+
+        empty = client.get("/v1/mission-runs", headers=_auth(_READER_TOKEN))
+        assert empty.status_code == 200
+        assert empty.json()["runs"] == []
+
+        bounded = client.get("/v1/mission-runs?limit=501", headers=_auth(_AGENT_TOKEN))
+        assert bounded.status_code == 422
+
+
 def test_openapi_documents_every_run_route_state_and_error(
     mission_api: SimpleNamespace,
 ) -> None:
@@ -898,6 +932,7 @@ def test_openapi_documents_every_run_route_state_and_error(
     paths = schema["paths"]
     expectations = {
         ("/v1/mission-runs", "post"): {"202", "401", "403", "404", "409", "422"},
+        ("/v1/mission-runs", "get"): {"200", "401", "403"},
         ("/v1/mission-runs/{run_id}", "get"): {"200", "401", "403", "404"},
         ("/v1/mission-runs/{run_id}/events", "get"): {"200", "401", "403", "404"},
         ("/v1/mission-runs/{run_id}/result", "get"): {"200", "401", "403", "404", "425"},

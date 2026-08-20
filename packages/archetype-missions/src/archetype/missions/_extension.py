@@ -57,6 +57,7 @@ from archetype.missions.models import (
     CancelMissionRun,
     GetMissionRun,
     GetMissionRunEvents,
+    ListMissionRuns,
     RestoreMissionSandbox,
     RunMission,
     SubmitMission,
@@ -115,6 +116,7 @@ MISSION_OPERATION_MODELS: tuple[type[BaseModel], ...] = (
     GetMissionRun,
     CancelMissionRun,
     GetMissionRunEvents,
+    ListMissionRuns,
 )
 
 _OPERATION_SCOPES: dict[type[BaseModel], Any] = {
@@ -129,6 +131,7 @@ _OPERATION_SCOPES: dict[type[BaseModel], Any] = {
     GetMissionRun: "application",
     CancelMissionRun: "application",
     GetMissionRunEvents: "application",
+    ListMissionRuns: "application",
 }
 
 
@@ -620,7 +623,7 @@ class _DispatchedMissionRunExecutor:
 
 
 type _RunControlOperation = (
-    AcceptMissionRun | GetMissionRun | CancelMissionRun | GetMissionRunEvents
+    AcceptMissionRun | GetMissionRun | CancelMissionRun | GetMissionRunEvents | ListMissionRuns
 )
 
 
@@ -749,6 +752,19 @@ async def _handle_get_mission_run_events(
         )
 
 
+async def _handle_list_mission_runs(
+    context: WorldLibraryContext,
+    operation: ListMissionRuns,
+) -> Any:
+    reservation = _run_owner_reservation(context, operation.owner_id)
+    async with context.resources.admit_owner_operation(reservation):
+        lifecycle, _supervisor, _catalog = _run_control(context, reservation, operation)
+        return await lifecycle.list_for_principal(
+            operation.principal,
+            limit=operation.limit,
+        )
+
+
 async def _handle_restore_mission_sandbox(
     context: WorldLibraryContext,
     operation: RestoreMissionSandbox,
@@ -791,6 +807,7 @@ def _operation_handlers(
         GetMissionRun: cast(Any, partial(_handle_get_mission_run, context)),
         CancelMissionRun: cast(Any, partial(_handle_cancel_mission_run, context)),
         GetMissionRunEvents: cast(Any, partial(_handle_get_mission_run_events, context)),
+        ListMissionRuns: cast(Any, partial(_handle_list_mission_runs, context)),
     }
 
 
