@@ -1,6 +1,6 @@
 [project]
 name = "archetype-workspace"
-version = "0.6.1"
+version = "0.6.2"
 description = "Development workspace for the Archetype framework, first-party world libraries, and independent Smol teaching engine."
 requires-python = ">=3.12"
 dependencies = [
