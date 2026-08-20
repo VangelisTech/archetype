@@ -275,6 +275,11 @@ INTERNAL_ONLY_EXCEPTIONS = {
     "archetype.missions.critics.harness._UnverifiableReview": (
         "caught and normalized inside CriticHarness.review before the mission handler returns"
     ),
+    "archetype.missions.mcp.client.MissionToolError": (
+        "caught inside MissionMcpServer._tools_call and rendered as a bounded "
+        "isError MCP tool result; the MCP stdio adapter is an HTTP client of "
+        "the REST surface and never enters a registered API handler (issue #810)"
+    ),
     "archetype.missions.sandboxes._subprocess._CleanupTimeout": (
         "caught inside run_host and normalized into a bounded timeout ProcessResult"
     ),

@@ -21,11 +21,15 @@ dependencies = [
     "daft>=0.7.19",
     "pydantic>=2.0",
     "fastapi>=0.110",
+    "httpx>=0.27",
     "uuid-utils>=0.11.0",
 ]
 
 [project.optional-dependencies]
 modal = ["modal==1.5.2"]
+
+[project.scripts]
+archetype-missions-mcp = "archetype.missions.mcp.server:main"
 
 [project.entry-points."archetype.world_libraries"]
 missions = "archetype.missions._extension:get_manifest"
