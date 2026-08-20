@@ -186,15 +186,16 @@ class MissionRunLifecycle:
         if run.cancellation_intent and (not reason or reason == run.cancellation_reason):
             return run
         now_ms = self._now_ms()
-        events: list[dict[str, object]] = []
-        if not run.cancellation_intent:
-            events.append(
-                self._event(
-                    "cancel_requested",
-                    {"reason": reason[:_MAX_EVENT_REASON_CHARS]},
-                    now_ms=now_ms,
-                )
+        # Every durable change to the recorded intent — the first request and
+        # any later reason revision — appends its event, so the ordered stream
+        # always reflects exactly what the status projection reports.
+        events: list[dict[str, object]] = [
+            self._event(
+                "cancel_requested",
+                {"reason": reason[:_MAX_EVENT_REASON_CHARS]},
+                now_ms=now_ms,
             )
+        ]
         values: dict[str, object] = {
             "cancellation_intent": 1,
             "cancellation_reason": reason,

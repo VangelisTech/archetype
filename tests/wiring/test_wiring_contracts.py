@@ -816,7 +816,7 @@ def _pull_forward_specs(resources: Any) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_pull_forward_registration_has_exact_four_actor_aware_and_twelve_trusted_only_specs(
+async def test_pull_forward_registration_has_exact_four_actor_aware_and_fourteen_trusted_only_specs(
     tmp_path: Path,
 ) -> None:
     assert len(_ACTOR_AWARE) == 4

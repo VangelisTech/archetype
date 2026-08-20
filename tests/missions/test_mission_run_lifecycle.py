@@ -441,6 +441,93 @@ async def test_exception_while_cancelling_records_interrupted_with_redacted_reas
 
 
 @pytest.mark.asyncio
+async def test_cas_loss_in_a_second_supervisor_never_overwrites_the_winner(tmp_path) -> None:
+    """Losing a CAS race is not an execution failure.
+
+    Two supervisors can briefly drive one run (rolling restart, or two owner
+    reservations over one storage identity). The loser's conflict must write
+    no terminal fact, and the winner's genuine success must land.
+    """
+
+    import itertools
+
+    ticks = itertools.count(1_000)
+
+    def clock() -> int:
+        return next(ticks)
+
+    lifecycle_a = MissionRunLifecycle(
+        SqliteMissionRunCatalog(tmp_path / "runs.db"),
+        now_ms=clock,
+    )
+    executor_b = _FakeExecutor()
+    executor_b.submit_gate = asyncio.Event()
+    lifecycle_b = MissionRunLifecycle(
+        SqliteMissionRunCatalog(tmp_path / "runs.db"),
+        now_ms=clock,
+    )
+    supervisor_b = MissionRunSupervisor(
+        lifecycle_b,
+        executor_b,
+        spawn=lambda factory, label: asyncio.create_task(factory()),
+    )
+
+    run = await lifecycle_a.accept(_request(), execution_profile_identity(_config()))
+    task_b = supervisor_b.ensure(run)
+    assert task_b is not None
+    while executor_b.submits == 0:
+        await asyncio.sleep(0.005)
+
+    # The winner advances the durable row while the loser is mid-admission.
+    winner = await lifecycle_a.get(run.run_id)
+    winner = await lifecycle_a.bind_mission(
+        winner,
+        SubmittedMission(
+            mission_id=5,
+            task_ids=(("implementation", 6),),
+            episode_id="mission-episode-5",
+            repository="VangelisTech/archetype",
+            branch="agent/run",
+            world_id=winner.world_id,
+        ),
+    )
+    executor_b.submit_gate.set()
+    # The loser's drive must finish quietly: no exception, no terminal write.
+    await asyncio.wait_for(task_b, timeout=2)
+
+    after_loss = await lifecycle_a.get(run.run_id)
+    assert after_loss.status is MissionRunStatus.RUNNING
+    assert after_loss.mission_id == 5
+
+    running = await lifecycle_a.mark_running(after_loss, operation="run_mission")
+    final = await lifecycle_a.mark_succeeded(running, _result())
+    assert final.status is MissionRunStatus.SUCCEEDED
+    assert final.result is not None
+
+
+@pytest.mark.asyncio
+async def test_cancel_reason_revision_appends_its_event(
+    lifecycle: MissionRunLifecycle,
+) -> None:
+    """Every durable intent change is visible in the ordered event stream."""
+
+    run = await lifecycle.accept(_request(), execution_profile_identity(_config()))
+    running = await lifecycle.mark_running(run, operation="submit_mission")
+    first = await lifecycle.record_cancellation_intent(running, reason="first")
+    revised = await lifecycle.record_cancellation_intent(first, reason="second")
+    unchanged = await lifecycle.record_cancellation_intent(revised, reason="second")
+
+    events = await lifecycle.events(run.run_id)
+    reasons = [
+        event.payload["reason"] for event in events if event.event_type == "cancel_requested"
+    ]
+    assert reasons == ["first", "second"]
+    assert [event.event_type for event in events].count("cancelling") == 1
+    assert revised.cancellation_reason == "second"
+    assert unchanged.cancellation_reason == "second"
+
+
+@pytest.mark.asyncio
 async def test_restart_without_poll_recovers_supervision(tmp_path) -> None:
     """recover_open resumes every durable open run with no per-run caller."""
 

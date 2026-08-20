@@ -22,6 +22,7 @@ from archetype.missions.run_contracts import (
     TERMINAL_MISSION_RUN_STATUSES,
     MissionRun,
     MissionRunCleanupState,
+    MissionRunConflictError,
     MissionRunStatus,
 )
 from archetype.missions.run_lifecycle import MissionRunLifecycle, submitted_from_run
@@ -91,6 +92,11 @@ class MissionRunSupervisor:
         run = await self._lifecycle.get(run_id)
         try:
             await self._execute(run)
+        except MissionRunConflictError:
+            # Another supervisor or writer already advanced this run (CAS
+            # loss). Losing the race is not an execution failure: writing a
+            # terminal fact here would overwrite the winner's real progress.
+            return
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
@@ -198,7 +204,9 @@ class MissionRunSupervisor:
             return
         current = await self._lifecycle.mark_interrupted(
             current,
-            reason=f"governed run returned non-terminal status {result.status!r}",
+            reason=self._redact(f"governed run returned non-terminal status {result.status!r}")[
+                :_MAX_FAILURE_REASON_CHARS
+            ],
         )
         await self._lifecycle.mark_cleanup(current, MissionRunCleanupState.PENDING)
 
