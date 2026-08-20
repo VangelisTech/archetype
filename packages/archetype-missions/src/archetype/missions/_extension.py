@@ -28,6 +28,7 @@ from archetype.missions.coding_agents.harness import (
     CodingAgentHarness,
     CodingAgentHarnessConfig,
 )
+from archetype.missions.config import MissionsExtensionConfig
 from archetype.missions.critic_activity_coordinator import MissionCriticActivityCoordinator
 from archetype.missions.critic_activity_world import (
     MissionCriticActivityBinding,
@@ -483,8 +484,9 @@ def install(context: WorldLibraryContext) -> InstalledWorldLibrary:
 
     if not isinstance(context, WorldLibraryContext):
         raise TypeError("context must be a WorldLibraryContext")
-    if context.config is not None:
-        raise TypeError("missions does not accept world-library configuration")
+    config = context.config
+    if config is not None and not isinstance(config, MissionsExtensionConfig):
+        raise TypeError("missions config must be a MissionsExtensionConfig")
 
     transcripts = TranscriptIngestionService(
         context.redaction,

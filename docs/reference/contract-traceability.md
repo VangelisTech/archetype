@@ -68,6 +68,7 @@ machine authority; this page is its review surface.
 | `missions.agent_v1.validator_gated` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 4. State and transition protocol | pytest: 7; static: 2 | `pr`, `main`, `release` |
 | `missions.agent_v1.exact_head_critic` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — Independent exact-head critic | pytest: 4 | `pr`, `main`, `release` |
 | `missions.sandbox.cleanup_ownership` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Sandbox and validator protocol | pytest: 2 | `pr`, `main`, `release` |
+| `missions.control.authenticated_profiles` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — Authenticated execution profiles | pytest: 3; static: 1 | `pr`, `main`, `release` |
 | `security.redaction.pre_durability` | `redaction` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 9. Security boundary | pytest: 2; eval: 1 | `pr`, `main`, `release` |
 
 Profile membership states where a contract must be enforced. Eval suite

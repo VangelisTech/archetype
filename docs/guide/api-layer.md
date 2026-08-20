@@ -72,6 +72,27 @@ authentication/authorization against an external identity provider is a
 future hardening slice. The trusted runtime has no actor context. See
 [Command Gate](command-gate.md).
 
+### Mission service principals
+
+Agent Missions defines a separate authentication seam for the forthcoming
+MissionRun control surface. It resolves an opaque bearer credential to a
+stable principal id, explicit `mission:*` capabilities, and an execution-profile
+allowlist. Developer role labels are never credentials on that seam. The
+provisioning document stores either the name of an environment variable holding
+the credential or its SHA-256 verifier; it does not store a plaintext credential.
+Missing, malformed, unknown, expired, and revoked credentials fail closed.
+
+This contract does not add a parallel mission-control router. A REST route may
+be published only when it can construct the exact Missions operation and enter
+the governed actor-aware boundary. Authentication does not mint a run id, and
+a successful profile check is not a `202 Accepted` MissionRun. The durable
+MissionRun owner remains the sole authority for run identity, ownership grants,
+lifecycle, and pinned profile identity.
+
+When the Missions library is installed, supported `archetype serve` startup on
+a non-loopback bind requires a configured principal directory. Existing ECS
+developer routes otherwise retain the deliberate v0.6 behavior above.
+
 ## Route Structure
 
 Routes are thin translators: validate payloads, authenticate, call

@@ -33,6 +33,7 @@ from archetype.missions.components import (
     TaskWorkspace,
     ValidationResult,
 )
+from archetype.missions.config import MissionsExtensionConfig
 from archetype.missions.contracts import (
     AgentMissionConfig,
     AgentTask,
@@ -44,6 +45,13 @@ from archetype.missions.contracts import (
     SubmittedMission,
     TaskResult,
     mission_episode_id,
+)
+from archetype.missions.execution_profiles import (
+    ExecutionProfile,
+    ExecutionProfileBinding,
+    ExecutionProfileCatalog,
+    ExecutionProfileIdentity,
+    MissionProfileRequest,
 )
 from archetype.missions.relations import (
     AuthoredBy,
@@ -99,6 +107,10 @@ __all__ = [
     "CriticReceipt",
     "DependsOn",
     "Executes",
+    "ExecutionProfile",
+    "ExecutionProfileBinding",
+    "ExecutionProfileCatalog",
+    "ExecutionProfileIdentity",
     "FilesystemManifest",
     "FrictionLog",
     "Guards",
@@ -108,7 +120,9 @@ __all__ = [
     "MissionState",
     "MissionStatus",
     "MissionSubmission",
+    "MissionProfileRequest",
     "Missions",
+    "MissionsExtensionConfig",
     "mission_episode_id",
     "PartOfMission",
     "ProducedBy",

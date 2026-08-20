@@ -17,6 +17,7 @@ from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.missions import Missions, MissionWorld
 from archetype.missions._extension import MISSION_OPERATION_MODELS, get_manifest
+from archetype.missions.config import MissionsExtensionConfig
 from archetype.missions.trajectories import ClaudeTranscriptSource, TrajectorySelection
 from archetype.missions.trajectories.models import (
     GradeTrajectory,
@@ -117,9 +118,18 @@ def test_install_registers_only_the_seven_declared_operations(tmp_path: Path) ->
 def test_install_rejects_unknown_library_configuration(tmp_path: Path) -> None:
     context = replace(_context(tmp_path), config=object())
 
-    with pytest.raises(TypeError, match="does not accept"):
+    with pytest.raises(TypeError, match="MissionsExtensionConfig"):
         get_manifest().install(context)
     assert not context.registry.specs
+
+
+def test_install_accepts_exact_missions_configuration(tmp_path: Path) -> None:
+    context = replace(_context(tmp_path), config=MissionsExtensionConfig())
+
+    installed = get_manifest().install(context)
+
+    assert installed.name == "missions"
+    assert tuple(spec.model for spec in context.registry.specs) == MISSION_OPERATION_MODELS
 
 
 @pytest.mark.asyncio

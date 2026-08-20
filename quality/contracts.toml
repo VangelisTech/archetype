@@ -925,6 +925,22 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "missions.control.authenticated_profiles"
+source = "docs/guide/agent-missions.md"
+section = "Authenticated execution profiles"
+owner = "missions"
+risk = "high"
+pytest = [
+  "tests/api/test_mission_principals.py",
+  "tests/missions/test_execution_profiles.py",
+  "packages/archetype-missions/tests/test_missions_extension.py",
+]
+static = ["scripts/check_architecture.py"]
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "security.redaction.pre_durability"
 source = "docs/guide/artifacts.md"
 section = "9. Security boundary"

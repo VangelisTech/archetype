@@ -123,3 +123,15 @@
 | `dispatches` | `int` | `required` |
 | `commit_shas` | `tuple[str, ...]` | `required` |
 | `reason` | `str` | `''` |
+
+::: archetype.missions.MissionsExtensionConfig
+
+::: archetype.missions.ExecutionProfile
+
+::: archetype.missions.ExecutionProfileBinding
+
+::: archetype.missions.ExecutionProfileCatalog
+
+::: archetype.missions.ExecutionProfileIdentity
+
+::: archetype.missions.MissionProfileRequest
