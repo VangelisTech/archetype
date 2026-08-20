@@ -29,7 +29,10 @@ from archetype.missions.coding_agents import (
     CodingAgentHarness,
     CodingAgentHarnessConfig,
 )
-from archetype.missions.coding_agents.app_server import CodexAppServerDriver
+from archetype.missions.coding_agents.app_server import (
+    CodexAppServerDriver,
+    run_codex_app_server_turn,
+)
 from archetype.missions.coding_agents.contracts import (
     DispatchedValidator,
     TaskDispatchRequest,
@@ -46,10 +49,15 @@ from archetype.missions.sandboxes import (
     SandboxSpec,
     SandboxStatus,
 )
+from scripts.release_agent_diagnostics import (
+    bounded_text_summary,
+    summarize_agent_failure,
+)
 
 _LIVE = os.environ.get("ARCHETYPE_MODAL_AGENT_MISSION_LIVE") == "1"
 _PROOF = "archetype-modal-live-steer-v1\n"
 _FINAL_MESSAGE = "ARCHETYPE_MODAL_LIVE_OK"
+_PREFLIGHT_MESSAGE = "ARCHETYPE_MODAL_AUTH_OK"
 _OBSERVATION_ROOT = "/tmp/archetype-agent-missions/live"
 _REMOTE = "/workspace/origin.git"
 _BRANCH = "agent/modal-live"
@@ -223,11 +231,8 @@ exit 1
         probe.cancel()
         await asyncio.gather(probe, return_exceptions=True)
         observation = await harness_task
-        raise AssertionError(
-            "Codex turn completed before the writable TUI lane opened: "
-            f"status={observation.status.value} "
-            f"agent_returncode={observation.agent_returncode}"
-        )
+        summary = _safe_agent_failure_summary(observation)
+        raise AssertionError(f"Codex turn completed before the writable TUI lane opened: {summary}")
     result = await probe
     return _assert_success(result, "wait for Modal session_ready").strip()
 
@@ -356,18 +361,87 @@ async def _viewport_websocket_screen(
 
 
 def _safe_agent_output_summary(value: str) -> str:
-    stripped = value.strip()
     known_markers = {
         _FINAL_MESSAGE,
         "LIVE_MODAL_MISSING_STEER",
         "LIVE_MODAL_CREDENTIAL_EXPOSED",
     }
-    if stripped in known_markers:
-        return stripped
-    digest = hashlib.sha256(value.encode()).hexdigest()[:16]
-    if _FINAL_MESSAGE in value:
-        return f"{_FINAL_MESSAGE}+extra(length={len(value)},sha256={digest})"
-    return f"unrecognized(length={len(value)},sha256={digest})"
+    return bounded_text_summary(value, allowlisted_markers=known_markers)
+
+
+def _safe_agent_failure_summary(observation: AgentExecutionResult) -> str:
+    return summarize_agent_failure(
+        status=observation.status.value,
+        returncode=observation.agent_returncode,
+        stdout=observation.agent_stdout,
+        stderr=observation.agent_stderr,
+        error=observation.error,
+        friction_messages=(finding.message for finding in observation.friction),
+        allowlisted_stdout=(
+            _FINAL_MESSAGE,
+            "LIVE_MODAL_MISSING_STEER",
+            "LIVE_MODAL_CREDENTIAL_EXPOSED",
+        ),
+    )
+
+
+async def _create_modal_session(
+    backend: ModalSandboxBackend,
+    *,
+    evidence: str,
+) -> ModalSandboxSession:
+    session = await backend.create(
+        SandboxSpec(
+            provider="modal",
+            environment=backend.environment,
+            workdir="/workspace/repo",
+            timeout_seconds=12 * 60,
+            idle_timeout_seconds=5 * 60,
+            metadata=(("evidence", evidence),),
+        )
+    )
+    assert isinstance(session, ModalSandboxSession)
+    return session
+
+
+async def _preflight_codex_subscription(backend: ModalSandboxBackend) -> None:
+    """Prove the exact namespace and subscription before the repository mission."""
+
+    session = await _create_modal_session(backend, evidence="modal-codex-auth-preflight")
+    try:
+        workspace = await _remote_exec(session, "mkdir", "-p", "/workspace/repo")
+        _assert_success(workspace, "create Modal Codex preflight workspace")
+        observation = await run_codex_app_server_turn(
+            session,
+            connector=ModalCodexAppServerConnector(),
+            workspace="/workspace/repo",
+            prompt=(
+                "This is an authentication preflight. Do not call tools. Reply with exactly "
+                f"{_PREFLIGHT_MESSAGE} and nothing else."
+            ),
+            timeout_seconds=90,
+        )
+        if observation.returncode != 0 or observation.stdout.strip() != _PREFLIGHT_MESSAGE:
+            summary = summarize_agent_failure(
+                status="exited",
+                returncode=observation.returncode,
+                stdout=observation.stdout,
+                stderr=observation.stderr,
+                allowlisted_stdout=(_PREFLIGHT_MESSAGE,),
+            )
+            raise AssertionError(f"Modal Codex authentication preflight failed: {summary}")
+        credential_absent = await _remote_exec(
+            session,
+            "test",
+            "!",
+            "-e",
+            "/root/.codex/auth.json",
+        )
+        _assert_success(credential_absent, "verify preflight credential cleanup")
+    finally:
+        await session.close()
+
+    assert await session.status() is SandboxStatus.CLOSED
 
 
 async def test_modal_codex_harness_steers_validates_publishes_and_cleans_up() -> None:
@@ -387,17 +461,8 @@ async def test_modal_codex_harness_steers_validates_publishes_and_cleans_up() ->
     # The release scenario registry separately requires the token pair in CI.
 
     backend = ModalSandboxBackend(config)
-    session = await backend.create(
-        SandboxSpec(
-            provider="modal",
-            environment=backend.environment,
-            workdir="/workspace/repo",
-            timeout_seconds=12 * 60,
-            idle_timeout_seconds=5 * 60,
-            metadata=(("evidence", "modal-agent-mission-live"),),
-        )
-    )
-    assert isinstance(session, ModalSandboxSession)
+    await _preflight_codex_subscription(backend)
+    session = await _create_modal_session(backend, evidence="modal-agent-mission-live")
     harness_task: asyncio.Task[AgentExecutionResult] | None = None
     try:
         initialized = await _remote_exec(
@@ -501,9 +566,11 @@ rm -rf -- /workspace/seed
 
         observation = await asyncio.wait_for(harness_task, timeout=5 * 60)
         if observation.status is not AgentExecutionStatus.EXITED:
-            raise AssertionError("the live repository harness did not exit normally")
+            summary = _safe_agent_failure_summary(observation)
+            raise AssertionError(f"the live repository harness did not exit normally: {summary}")
         if observation.agent_returncode != 0:
-            raise AssertionError("the live Codex app-server turn returned nonzero")
+            summary = _safe_agent_failure_summary(observation)
+            raise AssertionError(f"the live Codex app-server turn returned nonzero: {summary}")
         if len(observation.validation) != 1 or not observation.validation[0].passed:
             summary = _safe_agent_output_summary(observation.agent_stdout)
             raise AssertionError(

@@ -471,6 +471,10 @@ def test_live_modal_release_scenario_is_credentialed_and_opted_in() -> None:
         "infrastructure:CODING_AGENT_GITHUB_SECRET",
     }
     assert "ARCHETYPE_MODAL_AGENT_MISSION_LIVE=1" in MAKEFILE.read_text(encoding="utf-8")
+    live_test = (ROOT / modal["source_path"]).read_text(encoding="utf-8")
+    assert "await _preflight_codex_subscription(backend)" in live_test
+    assert "run_codex_app_server_turn(" in live_test
+    assert "summarize_agent_failure(" in live_test
 
 
 def test_live_physical_ai_release_scenario_binds_modal_compute_to_r2() -> None:
@@ -668,6 +672,9 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
         in test_preflight
     )
     assert "needs: [authorize-release, testpypi-preflight]" in publish_test
+    assert (
+        "needs: [authorize-release, testpypi-preflight, publish-testpypi]" in publish_test_libraries
+    )
     assert "environment: release-testpypi" in publish_test
     assert "repository-url: https://test.pypi.org/legacy/" in publish_test
     assert "needs: [publish-testpypi, publish-testpypi-libraries]" in test_smoke
@@ -692,6 +699,7 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
         in pypi_preflight
     )
     assert "needs: [authorize-release, pypi-preflight]" in publish
+    assert "needs: [authorize-release, pypi-preflight, publish]" in publish_libraries
     assert "needs: [publish, publish-libraries]" in registry_smoke
     assert "scripts/verify_release_index.py" in registry_smoke
     assert "scripts/registry_smoke.py" in registry_smoke

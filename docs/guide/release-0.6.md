@@ -100,13 +100,18 @@ The 0.6 release is one coordinated set: five wheels and five source
 distributions at version `0.6.0`. Release evidence installs the base framework,
 each individual library with the framework, and the complete stack from those
 exact artifacts, plus Smol in isolation. A partial five-project publication is
-not a completed release. Before the first release, register pending Trusted
-Publishers for the four new
-project names on both PyPI and TestPyPI. Registration preconfigures OIDC; it does
-not reserve or claim a name, and each new name remains claimable until the first
+not a completed release. PyPI and TestPyPI allow at most three pending projects
+per account, while 0.6 introduced four names. Bootstrap each registry in two
+waves within the same release attempt: register pending Trusted Publishers for
+no more than three new projects, wait until those successful OIDC publications
+create the projects and free the pending slots, then register and approve the
+remaining waiting publisher. Registration preconfigures OIDC; it does not
+reserve or claim a name, and each new name remains claimable until the first
 successful OIDC publication creates the project on that registry. See
 [Repository harness](repository-harness.md) for the exact, package-specific
-OIDC identities and the direct-workflow bootstrap required for new projects.
+OIDC identities and protected-environment bootstrap sequence. All five projects,
+including `archetype-smol`, were claimed by v0.6.1; ordinary patch releases do
+not recreate pending publishers.
 
 Release publication also requires the live, pinned Biome scenario. The
 release-only proof runs on the same approved, one-job ephemeral Apple Silicon
