@@ -70,8 +70,8 @@ _PULL_FORWARD_MODEL_BOUNDARIES = (
         "archetype.missions.models",
         "GetMissionRunEvents",
         "get_mission_run_events",
-        "list_mission_runs",
     ),
+    ("archetype.missions.models", "ListMissionRuns", "list_mission_runs"),
 )
 _ACTOR_MODEL_BOUNDARIES = (
     ("archetype.research.models", "AutoResearch", "autoresearch"),

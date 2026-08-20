@@ -106,6 +106,7 @@ surface under `/v1/mission-runs`:
 | Endpoint | Method | What it does |
 |---|---|---|
 | `/v1/mission-runs` | POST | Accept one durable run for a verified principal (`202`) |
+| `/v1/mission-runs` | GET | Bounded newest-first page of the caller's own runs |
 | `/v1/mission-runs/{run_id}` | GET | Bounded run status projection |
 | `/v1/mission-runs/{run_id}/events` | GET | Ordered durable events, `?after=<cursor>&limit=<n>` |
 | `/v1/mission-runs/{run_id}/result` | GET | One immutable terminal result (`425` while open) |
