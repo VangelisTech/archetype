@@ -21,6 +21,7 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+from pydantic_core import SchemaValidator
 
 import archetype.smol as smol
 from archetype.smol import Component, Processor, World
@@ -320,6 +321,68 @@ def test_partial_updates_do_not_replay_untouched_field_validators() -> None:
             "statefulposition__position": 1,
             "statefulposition__generation": 1,
         },
+    ]
+
+
+def test_selective_validation_survives_a_plain_core_class_validator() -> None:
+    """Pin the standalone install shape, where no Pydantic plugin is present.
+
+    A dev environment that installs a Pydantic plugin gets a
+    `PluggableSchemaValidator` on the component class, which pydantic-core
+    cannot reuse, so selective validation works by accident. A published Smol
+    install has a plain `SchemaValidator` instead; pydantic-core reuses it when
+    compiling the `model` node and discards the untouched-field wrappers,
+    replaying every validator. Force the published shape so this suite fails
+    here rather than only for installed users.
+    """
+
+    validated: list[tuple[str, int]] = []
+
+    class DetachedPosition(Component):
+        position: int
+        generation: int
+
+        @field_validator("position")
+        @classmethod
+        def validate_position(cls, value: int) -> int:
+            validated.append(("position", value))
+            return value
+
+        @field_validator("generation")
+        @classmethod
+        def increment_generation(cls, value: int) -> int:
+            validated.append(("generation", value))
+            return value + 1
+
+    class MoveDetached(Processor):
+        components = (DetachedPosition,)
+
+        def process(self, df, *, tick):
+            del tick
+            return df.with_column(
+                "detachedposition__position",
+                col("detachedposition__position") + 1,
+            )
+
+    DetachedPosition.__pydantic_validator__ = SchemaValidator(
+        DetachedPosition.__pydantic_core_schema__
+    )
+    assert type(DetachedPosition.__pydantic_validator__) is SchemaValidator
+
+    world = World(processors=[MoveDetached()])
+    world.spawn(DetachedPosition(position=0, generation=0))
+
+    world.step()
+
+    assert validated == [("position", 0), ("generation", 0), ("position", 1)]
+    assert world.query(DetachedPosition).to_pylist() == [
+        {
+            "entity_id": 1,
+            "tick": 1,
+            "is_active": True,
+            "detachedposition__position": 1,
+            "detachedposition__generation": 1,
+        }
     ]
 
 
