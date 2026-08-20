@@ -1,6 +1,6 @@
 [project]
 name = "archetype-physical-ai"
-version = "0.6.1"
+version = "0.6.2"
 description = "Physical state, policies, and hosted episode workflows for Archetype."
 readme = "README.md"
 requires-python = ">=3.12"
