@@ -7,13 +7,13 @@ sandboxes.
 
 Archetype source `ae4eae3d` ran one disposable coding-agent Mission through the
 Activity-backed Modal author path. The public fixture was
-[`everettVT/archetype-modal-proof-20260726-a4-1`](https://github.com/everettVT/archetype-modal-proof-20260726-a4-1).
+`everettVT/archetype-modal-proof-20260726-a4-1`, a disposable proof repository
+that has since been deleted; the identities below remain the recorded evidence.
 
 The base branch remained at
 `9a94713a93e3f4f49cb5129259faa87dc1a11296` with `proof.txt` equal to
 `unproved`. The author changed only that file, both exact-revision validators
-passed, and the proof branch published
-[`67ed4f0c`](https://github.com/everettVT/archetype-modal-proof-20260726-a4-1/commit/67ed4f0cbc20e1e024de8ad049f804e458fa4ea6)
+passed, and the proof branch published commit `67ed4f0cbc20e1e024de8ad049f804e458fa4ea6`
 with `proof.txt` equal to `modal activity proved`.
 
 ## Durable ordering
