@@ -203,7 +203,7 @@ def test_external_rows_claim_only_the_cadences_and_contracts_their_jobs_enforce(
 
     assert docker["required_cadence"] == ["release"]
     assert r2["required_cadence"] == ["pr", "main", "release"]
-    assert apple["required_cadence"] == ["release"]
+    assert apple["required_cadence"] == ["demand"]
     assert {docker["artifact_schema"], r2["artifact_schema"], apple["artifact_schema"]} == {
         generic_schema
     }

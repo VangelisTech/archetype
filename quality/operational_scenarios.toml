@@ -387,7 +387,7 @@ contracts = ["missions.environment.pinned"]
 cleanup_policy = "isolated"
 artifact_policy = "receipt"
 artifact_schema = "archetype.operational-results/v1"
-required_cadence = ["release"]
+required_cadence = ["demand"]
 
 [[scenario]]
 id = "example.15_mission_factory_assets"
@@ -638,7 +638,7 @@ contracts = [
 cleanup_policy = "provider"
 artifact_policy = "redacted_receipt"
 artifact_schema = "archetype.operational-results/v1"
-required_cadence = ["release"]
+required_cadence = ["demand"]
 
 [[scenario]]
 id = "dogfood.physical_ai.hosted_episode"
@@ -833,4 +833,4 @@ contracts = [
 cleanup_policy = "provider"
 artifact_policy = "redacted_receipt"
 artifact_schema = "archetype.operational-results/v1"
-required_cadence = ["release"]
+required_cadence = ["demand"]
