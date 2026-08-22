@@ -70,8 +70,8 @@ help:
 	@echo "  make operational-mission  Run the credential-free exact-head mission scenario"
 	@echo "  make operational-external  Require selected Tier-5/6 provider evidence"
 	@echo "  make operational-release  Run credential-free release evidence against the wheel matrix"
-	@echo "  make operational-release-biome  Run the pinned live Biome wheel evidence"
-	@echo "  make operational-release-modal  Run the paid live Modal/Codex wheel evidence"
+	@echo "  make operational-demand-biome  Run the pinned live Biome wheel evidence (demand cadence)"
+	@echo "  make operational-demand-modal  Run the paid live Modal/Codex wheel evidence (demand cadence)"
 	@echo "  make test-infra     Run external-infrastructure tests (requires configured service)"
 	@echo ""
 	@echo "Build & Release:"
@@ -81,6 +81,7 @@ help:
 	@echo "  make verify-full    Main-branch profile"
 	@echo "  make verify-release Source profile plus exact installed-artifact release evidence"
 	@echo "  make release-check  Full pre-release validation"
+	@echo "  make codex-login    Refresh Codex device auth in the broker Volume (1h window)"
 	@echo "  make verify-test-index Verify exact TestPyPI bytes and install matrix"
 	@echo "  make verify-published Verify exact PyPI bytes and install matrix"
 	@echo "  make version        Show current version"
@@ -483,7 +484,7 @@ define RUN_RELEASE_SCENARIOS
 			exit 1; \
 		fi; \
 		$(2) PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
-			--mode wheel --cadence release --require-run --require-clean \
+			--mode wheel --cadence $(if $(3),$(3),release) --require-run --require-clean \
 			--wheel "$$wheel" --wheel-dir "$(OPERATIONAL_DIST_DIR)" $(1)
 endef
 
@@ -503,17 +504,22 @@ operational-release-docker: verify-release-artifact
 operational-release-r2: verify-release-artifact
 	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.storage.r2 --out operational-release-r2-results.json)
 
-.PHONY: operational-release-apple
-operational-release-apple: verify-release-artifact
-	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.sandbox.apple_container --out operational-release-apple-results.json)
+.PHONY: operational-demand-apple
+operational-demand-apple: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.sandbox.apple_container --out operational-demand-apple-results.json,,demand)
 
-.PHONY: operational-release-biome
-operational-release-biome: verify-release-artifact
-	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario example.14_biome_agent --out operational-release-biome-results.json,ARCHETYPE_BIOME_LIVE=1)
+.PHONY: operational-demand-biome
+operational-demand-biome: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario example.14_biome_agent --out operational-demand-biome-results.json,ARCHETYPE_BIOME_LIVE=1,demand)
 
-.PHONY: operational-release-modal
-operational-release-modal: verify-release-artifact
-	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.agent_mission.modal_live --out operational-release-modal-results.json,ARCHETYPE_MODAL_AGENT_MISSION_LIVE=1)
+.PHONY: operational-demand-modal
+operational-demand-modal: verify-release-artifact
+	@uv run python scripts/check_codex_auth.py --max-age-days 14
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.agent_mission.modal_live --out operational-demand-modal-results.json,ARCHETYPE_MODAL_AGENT_MISSION_LIVE=1,demand)
+
+.PHONY: codex-login
+codex-login:
+	uv run python scripts/codex_login.py
 
 .PHONY: operational-release-physical-modal-r2
 operational-release-physical-modal-r2: verify-release-artifact

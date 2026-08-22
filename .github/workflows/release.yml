@@ -10,8 +10,8 @@ on:
 
 permissions: {}
 
-# The Modal lane uses one static CODEX_AUTH_VOLUME. Keep release workflows
-# single-flight because that credential broker has no concurrent-owner contract.
+# Releases are single-flight: one tag, one immutable artifact set, one
+# publish sequence at a time.
 concurrency:
   group: archetype-release
   cancel-in-progress: false
@@ -165,10 +165,6 @@ jobs:
             runner: '["ubuntu-latest"]'
             target: operational-release-r2
             receipt: operational-release-r2-results.json
-          - name: Modal Agent Mission
-            runner: '["ubuntu-latest"]'
-            target: operational-release-modal
-            receipt: operational-release-modal-results.json
           - name: Physical AI (Modal + R2)
             runner: '["ubuntu-latest"]'
             target: operational-release-physical-modal-r2
@@ -183,16 +179,11 @@ jobs:
       R2_SECRET_ACCESS_KEY: ${{ (matrix.target == 'operational-release-r2' || matrix.target == 'operational-release-physical-modal-r2') && secrets.R2_SECRET_ACCESS_KEY || '' }}
       R2_API_ENDPOINT: ${{ (matrix.target == 'operational-release-r2' || matrix.target == 'operational-release-physical-modal-r2') && vars.R2_API_ENDPOINT || '' }}
       R2_BUCKET: ${{ (matrix.target == 'operational-release-r2' || matrix.target == 'operational-release-physical-modal-r2') && vars.R2_BUCKET || '' }}
-      MODAL_TOKEN_ID: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && secrets.MODAL_TOKEN_ID || '' }}
-      MODAL_TOKEN_SECRET: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && secrets.MODAL_TOKEN_SECRET || '' }}
-      MODAL_PROFILE: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_PROFILE || '' }}
-      CODING_AGENT_MODAL_WORKSPACE: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && vars.CODING_AGENT_MODAL_WORKSPACE || '' }}
-      CODING_AGENT_MODAL_ENVIRONMENT: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && vars.CODING_AGENT_MODAL_ENVIRONMENT || '' }}
-      MODAL_ENVIRONMENT: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && vars.CODING_AGENT_MODAL_ENVIRONMENT || '' }}
-      CODING_AGENT_MODAL_APP: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_APP || '' }}
-      CODING_AGENT_MODAL_IMAGE_ID: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_IMAGE_ID || '' }}
-      CODEX_AUTH_VOLUME: ${{ matrix.target == 'operational-release-modal' && vars.CODEX_AUTH_VOLUME || '' }}
-      CODING_AGENT_GITHUB_SECRET: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_GITHUB_SECRET || '' }}
+      MODAL_TOKEN_ID: ${{ matrix.target == 'operational-release-physical-modal-r2' && secrets.MODAL_TOKEN_ID || '' }}
+      MODAL_TOKEN_SECRET: ${{ matrix.target == 'operational-release-physical-modal-r2' && secrets.MODAL_TOKEN_SECRET || '' }}
+      CODING_AGENT_MODAL_WORKSPACE: ${{ matrix.target == 'operational-release-physical-modal-r2' && vars.CODING_AGENT_MODAL_WORKSPACE || '' }}
+      CODING_AGENT_MODAL_ENVIRONMENT: ${{ matrix.target == 'operational-release-physical-modal-r2' && vars.CODING_AGENT_MODAL_ENVIRONMENT || '' }}
+      MODAL_ENVIRONMENT: ${{ matrix.target == 'operational-release-physical-modal-r2' && vars.CODING_AGENT_MODAL_ENVIRONMENT || '' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -243,70 +234,6 @@ jobs:
             operational-release-*-results.d/
           if-no-files-found: error
 
-  apple-evidence:
-    name: Release evidence (Biome + Apple Container)
-    needs: release-profile
-    env:
-      # actions/setup-python's macOS distributions are non-relocatable and
-      # require the hosted-runner-only /Users/runner/hostedtoolcache path.
-      # Let uv provision Python in the current ephemeral runner user's cache.
-      UV_PYTHON: "3.12"
-    runs-on:
-      group: archetype-release-macos
-      labels:
-        - self-hosted
-        - macOS
-        - ARM64
-        - archetype-apple-container-macos-26
-    environment: release-apple-macos
-    timeout-minutes: 75
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
-        with:
-          version: "0.9.28"
-      - name: Provision Python 3.12 with uv
-        run: |
-          uv sync --python "3.12" --all-packages --all-extras --group dev
-          uv run python -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: dist
-          path: dist/
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-evidence
-          path: .context/downloaded-release-evidence/
-      - name: Restore exact artifact manifest
-        run: cp .context/downloaded-release-evidence/release-artifact.json release-artifact.json
-      - name: Run pinned Biome exact installed-artifact scenario
-        run: make operational-release-biome
-      - name: Start Apple Container service
-        run: |
-          test "$(uname -m)" = "arm64"
-          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
-          command -v container
-          container system start
-          container system status
-      - name: Run Apple Container exact installed-artifact scenario
-        run: make operational-release-apple
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
-        with:
-          name: release-operational-release-apple-evidence
-          path: |
-            operational-release-biome-results.json
-            operational-release-apple-results.json
-            operational-release-*-results.d/
-          if-no-files-found: error
-      - name: Stop Apple Container service
-        if: always()
-        run: container system stop
-
   python-compatibility:
     name: Python 3.13 compatibility
     needs: authorize-release
@@ -337,7 +264,7 @@ jobs:
 
   release-evidence-gate:
     name: Exact release evidence
-    needs: [release-profile, external-evidence, apple-evidence]
+    needs: [release-profile, external-evidence]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -370,9 +297,6 @@ jobs:
           evidence/operational-release-openai-results.json
           evidence/operational-release-docker-results.json
           evidence/operational-release-r2-results.json
-          evidence/operational-release-biome-results.json
-          evidence/operational-release-apple-results.json
-          evidence/operational-release-modal-results.json
           evidence/operational-release-physical-modal-r2-results.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

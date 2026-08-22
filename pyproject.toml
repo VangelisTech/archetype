@@ -143,6 +143,9 @@ synchronicity = "2026-07-11T00:00:00Z"
 # starlette 1.3.1 released 2026-06-12, 9h past the freeze; admitted for the
 # CVE-2026-54283 fix — dependabot alert #95 (security bumps, 2026-07-16).
 starlette = "2026-06-13T00:00:00Z"
+# pip 26.2.1 released 2026-08-04; admitted for the PYSEC-2026-3721 fix, which
+# lockfile-audit requires and the freeze otherwise forbids (Everett, 2026-08-21).
+pip = "2026-08-05T00:00:00Z"
 # Security releases admitted past the quarantine ceiling for the next release.
 # Each ceiling is the day after the fixed release rather than a general
 # relaxation of the repository quarantine. This covers Dependabot alerts

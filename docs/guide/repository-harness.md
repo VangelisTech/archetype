@@ -248,54 +248,44 @@ The workflow requires both `github.actor` and `github.triggering_actor` to be
 tag push does not start release work: the operator dispatches `release.yml` at
 the existing tag and supplies the same tag as its confirmation input.
 
-The shared Biome and Apple Container lane has a second, infrastructure-level
-boundary. Release job `apple-evidence`, displayed as
-`Release evidence (Biome + Apple Container)`, requests organization runner
-group `archetype-release-macos` plus the `self-hosted`, `macOS`, `ARM64`, and
-`archetype-apple-container-macos-26` labels. The group allows only this
-repository and an exact tag-qualified `.github/workflows/release.yml`; the job
-must request that group, not merely a guessable label. Environment
-`release-apple-macos` permits only `v*` tags and requires approval from
-`everettVT` before the job reaches the Mac.
+Operator-bound evidence is demand-cadence, not release-cadence. The three
+scenarios that need a live third-party credential or physical hardware —
+`dogfood.agent_mission.modal_live` (Codex device auth in the broker Volume),
+`example.14_biome_agent` (a logged-in Apple Silicon host with an active
+GUI/Metal session), and `dogfood.sandbox.apple_container` (macOS 26 with the
+`container` service) — carry `required_cadence = ["demand"]` in the scenario
+registry and run as local scripts, not CI jobs:
 
-The runner MUST be ephemeral, MUST be registered only after the group is pinned
-to the exact release tag, and MUST run from a disposable directory. It also
-MUST be a logged-in Apple Silicon host with an active WindowServer and
-Metal-capable display session. A separate macOS login is not required: the
-runner may use the operator's current account, but it inherits that account's
-host permissions while the one authorized job is active. Never install this
-runner as a persistent service. The job uses `uv` to provision Python in that
-account's cache; it does not use `actions/setup-python` or create GitHub's
-`/Users/runner/hostedtoolcache` path. These controls are required because
-GitHub does not treat a self-hosted runner for a public repository as an
-isolated trusted machine.
+```bash
+make operational-demand-modal   # Codex live mission; fails fast on stale auth
+make operational-demand-biome   # ARCHETYPE_BIOME_LIVE=1 on the qualifying Mac
+make operational-demand-apple   # Apple Container parity on macOS 26
+make codex-login                # one-hour device-auth window into the Volume
+```
 
-One environment approval admits one bounded 75-minute Mac job. The Biome proof
-runs first, before the job starts Apple Container. Its registry row fail-closes
-unless the host is Darwin, `git`, `cmake`, `cargo`, and `pkg-config` are
-available, and the Make target has explicitly opted into live execution with
-`ARCHETYPE_BIOME_LIVE=1`. The release-only test builds and launches the exact
-checked-in Biome and Flecs revisions in the active GUI/Metal session, waits for
-the local REST service, proves the native mining mission and durable Archetype
-evidence, and guarantees process and port cleanup. A separate-session guardian
-must acknowledge ownership before a launch wrapper starts Biome and remains
-the group's kernel-identifiable session leader. An exact private marker exposes
-native-target exit without abandoning that ownership anchor; parent EOF,
-timeout, or cancellation makes the guardian reap the group and prove the
-loopback listener closed. A normal release records group and port liveness at
-publication, so a premature release cannot become truthful merely because the
-target exits before final cleanup. The job then starts Apple Container, runs
-its exact-wheel parity proof, and stops the service in an always-run cleanup
-step.
+Each target verifies the exact release artifact manifest first and emits the
+same installed-wheel receipt shape at `demand` cadence, so a demand run is the
+same class of evidence — produced when the operator chooses, from the machine
+that actually qualifies, instead of holding a release hostage to a sleeping
+Mac or a silently expired interactive credential.
+`make operational-demand-modal` refuses to start a paid sandbox when
+`auth.json` in the broker Volume is stale (`scripts/check_codex_auth.py`);
+refresh it with `make codex-login`. The Biome scenario's guardian ownership,
+liveness-at-publication, and cleanup semantics are properties of the scenario
+itself and hold identically in a demand run: its registry row fail-closes
+unless the host is Darwin with `git`, `cmake`, `cargo`, and `pkg-config`
+available, and live execution is opted in explicitly with
+`ARCHETYPE_BIOME_LIVE=1`.
 
-Both results travel in the existing
-`release-operational-release-apple-evidence` artifact. The aggregate
-`release-evidence-gate` names `operational-release-biome-results.json` and
-`operational-release-apple-results.json` as explicit inputs to
-`scripts/verify_release_evidence.py`; artifact presence alone is insufficient.
-Each receipt must be passing installed-wheel evidence bound to the clean
-release commit and exact four-wheel artifact matrix, with closed cleanup and no
-failed or `not_run` result.
+The aggregate `release-evidence-gate` requires exactly the receipts of the
+release-cadence registry rows: the hermetic verification profile plus the
+OpenAI, Docker, Cloudflare R2, and Physical AI lanes. Each receipt must be
+passing installed-wheel evidence bound to the clean release commit and exact
+four-wheel artifact matrix, with closed cleanup and no failed or `not_run`
+result. The former `apple-evidence` release job, its organization runner-group
+admission, and the `release-apple-macos` environment approval are retired from
+the release path together with the Modal Agent Mission release lane and its
+static-credential single-flight constraint.
 
 For each release, use this order:
 
@@ -332,15 +322,13 @@ gh workflow run release.yml \
   -f tag=v0.6.0
 ```
 
-Approve `release-apple-macos` once; the admitted job runs Biome evidence and
-then Apple Container evidence in that order. After the exact-evidence gate
-succeeds, approve every pending `release-testpypi` deployment. Approve every
-pending `release-pypi` deployment only after the TestPyPI
-installed-distribution matrix succeeds. The ECS publisher remains in the parent
-run; each new distribution is a separately approved direct workflow run. The
-parent waits for the exact child run IDs and fails unless all of them succeed.
-The ephemeral runner deregisters after the shared Mac job; discard its working
-directory before preparing a rerun or future release.
+The dispatch is the release decision. The authorize job's exact-actor and
+immutable-tag checks are the admission control, and the `release-testpypi`
+and `release-pypi` environments carry no reviewer gate, so the run proceeds
+unattended through the evidence gate, both indexes, and the GitHub release.
+The ECS publisher remains in the parent run; each remaining distribution is a
+separately dispatched direct workflow run whose exact run IDs the parent
+awaits and requires to succeed.
 
 Release-lane authentication is explicit and provider-scoped:
 
@@ -355,15 +343,19 @@ Release-lane authentication is explicit and provider-scoped:
 | Modal Agent Mission | `MODAL_TOKEN_ID` plus `MODAL_TOKEN_SECRET` authenticate the Modal control plane. Actions repository variable `CODING_AGENT_MODAL_PROFILE` becomes the SDK selector `MODAL_PROFILE`; `CODING_AGENT_MODAL_ENVIRONMENT` becomes both the Archetype selector and SDK selector `MODAL_ENVIRONMENT`, while the workspace and remaining Environment-scoped variables bind all named objects. `CODEX_AUTH_VOLUME` supplies the separately device-authenticated Codex `auth.json`. `CODING_AGENT_GITHUB_SECRET` names the Modal Secret resolved for the isolated publisher, but the paid live lane deliberately pushes to a provider-local bare remote and never attaches that secret or mutates GitHub. Deterministic broker contracts separately prove that only the exact GitHub push process can receive `GITHUB_TOKEN`. Modal Connect Tokens authenticate the two transient viewport URLs. |
 
 The operator-dispatched release workflow is serialized under one release
-concurrency group because its configured Codex auth Volume is a static mutable
-credential broker. Concurrent release runs must use distinct auth Volumes
-before that serialization can be relaxed. Agent Mission provider details and
-operator setup are normative in
+concurrency group: one tag, one immutable artifact set, one publish sequence
+at a time. The Codex auth Volume constraint moved with the Modal Agent Mission
+lane to demand cadence; `make operational-demand-modal` remains single-flight
+against the shared broker Volume. Agent Mission provider details and operator
+setup are normative in
 [Agent Missions](agent-missions.md#authentication-paths-by-provider).
 
-`not_run` is never a pass. It is acceptable only when the manifest makes the
-lane optional at the current cadence; release-required external evidence must
-name the exact release-candidate commit and installed package. An exit code
+`not_run` is never a pass, and a demand-cadence scenario is not a `not_run`:
+demand cadence is a declared registry decision about when evidence is
+produced, while `not_run` is an execution-time gap inside submitted evidence.
+It is acceptable only when the manifest makes the lane optional at the current
+cadence; release-required external evidence must name the exact
+release-candidate commit and installed package. An exit code
 without the declared semantic oracle is not a passing operational scenario.
 Only executable `pytest` and `eval` references are supported semantic oracles.
 A captured JSON receipt is oracle input and retained evidence; its mere

@@ -441,16 +441,19 @@ def test_every_release_scenario_is_installed_wheel_applicable() -> None:
     core_ids = {row["id"] for row in required if int(row["tier"]) <= 4}
     assert ids - core_ids == {
         "example.05_llm_agents",
-        "example.14_biome_agent",
-        "dogfood.agent_mission.modal_live",
         "dogfood.physical_ai.modal_r2_live",
         "dogfood.sandbox.docker",
         "dogfood.storage.r2",
+    }
+    demand = {row["id"] for row in scenarios if "demand" in row["required_cadence"]}
+    assert demand == {
+        "dogfood.agent_mission.modal_live",
+        "example.14_biome_agent",
         "dogfood.sandbox.apple_container",
     }
 
 
-def test_live_modal_release_scenario_is_credentialed_and_opted_in() -> None:
+def test_live_modal_demand_scenario_is_credentialed_and_opted_in() -> None:
     with OPERATIONAL_SCENARIOS.open("rb") as stream:
         scenarios = tomllib.load(stream)["scenario"]
     modal = next(row for row in scenarios if row["id"] == "dogfood.agent_mission.modal_live")
@@ -458,6 +461,7 @@ def test_live_modal_release_scenario_is_credentialed_and_opted_in() -> None:
     assert modal["source_path"] == "tests/infrastructure/test_modal_agent_mission_live.py"
     assert modal["semantic_oracle"]["ref"] in modal["source_command"]
     assert modal["tier"] == 6
+    assert modal["required_cadence"] == ["demand"]
     assert modal["applicability"] == ["source", "wheel"]
     assert modal["required_extras"] == ["coding-agent"]
     assert modal["cleanup_policy"] == "provider"
@@ -498,7 +502,7 @@ def test_live_physical_ai_release_scenario_binds_modal_compute_to_r2() -> None:
     assert "ARCHETYPE_MODAL_PHYSICAL_R2_LIVE=1" in MAKEFILE.read_text(encoding="utf-8")
 
 
-def test_live_biome_release_scenario_requires_the_pinned_macos_host() -> None:
+def test_live_biome_demand_scenario_requires_the_pinned_macos_host() -> None:
     with OPERATIONAL_SCENARIOS.open("rb") as stream:
         scenarios = tomllib.load(stream)["scenario"]
     biome = next(row for row in scenarios if row["id"] == "example.14_biome_agent")
@@ -508,6 +512,7 @@ def test_live_biome_release_scenario_requires_the_pinned_macos_host() -> None:
     assert biome["source_command"] == ["pytest", "-q", nodeid]
     assert biome["semantic_oracle"] == {"kind": "pytest", "ref": nodeid}
     assert biome["timeout_seconds"] == 1800
+    assert biome["required_cadence"] == ["demand"]
     assert set(biome["prerequisites"]) == {
         "platform:darwin",
         "binary:git",
@@ -519,13 +524,14 @@ def test_live_biome_release_scenario_requires_the_pinned_macos_host() -> None:
 
     makefile = MAKEFILE.read_text(encoding="utf-8")
     target = re.search(
-        r"^operational-release-biome:[^\n]*\n(?P<body>(?:\t.*\n)+)",
+        r"^operational-demand-biome:[^\n]*\n(?P<body>(?:\t.*\n)+)",
         makefile,
         re.MULTILINE,
     )
     assert target is not None
     assert "--scenario example.14_biome_agent" in target.group("body")
-    assert "--out operational-release-biome-results.json" in target.group("body")
+    assert "--out operational-demand-biome-results.json" in target.group("body")
+    assert ",demand)" in target.group("body")
     assert "ARCHETYPE_BIOME_LIVE=1" in target.group("body")
 
 
@@ -555,7 +561,6 @@ def test_every_high_tier_release_scenario_has_an_explicit_workflow_receipt() -> 
 
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     external = _job(workflow, "external-evidence")
-    apple = _job(workflow, "apple-evidence")
     gate = _job(workflow, "release-evidence-gate")
     workflow_receipts = {
         target: receipt
@@ -566,11 +571,6 @@ def test_every_high_tier_release_scenario_has_an_explicit_workflow_receipt() -> 
             re.MULTILINE,
         )
     }
-    for target in re.findall(r"run:\s+make\s+(operational-release-[a-z0-9-]+)", apple):
-        assert target in release_targets
-        receipt = release_targets[target][1]
-        assert receipt in apple
-        workflow_receipts[target] = receipt
 
     targets_by_scenario: dict[str, list[tuple[str, str]]] = {}
     for target, (scenario, receipt) in release_targets.items():
@@ -583,12 +583,33 @@ def test_every_high_tier_release_scenario_has_an_explicit_workflow_receipt() -> 
         assert workflow_receipts.get(target) == receipt
         assert f"evidence/{receipt}" in gate
 
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        rows = tomllib.load(stream)["scenario"]
+    demand_scenarios = {row["id"] for row in rows if "demand" in row["required_cadence"]}
+    demand_targets: dict[str, str] = {}
+    for match in re.finditer(
+        r"^(?P<target>operational-demand-[a-z0-9-]+):[^\n]*\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    ):
+        body = match.group("body")
+        scenario = re.search(r"--scenario\s+([a-z0-9._-]+)", body)
+        assert scenario is not None
+        assert ",demand)" in body
+        demand_targets[scenario.group(1)] = match.group("target")
+    assert set(demand_targets) == demand_scenarios
+    for receipt_name in (
+        "operational-demand-modal-results.json",
+        "operational-demand-biome-results.json",
+        "operational-demand-apple-results.json",
+    ):
+        assert receipt_name not in workflow
+
 
 def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     profile = _job(workflow, "release-profile")
     external = _job(workflow, "external-evidence")
-    apple = _job(workflow, "apple-evidence")
     compatibility = _job(workflow, "python-compatibility")
     gate = _job(workflow, "release-evidence-gate")
     test_preflight = _job(workflow, "testpypi-preflight")
@@ -610,7 +631,6 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
         "operational-release-openai",
         "operational-release-docker",
         "operational-release-r2",
-        "operational-release-modal",
         "operational-release-physical-modal-r2",
     ):
         assert f"target: {target}" in external
@@ -624,32 +644,19 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert "tests/infrastructure/test_r2_idempotency.py" in external
     assert "scripts/verify_release_evidence.py" in gate
     assert "uvx --with packaging==26.1 python" in gate
-    assert "operational-release-biome-results.json" in gate
-    assert "operational-release-apple-results.json" in gate
-    assert "operational-release-modal-results.json" in gate
     assert "operational-release-physical-modal-r2-results.json" in gate
+    assert "biome" not in gate
+    assert "apple" not in gate
+    assert "operational-release-modal-results.json" not in gate
     assert "group: archetype-release" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "runs-on: ${{ fromJSON(matrix.runner) }}" in external
-    assert "operational-release-apple" not in external
-    assert "operational-release-biome" not in external
-    assert "group: archetype-release-macos" in apple
-    assert "archetype-apple-container-macos-26" in apple
-    assert "environment: release-apple-macos" in apple
-    assert "timeout-minutes: 75" in apple
-    assert "- uses: actions/setup-python@" not in apple
-    assert 'UV_PYTHON: "3.12"' in apple
-    assert 'uv sync --python "3.12" --all-packages --all-extras --group dev' in apple
-    assert "sys.version_info[:2] == (3, 12)" in apple
-    assert 'test "$(uname -m)" = "arm64"' in apple
-    assert "make operational-release-biome" in apple
-    assert "container system status" in apple
-    assert "make operational-release-apple" in apple
-    assert apple.index("make operational-release-biome") < apple.index("container system start")
-    assert "name: release-operational-release-apple-evidence" in apple
-    assert "operational-release-biome-results.json" in apple
+    assert "apple-evidence:" not in workflow
+    assert "modal-evidence:" not in workflow
+    assert "archetype-release-macos" not in workflow
+    assert "CODEX_AUTH_VOLUME" not in workflow
     assert "pattern: release-operational-release-*-evidence" in gate
-    assert "needs: [release-profile, external-evidence, apple-evidence]" in gate
+    assert "needs: [release-profile, external-evidence]" in gate
     assert 'UV_PYTHON: "3.13"' in compatibility
     assert 'uv sync --python "3.13" --all-packages --all-extras --group dev' in compatibility
     assert "sys.version_info[:2] == (3, 13)" in compatibility
@@ -791,8 +798,8 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
         "softprops/action-gh-release@"
     )
     assert 'version: "latest"' not in workflow
-    assert workflow.count('version: "0.9.28"') == 9
-    assert workflow.count("persist-credentials: false") == 12
+    assert workflow.count('version: "0.9.28"') == 8
+    assert workflow.count("persist-credentials: false") == 11
 
 
 def test_release_workflow_pins_every_external_action_to_a_full_commit() -> None:

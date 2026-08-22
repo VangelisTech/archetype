@@ -1932,7 +1932,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", choices=("source", "wheel"), default="source")
     parser.add_argument("--wheel", type=Path)
     parser.add_argument("--wheel-dir", type=Path)
-    parser.add_argument("--cadence", choices=("pr", "main", "release"), default="pr")
+    parser.add_argument("--cadence", choices=("pr", "main", "release", "demand"), default="pr")
     parser.add_argument("--scenario", action="append", default=[])
     parser.add_argument("--kind", choices=("example", "dogfood"))
     parser.add_argument("--min-tier", type=int, default=0)

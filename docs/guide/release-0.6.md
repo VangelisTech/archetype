@@ -117,11 +117,13 @@ readiness; proves the native mission plus durable Archetype evidence; and
 closes the process and port. Before the native executable can start, a
 runner-owned guardian acknowledges its isolated process group; parent EOF,
 timeout, or cancellation then triggers independent TERM/KILL and loopback-port
-closure proof. Biome runs before Apple Container under the single
-`release-apple-macos` approval. Its
-`operational-release-biome-results.json` receipt is an explicit input to the
-exact-wheel evidence gate, so TestPyPI approval cannot follow a missing,
-`not_run`, dirty-revision, wrong-wheel, failed, or unclosed Biome result.
+closure proof. Since the release-workflow simplification, Biome and Apple
+Container run at demand cadence as local scripts on the qualifying Mac
+(`make operational-demand-biome`, then `make operational-demand-apple`)
+rather than as a release job; their receipts are demand evidence with the
+same installed-wheel binding, and the release evidence gate requires exactly
+the release-cadence receipts. See
+[Repository harness](repository-harness.md) for the current lane inventory.
 
 For current architecture and installation contracts, continue with
 [World libraries](world-libraries.md), [Runtime](runtime.md), and
