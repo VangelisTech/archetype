@@ -1522,7 +1522,7 @@ def test_wheel_set_resolution_rejects_missing_duplicate_and_mixed_versions(
     with pytest.raises(ValueError, match="exactly one local wheel for archetype-research"):
         _resolve_wheel_artifacts(wheel=anchor, wheel_dir=tmp_path)
 
-    mixed = tmp_path / "archetype_research-0.6.2-py3-none-any.whl"
+    mixed = tmp_path / "archetype_research-0.6.3-py3-none-any.whl"
     mixed.write_bytes(b"mixed version")
     with pytest.raises(ValueError, match="same-version first-party artifact set"):
         _resolve_wheel_artifacts(wheel=anchor, wheel_dir=tmp_path)

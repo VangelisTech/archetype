@@ -44,7 +44,7 @@ os.environ.setdefault("DO_NOT_TRACK", "1")
 # subpackages while this distribution remains the sole root-facade owner.
 __path__ = extend_path(__path__, __name__)
 
-__version__ = "0.6.2"
+__version__ = "0.6.3"
 
 __all__ = [
     # Core types

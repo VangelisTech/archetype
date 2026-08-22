@@ -1,11 +1,11 @@
 [project]
 name = "archetype-workspace"
-version = "0.6.2"
+version = "0.6.3"
 description = "Development workspace for the Archetype framework, first-party world libraries, and independent Smol teaching engine."
 requires-python = ">=3.12"
 dependencies = [
-    "archetype-ecs[all,coding-agent,logfire,sim]==0.6.1",
-    "archetype-smol==0.6.1",
+    "archetype-ecs[all,coding-agent,logfire,sim]==0.6.3",
+    "archetype-smol==0.6.3",
 ]
 
 [tool.pytest.ini_options]

@@ -272,7 +272,7 @@ def test_await_accepts_only_exact_supported_workflow_path_forms(path: str) -> No
         ("path", ".github/workflows/release.yml"),
         ("event", "push"),
         ("head_sha", "b" * 40),
-        ("head_branch", "v0.6.2"),
+        ("head_branch", "v0.6.3"),
         ("url", "https://api.github.com/repos/other/repo/actions/runs/9001"),
         ("html_url", "https://github.com/other/repo/actions/runs/9001"),
         ("repository", {"full_name": "other/repo"}),

@@ -205,7 +205,7 @@ def test_verify_publisher_dispatch_rejects_wrong_parent_run(
     elif case == "triggering_actor":
         parent["triggering_actor"] = {"login": "someone-else"}
     elif case == "tag":
-        parent["head_branch"] = "v0.6.2"
+        parent["head_branch"] = "v0.6.3"
     elif case == "sha":
         parent["head_sha"] = "c" * 40
     elif case == "attempt":
