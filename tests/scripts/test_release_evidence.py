@@ -251,7 +251,7 @@ def test_release_artifact_manifest_binds_every_filename_to_its_version(
 ) -> None:
     dist, manifest_path, _wheels = _artifact(tmp_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["artifacts"][-1]["name"] = "archetype_smol-0.6.2.tar.gz"
+    manifest["artifacts"][-1]["name"] = "archetype_smol-0.6.3.tar.gz"
 
     with pytest.raises(ValueError, match="not bound to manifest version 0.6.0"):
         verify_artifact(manifest, dist, expected_commit="a" * 40)

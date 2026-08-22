@@ -1,6 +1,6 @@
 [project]
 name = "archetype-missions"
-version = "0.6.2"
+version = "0.6.3"
 description = "Coding-agent missions, sandboxes, transcripts, and trajectories for Archetype."
 readme = "README.md"
 requires-python = ">=3.12"

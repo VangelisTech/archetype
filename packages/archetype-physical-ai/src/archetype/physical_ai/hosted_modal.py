@@ -744,7 +744,7 @@ def build_seeded_modal_hosted_episode_app(
     if image is None:
         image = (
             modal.Image.debian_slim(python_version="3.12")
-            .uv_pip_install("archetype-ecs==0.6.2")
+            .uv_pip_install("archetype-ecs==0.6.3")
             .add_local_python_source("archetype", copy=True)
         )
     app = modal.App(config.app_name)
