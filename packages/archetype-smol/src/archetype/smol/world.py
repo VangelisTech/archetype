@@ -175,6 +175,32 @@ def _preserve_or_validate_untouched_field(
     return validator(value)
 
 
+_MISSING = object()
+
+
+def _compile_detached(schema: Any, component_type: type[Component]) -> SchemaValidator:
+    """Compile `schema` rather than reusing the component's own validator.
+
+    When pydantic-core builds a `model` node it reuses an existing
+    `cls.__pydantic_validator__`, which silently discards the selective
+    wrappers applied above and replays every field validator. Detaching the
+    attribute for the duration of the build is what makes pydantic-core read
+    the schema we just patched. The window is one cached build on the
+    single-threaded step path, and the attribute is restored before any
+    component is validated.
+    """
+
+    owned = component_type.__dict__.get("__pydantic_validator__", _MISSING)
+    component_type.__pydantic_validator__ = None  # type: ignore[assignment]
+    try:
+        return SchemaValidator(schema)
+    finally:
+        if owned is _MISSING:
+            del component_type.__pydantic_validator__
+        else:
+            component_type.__pydantic_validator__ = owned
+
+
 @cache
 def _changed_fields_validator(
     component_type: type[Component],
@@ -193,7 +219,7 @@ def _changed_fields_validator(
                 _preserve_or_validate_untouched_field,
                 field_schema["schema"],
             )
-    return SchemaValidator(schema)
+    return _compile_detached(schema, component_type)
 
 
 def _validate_changed_fields[ComponentT: Component](
