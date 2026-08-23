@@ -1,17 +1,20 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Binding seams left for issue #809 (recorded, not faked).
+"""Route-drift enforcement and the live loopback proof (issues #809/#833).
 
-Two explicitly gated tests own the gap between the offline fake contract
-in ``conftest.py`` and the real MissionRun REST surface:
+The MissionRun REST surface shipped on ``main`` (issue #821), so the
+route-set agreement test runs unconditionally: the adapter's six fixed
+paths must exist in ``archetype.missions.api.create_router``. Body-level
+schema agreement lives in ``test_mission_mcp_rest_contract.py``, which
+validates the adapter's serialized submit payload directly against the
+real ``MissionRunSubmitRequest`` model.
 
-* ``test_installed_rest_routes_match_the_adapter_contract`` skips while
-  ``archetype.missions.api`` has no ``/v1/mission-runs`` routes and
-  activates automatically once they land, so route drift fails CI.
-* ``test_live_loopback_roundtrip`` is the live Archetype proof, skipped
-  until a served loopback host with the issue #809 surface exists
-  (repo convention: freeze dogfood runs as skipif tests).
+``test_live_loopback_roundtrip`` is the live Archetype proof (repo
+convention: freeze dogfood runs as skipif tests). It stays gated on the
+loopback environment variables because it needs a served host with a real
+execution-profile catalog and principals file; the v0.6.3 dogfood receipt
+records the composition recipe.
 """
 
 from __future__ import annotations
@@ -30,11 +33,10 @@ LOOPBACK_URL_ENV = "ARCHETYPE_MISSIONS_MCP_LOOPBACK_URL"
 LOOPBACK_CREDENTIAL_ENV = "ARCHETYPE_MISSIONS_MCP_LOOPBACK_CREDENTIAL"
 LOOPBACK_PROFILE_ENV = "ARCHETYPE_MISSIONS_MCP_LOOPBACK_PROFILE"
 LOOPBACK_REPOSITORY_ENV = "ARCHETYPE_MISSIONS_MCP_LOOPBACK_REPOSITORY"
+LOOPBACK_BRANCH_PREFIX_ENV = "ARCHETYPE_MISSIONS_MCP_LOOPBACK_BRANCH_PREFIX"
 
-# The adapter's REST surface: the five routes documented in issue #809 plus
-# the principal-scoped GET collection that mission_list targets (OPEN Q:
-# #809 does not document a list route; the PR body records the assumption,
-# and this set drift-enforces it once the real routes land).
+# The adapter's REST surface: the six fixed paths in
+# archetype/missions/mcp/client.py, all shipped by issue #821.
 ADAPTER_ROUTES = {
     ("POST", "/v1/mission-runs"),
     ("GET", "/v1/mission-runs"),
@@ -59,15 +61,11 @@ def _installed_mission_run_routes() -> set[tuple[str, str]]:
 
 def test_installed_rest_routes_match_the_adapter_contract():
     installed = _installed_mission_run_routes()
-    if not installed:
-        pytest.skip(
-            "Recorded seam (issue #810): archetype.missions.api does not ship "
-            "/v1/mission-runs yet (issue #809 in flight). The offline fake in "
-            "tests/missions/mcp/conftest.py carries the documented contract; "
-            "when the routes land this test activates and any drift from the "
-            "adapter's route set fails CI. Then bind FakeMissionControl's "
-            "payloads to the real response models."
-        )
+    assert installed, (
+        "archetype.missions.api no longer ships /v1/mission-runs routes; the "
+        "MCP adapter in archetype/missions/mcp/client.py targets that "
+        "surface (issues #809/#821/#833)."
+    )
     missing = {
         (method, path)
         for method, path in ADAPTER_ROUTES
@@ -77,8 +75,8 @@ def test_installed_rest_routes_match_the_adapter_contract():
         )
     }
     assert not missing, (
-        "Issue #809 landed with a different MissionRun route set than the "
-        f"MCP adapter targets; missing {sorted(missing)}. Update "
+        "The installed MissionRun route set drifted from the paths the MCP "
+        f"adapter targets; missing {sorted(missing)}. Update "
         "archetype/missions/mcp/client.py and rebind "
         "tests/missions/mcp/conftest.py to the real models."
     )
@@ -88,11 +86,13 @@ def test_installed_rest_routes_match_the_adapter_contract():
 @pytest.mark.skipif(
     LOOPBACK_URL_ENV not in os.environ,
     reason=(
-        "Live loopback Archetype proof pending issue #809: export "
-        f"{LOOPBACK_URL_ENV}, {LOOPBACK_CREDENTIAL_ENV}, "
-        f"{LOOPBACK_PROFILE_ENV}, and {LOOPBACK_REPOSITORY_ENV} against a "
-        "served host exposing the MissionRun REST surface to run the "
-        "submit -> get -> events -> cancel roundtrip through the MCP tools."
+        "Live loopback Archetype proof (frozen from the issue #833 fix "
+        f"evidence): export {LOOPBACK_URL_ENV}, {LOOPBACK_CREDENTIAL_ENV}, "
+        f"{LOOPBACK_PROFILE_ENV}, and {LOOPBACK_REPOSITORY_ENV} (optionally "
+        f"{LOOPBACK_BRANCH_PREFIX_ENV}, default 'agent/') against a served "
+        "host with a real execution-profile catalog to run the submit -> "
+        "duplicate-submit -> get -> events -> cancel roundtrip through the "
+        "MCP tools."
     ),
 )
 def test_live_loopback_roundtrip():
@@ -108,26 +108,32 @@ def test_live_loopback_roundtrip():
         return call_tool(server, name, arguments)
 
     try:
+        unique = uuid.uuid4().hex[:12]
+        prefix = os.environ.get(LOOPBACK_BRANCH_PREFIX_ENV, "agent/")
         submit = {
             "profile_id": os.environ[LOOPBACK_PROFILE_ENV],
             "repository": os.environ[LOOPBACK_REPOSITORY_ENV],
-            "ref": "main",
-            "mission": "mcp-loopback-proof",
+            "branch": f"{prefix}mcp-loopback-proof-{unique}",
+            "base_ref": "main",
+            "name": "mcp-loopback-proof",
             "tasks": [
                 {
                     "name": "noop-proof",
                     "prompt": "Report the repository name and stop.",
-                    "validators": [{"name": "true", "argv": ["true"]}],
+                    "validators": [{"name": "true", "command": ["true"]}],
                 }
             ],
-            "idempotency_key": f"loopback-{uuid.uuid4().hex}",
+            "idempotency_key": f"loopback-{unique}",
         }
         is_error, accepted = tool("mission_submit", submit)
         assert is_error is False, accepted
         run_id = accepted["run_id"]
+        assert accepted["state"] == "accepted"
+        assert accepted["profile"]["profile_id"] == submit["profile_id"]
 
         is_error, duplicate = tool("mission_submit", submit)
-        assert is_error is False and duplicate["run_id"] == run_id
+        assert is_error is False, duplicate
+        assert duplicate["run_id"] == run_id
 
         is_error, status = tool("mission_get", {"run_id": run_id})
         assert is_error is False and status["run_id"] == run_id
@@ -135,7 +141,9 @@ def test_live_loopback_roundtrip():
         is_error, events = tool("mission_events", {"run_id": run_id, "limit": 10})
         assert is_error is False and "events" in events
 
+        # Cancel immediately after acceptance to bound provider spend; the
+        # committed-fact race semantics are the server's to resolve.
         is_error, cancelled = tool("mission_cancel", {"run_id": run_id})
-        assert is_error is False
+        assert is_error is False, cancelled
     finally:
         server.close()

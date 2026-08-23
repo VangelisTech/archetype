@@ -1266,12 +1266,19 @@ Boundaries:
   `tools/list`, `tools/call`, and `ping` work on the supported protocol
   versions; unsupported request methods return `-32601`.
 
-Contract seam: until issue #809 lands, the executable oracle is the
-offline fake server in `tests/missions/mcp/conftest.py`, which implements
-the documented REST contract; `tests/missions/mcp/test_mission_mcp_live_loopback.py`
-activates route-drift enforcement when `archetype.missions.api` ships
-`/v1/mission-runs` and keeps the live loopback proof as an explicitly
-skipped test until a served surface exists.
+Contract binding (issue #833): the submit body mirrors
+`archetype.missions.api.MissionRunSubmitRequest` field for field —
+`branch`, `base_ref`, `name`, and `tasks[]` with `command`-shaped
+validators — and optional fields the REST model defaults are omitted from
+the wire so the server owns every default. The offline fake server in
+`tests/missions/mcp/conftest.py` validates each submit body against that
+real pydantic model, and
+`tests/missions/mcp/test_mission_mcp_rest_contract.py` additionally
+validates the adapter's serialized body against the model directly, so
+schema drift between the adapter and the shipped REST surface fails CI.
+`tests/missions/mcp/test_mission_mcp_live_loopback.py` enforces route-set
+agreement unconditionally and keeps the live loopback proof as an
+environment-gated test against a served host.
 
 ## Companion contracts
 

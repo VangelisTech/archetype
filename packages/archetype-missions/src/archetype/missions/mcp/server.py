@@ -34,43 +34,65 @@ from archetype.missions.mcp.config import McpHostConfig, McpHostConfigError
 SERVER_NAME = "archetype-missions-mcp"
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
-# Fixed input bounds (issue #810: "fixed byte/item limits"). Output bounds
-# (events page, rendered result bytes) remain host-configured knobs.
+# Fixed input bounds (issue #810: "fixed byte/item limits"). The submit
+# bounds mirror the REST request models in ``archetype.missions.api``
+# (issue #833) so a schema-conformant tool call cannot 422 at the route.
+# Output bounds (events page, rendered result bytes) remain
+# host-configured knobs.
 _MAX_OPAQUE_ID_CHARS = 256
 _MAX_COORDINATE_CHARS = 512
-_MAX_TASK_NAME_CHARS = 200
+_MAX_NAME_CHARS = 128
 _MAX_TASKS = 32
 _MAX_PROMPT_BYTES = 65536
+_MAX_VALIDATOR_COMMAND_ITEMS = 64
+_MAX_COMMAND_ARGUMENT_CHARS = 4096
+_MAX_TASK_DISPATCHES = 10
 _MAX_DIAGNOSTIC_BYTES = 512
 # Largest accepted stdin frame; a newline-less flood is rejected in bounded
 # chunks instead of buffering an unbounded line.
 _MAX_FRAME_CHARS = 16 * 1024 * 1024
 
-_TASK_KEYS = {"name", "prompt", "validators", "depends_on"}
+_TASK_KEYS = {"name", "prompt", "validators", "depends_on", "max_dispatches"}
+_VALIDATOR_KEYS = {"name", "command", "expected_returncode", "timeout_seconds"}
 
 # Single-line coordinate: no ASCII control characters.
 _LINE_PATTERN = "^[^\\u0000-\\u001f]+$"
 
+_VALIDATOR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": _MAX_NAME_CHARS},
+        "command": {
+            "type": "array",
+            "items": {"type": "string", "maxLength": _MAX_COMMAND_ARGUMENT_CHARS},
+            "minItems": 1,
+            "maxItems": _MAX_VALIDATOR_COMMAND_ITEMS,
+        },
+        "expected_returncode": {"type": "integer"},
+        "timeout_seconds": {"type": "integer", "minimum": 1},
+    },
+    "required": ["name", "command"],
+    "additionalProperties": False,
+}
+
 _TASK_SCHEMA = {
     "type": "object",
     "properties": {
-        "name": {"type": "string", "minLength": 1, "maxLength": _MAX_TASK_NAME_CHARS},
+        "name": {"type": "string", "minLength": 1, "maxLength": _MAX_NAME_CHARS},
         "prompt": {"type": "string", "minLength": 1, "maxLength": _MAX_PROMPT_BYTES},
-        "validators": {
+        "validators": {"type": "array", "items": _VALIDATOR_SCHEMA, "minItems": 1},
+        "depends_on": {
             "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "minLength": 1},
-                    "argv": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["name", "argv"],
-                "additionalProperties": False,
-            },
+            "items": {"type": "string", "minLength": 1},
+            "maxItems": _MAX_TASKS,
         },
-        "depends_on": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "max_dispatches": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": _MAX_TASK_DISPATCHES,
+        },
     },
-    "required": ["name", "prompt"],
+    "required": ["name", "prompt", "validators"],
     "additionalProperties": False,
 }
 
@@ -140,6 +162,10 @@ def _validate_line(value: object, label: str) -> str:
     return _require_string(value, label=label, max_chars=_MAX_COORDINATE_CHARS)
 
 
+def _validate_name(value: object, label: str) -> str:
+    return _require_string(value, label=label, max_chars=_MAX_NAME_CHARS)
+
+
 def _validate_limit(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise MissionToolError("invalid_argument", f"{label} must be a positive integer")
@@ -147,31 +173,58 @@ def _validate_limit(value: object, label: str) -> int:
 
 
 def _validate_validators(validators: object, *, label: str) -> list[dict[str, Any]]:
-    if not isinstance(validators, list):
-        raise MissionToolError("invalid_argument", f"{label} must be an array")
+    if not isinstance(validators, list) or not validators:
+        raise MissionToolError("invalid_argument", f"{label} must be a non-empty array")
     clean: list[dict[str, Any]] = []
     for position, raw_validator in enumerate(validators):
         item_label = f"{label}[{position}]"
         validator = _string_keyed(raw_validator, label=item_label)
-        _reject_unknown(validator, {"name", "argv"})
+        _reject_unknown(validator, _VALIDATOR_KEYS)
         name = validator.get("name")
-        argv = validator.get("argv")
-        if not isinstance(name, str) or not name:
+        command = validator.get("command")
+        if not isinstance(name, str) or not name or len(name) > _MAX_NAME_CHARS:
             raise MissionToolError(
-                "invalid_argument", f"{item_label}.name must be a non-empty string"
-            )
-        if not isinstance(argv, list):
-            raise MissionToolError(
-                "invalid_argument", f"{item_label}.argv must be an array of strings"
+                "invalid_argument",
+                f"{item_label}.name must be a non-empty string of at most "
+                f"{_MAX_NAME_CHARS} characters",
             )
         _utf8_or_reject(name, f"{item_label}.name")
-        for position_argv, item in enumerate(argv):
-            if not isinstance(item, str):
+        if (
+            not isinstance(command, list)
+            or not command
+            or len(command) > _MAX_VALIDATOR_COMMAND_ITEMS
+        ):
+            raise MissionToolError(
+                "invalid_argument",
+                f"{item_label}.command must be an array of 1 to "
+                f"{_MAX_VALIDATOR_COMMAND_ITEMS} strings",
+            )
+        for position_argument, item in enumerate(command):
+            if not isinstance(item, str) or len(item) > _MAX_COMMAND_ARGUMENT_CHARS:
                 raise MissionToolError(
-                    "invalid_argument", f"{item_label}.argv must be an array of strings"
+                    "invalid_argument",
+                    f"{item_label}.command must be an array of strings of at "
+                    f"most {_MAX_COMMAND_ARGUMENT_CHARS} characters",
                 )
-            _utf8_or_reject(item, f"{item_label}.argv[{position_argv}]")
-        clean.append({"name": name, "argv": argv})
+            _utf8_or_reject(item, f"{item_label}.command[{position_argument}]")
+        clean_validator: dict[str, Any] = {"name": name, "command": command}
+        if "expected_returncode" in validator:
+            expected = validator["expected_returncode"]
+            if isinstance(expected, bool) or not isinstance(expected, int):
+                raise MissionToolError(
+                    "invalid_argument",
+                    f"{item_label}.expected_returncode must be an integer",
+                )
+            clean_validator["expected_returncode"] = expected
+        if "timeout_seconds" in validator:
+            timeout = validator["timeout_seconds"]
+            if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
+                raise MissionToolError(
+                    "invalid_argument",
+                    f"{item_label}.timeout_seconds must be a positive integer",
+                )
+            clean_validator["timeout_seconds"] = timeout
+        clean.append(clean_validator)
     return clean
 
 
@@ -187,7 +240,7 @@ def _validate_tasks(tasks: object, label: str) -> list[dict[str, Any]]:
         task = _string_keyed(raw_task, label=f"{label}[{index}]")
         _reject_unknown(task, _TASK_KEYS)
         name = task.get("name")
-        if not isinstance(name, str) or not name or len(name) > _MAX_TASK_NAME_CHARS:
+        if not isinstance(name, str) or not name or len(name) > _MAX_NAME_CHARS:
             raise MissionToolError(
                 "invalid_argument", f"{label}[{index}].name must be a short string"
             )
@@ -203,17 +256,22 @@ def _validate_tasks(tasks: object, label: str) -> list[dict[str, Any]]:
                 f"{label}[{index}].prompt must be a non-empty string of at "
                 f"most {_MAX_PROMPT_BYTES} bytes",
             )
-        clean: dict[str, Any] = {"name": name, "prompt": prompt}
-        if "validators" in task:
-            clean["validators"] = _validate_validators(
-                task["validators"], label=f"{label}[{index}].validators"
-            )
+        clean: dict[str, Any] = {
+            "name": name,
+            "prompt": prompt,
+            # The REST task model requires at least one validator; reject a
+            # missing key here so the mistake fails before the wire.
+            "validators": _validate_validators(
+                task.get("validators"), label=f"{label}[{index}].validators"
+            ),
+        }
         if "depends_on" in task:
             depends_on = task["depends_on"]
-            if not isinstance(depends_on, list):
+            if not isinstance(depends_on, list) or len(depends_on) > _MAX_TASKS:
                 raise MissionToolError(
                     "invalid_argument",
-                    f"{label}[{index}].depends_on must be an array of task names",
+                    f"{label}[{index}].depends_on must be an array of at most "
+                    f"{_MAX_TASKS} task names",
                 )
             for position_dep, item in enumerate(depends_on):
                 if not isinstance(item, str) or not item:
@@ -223,6 +281,19 @@ def _validate_tasks(tasks: object, label: str) -> list[dict[str, Any]]:
                     )
                 _utf8_or_reject(item, f"{label}[{index}].depends_on[{position_dep}]")
             clean["depends_on"] = depends_on
+        if "max_dispatches" in task:
+            dispatches = task["max_dispatches"]
+            if (
+                isinstance(dispatches, bool)
+                or not isinstance(dispatches, int)
+                or not 1 <= dispatches <= _MAX_TASK_DISPATCHES
+            ):
+                raise MissionToolError(
+                    "invalid_argument",
+                    f"{label}[{index}].max_dispatches must be an integer "
+                    f"between 1 and {_MAX_TASK_DISPATCHES}",
+                )
+            clean["max_dispatches"] = dispatches
         validated.append(clean)
     return validated
 
@@ -248,6 +319,15 @@ _ARGUMENT_KINDS: dict[str, tuple[dict[str, Any], Callable[[object, str], Any]]] 
         },
         _validate_line,
     ),
+    "name": (
+        {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": _MAX_NAME_CHARS,
+            "pattern": _LINE_PATTERN,
+        },
+        _validate_name,
+    ),
     "limit": ({"type": "integer", "minimum": 1}, _validate_limit),
     "tasks": (
         {"type": "array", "items": _TASK_SCHEMA, "minItems": 1, "maxItems": _MAX_TASKS},
@@ -272,17 +352,19 @@ _TOOL_SPECS: tuple[_ToolSpec, ...] = (
         description=(
             "Explicitly start a durable Archetype coding mission and return "
             "immediately with its run_id and status coordinates; the mission "
-            "keeps running after this process exits. Reusing the same "
-            "idempotency_key with identical inputs returns the original run. "
-            "Execution authority comes from the server-owned profile, never "
-            "from these arguments."
+            "keeps running after this process exits. Work lands on the "
+            "caller-named branch, cut from base_ref (server default: main). "
+            "Reusing the same idempotency_key with identical inputs returns "
+            "the original run. Execution authority comes from the "
+            "server-owned profile, never from these arguments."
         ),
         client_method="submit",
         arguments=(
             ("profile_id", "opaque_id", True),
             ("repository", "line", True),
-            ("ref", "line", True),
-            ("mission", "line", True),
+            ("branch", "line", True),
+            ("base_ref", "line", False),
+            ("name", "name", False),
             ("tasks", "tasks", True),
             ("idempotency_key", "opaque_id", True),
         ),
