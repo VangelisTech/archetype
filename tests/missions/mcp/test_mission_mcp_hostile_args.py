@@ -134,15 +134,18 @@ def test_submit_configuration_overrides_are_rejected(call, fake_control, overrid
         {"model": "expensive-model"},
         {"driver": "raw-shell"},
         {"budget": 10**9},
+        {"validators": [{"name": "v", "command": ["true"], "shell": "/bin/bash"}]},
+        {"validators": [{"name": "v", "command": ["true"], "env": {"PATH": "/evil"}}]},
     ],
 )
 def test_profile_widening_through_task_payload_is_rejected(call, fake_control, task_widening):
-    """Task items carry name/prompt/validators/depends_on only (issue #808)."""
+    """Tasks carry name/prompt/validators/depends_on/max_dispatches only."""
 
     tasks = [
         {
             "name": "fix-bug",
             "prompt": "Fix the reported bug.",
+            "validators": [{"name": "pytest", "command": ["pytest", "-q"]}],
             **task_widening,
         }
     ]
@@ -153,12 +156,15 @@ def test_profile_widening_through_task_payload_is_rejected(call, fake_control, t
 
 
 def test_task_count_and_prompt_bytes_are_bounded(call, fake_control):
-    many = [{"name": f"task-{index}", "prompt": "p"} for index in range(33)]
+    validators = [{"name": "true", "command": ["true"]}]
+    many = [
+        {"name": f"task-{index}", "prompt": "p", "validators": validators} for index in range(33)
+    ]
     is_error, payload = call("mission_submit", submit_arguments(tasks=many))
     assert is_error is True
     assert payload["error"]["code"] == "invalid_argument"
 
-    huge_prompt = [{"name": "task", "prompt": "x" * 70000}]
+    huge_prompt = [{"name": "task", "prompt": "x" * 70000, "validators": validators}]
     is_error, payload = call("mission_submit", submit_arguments(tasks=huge_prompt))
     assert is_error is True
     assert payload["error"]["code"] == "invalid_argument"
@@ -255,23 +261,40 @@ def test_credential_with_json_escapables_is_still_redacted(fake_control):
     assert "[redacted]" in payload["error"]["message"]
 
 
+_SAFE_VALIDATORS = [{"name": "true", "command": ["true"]}]
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
         submit_arguments(repository=f"repo{SURROGATE}"),
-        submit_arguments(mission=f"m{SURROGATE}"),
-        submit_arguments(tasks=[{"name": f"t{SURROGATE}", "prompt": "p"}]),
-        submit_arguments(tasks=[{"name": "t", "prompt": f"p{SURROGATE}"}]),
+        submit_arguments(branch=f"b{SURROGATE}"),
+        submit_arguments(name=f"m{SURROGATE}"),
+        submit_arguments(
+            tasks=[{"name": f"t{SURROGATE}", "prompt": "p", "validators": _SAFE_VALIDATORS}]
+        ),
+        submit_arguments(
+            tasks=[{"name": "t", "prompt": f"p{SURROGATE}", "validators": _SAFE_VALIDATORS}]
+        ),
         submit_arguments(
             tasks=[
                 {
                     "name": "t",
                     "prompt": "p",
-                    "validators": [{"name": "v", "argv": [f"a{SURROGATE}"]}],
+                    "validators": [{"name": "v", "command": [f"a{SURROGATE}"]}],
                 }
             ]
         ),
-        submit_arguments(tasks=[{"name": "t", "prompt": "p", "depends_on": [f"d{SURROGATE}"]}]),
+        submit_arguments(
+            tasks=[
+                {
+                    "name": "t",
+                    "prompt": "p",
+                    "validators": _SAFE_VALIDATORS,
+                    "depends_on": [f"d{SURROGATE}"],
+                }
+            ]
+        ),
     ],
 )
 def test_unpaired_surrogates_are_invalid_arguments_before_the_wire(call, fake_control, arguments):

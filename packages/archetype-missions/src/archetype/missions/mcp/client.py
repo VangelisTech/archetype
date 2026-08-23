@@ -9,10 +9,14 @@ templates, opaque ids are validated before they may enter a URL or header,
 and the client never follows a redirect, so a response cannot re-aim it at
 another origin. Error text stays bounded and carries no credential bytes.
 
-Seam (issue #810): field names for the submit body mirror issue #809's
-documented contract. When the REST models land, the drift test in
-``tests/missions/mcp/test_mission_mcp_live_loopback.py`` binds this module
-to them.
+The submit body mirrors ``archetype.missions.api.MissionRunSubmitRequest``
+field for field (issue #833). Optional fields the REST model defaults
+(``base_ref``, ``name``, validator ``expected_returncode`` and
+``timeout_seconds``, task ``max_dispatches``) are omitted when the caller
+does not supply them, so the server stays the single owner of every
+default. The offline contract tests in ``tests/missions/mcp/`` validate
+the serialized body directly against that pydantic model, so any drift
+from the shipped REST schema fails CI instead of 422ing in production.
 """
 
 from __future__ import annotations
@@ -99,19 +103,23 @@ class MissionRunClient:
         *,
         profile_id: str,
         repository: str,
-        ref: str,
-        mission: str,
+        branch: str,
         tasks: list[dict[str, Any]],
         idempotency_key: str,
+        base_ref: str | None = None,
+        name: str | None = None,
     ) -> dict[str, Any]:
         key = require_opaque_id(idempotency_key, label="idempotency_key")
-        body = {
+        body: dict[str, Any] = {
             "profile_id": profile_id,
             "repository": repository,
-            "ref": ref,
-            "mission": mission,
+            "branch": branch,
             "tasks": tasks,
         }
+        if base_ref is not None:
+            body["base_ref"] = base_ref
+        if name is not None:
+            body["name"] = name
         response = self._request(
             "POST",
             _RUNS_PATH,

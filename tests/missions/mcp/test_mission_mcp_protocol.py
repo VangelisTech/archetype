@@ -189,9 +189,16 @@ def test_declared_schemas_agree_with_runtime_validation():
     samples = {
         "opaque_id": ("run-1", "a/b"),
         "line": ("main", "bad\nline"),
+        "name": ("demo-mission", "bad\nname"),
         "limit": (5, 0),
         "tasks": (
-            [{"name": "t", "prompt": "p"}],
+            [
+                {
+                    "name": "t",
+                    "prompt": "p",
+                    "validators": [{"name": "v", "command": ["true"]}],
+                }
+            ],
             [{"name": "t", "prompt": "p", "sandbox": {}}],
         ),
     }

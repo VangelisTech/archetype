@@ -3,13 +3,15 @@
 
 """Offline fake MissionRun control surface for Mission MCP contract tests.
 
-Contract seam (issue #810): :class:`FakeMissionControl` implements the
-MissionRun REST contract exactly as documented in issue #809 — the routes,
-``Idempotency-Key`` submit semantics, cursor events, terminal result, and
-idempotent cancel — because that surface has not landed on ``main`` yet.
-``test_mission_mcp_live_loopback.py`` holds the binding tests that activate
-once ``archetype.missions.api`` ships ``/v1/mission-runs``; rebinding these
-fixtures to the real response models is deliberately a one-file change here.
+Contract binding (issue #833): :class:`FakeMissionControl` is pinned to the
+shipped REST surface in ``archetype.missions.api``, not to a hand-mirrored
+copy of the adapter's own expectations. Every submit body is validated
+against the real ``MissionRunSubmitRequest`` pydantic model
+(``extra="forbid"``) and answered with a real
+``MissionRunAcceptedResponse`` payload, and run states use the real
+``MissionRunState`` literals — so an adapter that drifts from the shipped
+schema 422s in these offline tests exactly as it would in production.
+Read-path payloads remain bounded fake projections.
 """
 
 from __future__ import annotations
@@ -25,7 +27,13 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from pydantic import ValidationError
 
+from archetype.missions.api import (
+    MissionRunAcceptedResponse,
+    MissionRunProfileResponse,
+    MissionRunSubmitRequest,
+)
 from archetype.missions.mcp.config import McpHostConfig
 from archetype.missions.mcp.server import MissionMcpServer
 
@@ -45,7 +53,7 @@ class RecordedRequest:
 class FakeRun:
     run_id: str
     profile_id: str = "profile-default"
-    state: str = "queued"
+    state: str = "accepted"
     request_digest: str = ""
     events: list[dict[str, Any]] = field(default_factory=list)
     result: dict[str, Any] | None = None
@@ -204,12 +212,24 @@ class FakeMissionControl:
     def _submit(self, handler: BaseHTTPRequestHandler, body: bytes) -> None:
         key = handler.headers.get("Idempotency-Key")
         if not key:
-            self._respond(handler, 400, {"detail": "Idempotency-Key header required"})
+            self._respond(handler, 422, {"detail": "Idempotency-Key header required"})
             return
         try:
             payload = json.loads(body.decode("utf-8"))
         except ValueError:
             self._respond(handler, 422, {"detail": "Body must be JSON"})
+            return
+        try:
+            request = MissionRunSubmitRequest.model_validate(payload)
+        except ValidationError as exc:
+            # The real route rejects with 422 through the same model
+            # (extra="forbid"); mirroring it here is what keeps the offline
+            # suite honest about the shipped submit schema (issue #833).
+            self._respond(
+                handler,
+                422,
+                {"detail": f"MissionRunSubmitRequest rejected the body: {exc.error_count()}"},
+            )
             return
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
         existing = self.submissions.get(key)
@@ -226,8 +246,8 @@ class FakeMissionControl:
             return
         run = FakeRun(
             run_id=f"run-{uuid.uuid4().hex[:12]}",
-            profile_id=str(payload.get("profile_id", "profile-default")),
-            state="queued",
+            profile_id=request.profile_id,
+            state="accepted",
             request_digest=digest,
         )
         self.runs[run.run_id] = run
@@ -236,12 +256,17 @@ class FakeMissionControl:
 
     @staticmethod
     def _accepted(run: FakeRun) -> dict[str, Any]:
-        return {
-            "run_id": run.run_id,
-            "request_digest": run.request_digest,
-            "state": run.state,
-            "status_url": f"/v1/mission-runs/{run.run_id}",
-        }
+        return MissionRunAcceptedResponse(
+            run_id=run.run_id,
+            state=run.state,  # type: ignore[arg-type]  # pydantic enforces the literal
+            request_digest=run.request_digest,
+            profile=MissionRunProfileResponse(
+                profile_id=run.profile_id,
+                version="1",
+                digest="fake-profile-digest",
+            ),
+            status_url=f"/v1/mission-runs/{run.run_id}",
+        ).model_dump(mode="json")
 
     def _list(self, handler: BaseHTTPRequestHandler) -> None:
         runs = [
@@ -274,7 +299,7 @@ class FakeMissionControl:
         )
 
     def _cancel(self, handler: BaseHTTPRequestHandler, run: FakeRun) -> None:
-        if run.state in {"completed", "failed", "cancelled"}:
+        if run.state in {"succeeded", "failed", "cancelled", "interrupted"}:
             self._respond(handler, 200, {"run_id": run.run_id, "state": run.state})
             return
         run.state = "cancelling"
@@ -363,13 +388,14 @@ def submit_arguments(**overrides: Any) -> dict[str, Any]:
     arguments: dict[str, Any] = {
         "profile_id": "profile-default",
         "repository": "vangelis/archetype",
-        "ref": "main",
-        "mission": "demo-mission",
+        "branch": "agent/demo-mission",
+        "base_ref": "main",
+        "name": "demo-mission",
         "tasks": [
             {
                 "name": "fix-bug",
                 "prompt": "Fix the reported bug.",
-                "validators": [{"name": "pytest", "argv": ["pytest", "-q"]}],
+                "validators": [{"name": "pytest", "command": ["pytest", "-q"]}],
             }
         ],
         "idempotency_key": "key-0001",
