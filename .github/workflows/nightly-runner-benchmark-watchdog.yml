@@ -1,0 +1,46 @@
+name: Nightly runner benchmark watchdog
+
+on:
+  schedule:
+    - cron: "17 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  cancel-stale:
+    name: Cancel stranded benchmark runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const cutoff = Date.now() - 45 * 60 * 1000;
+            const statuses = ["queued", "in_progress"];
+            const pages = await Promise.all(
+              statuses.map((status) => github.paginate(
+                github.rest.actions.listWorkflowRuns,
+                {
+                  ...context.repo,
+                  workflow_id: "nightly-runner-benchmark.yml",
+                  status,
+                  per_page: 100,
+                },
+              )),
+            );
+            const runs = pages.flat();
+            const stale = runs.filter(
+              (run) => Date.parse(run.created_at) < cutoff,
+            );
+            for (const run of stale) {
+              await github.rest.actions.cancelWorkflowRun({
+                ...context.repo,
+                run_id: run.id,
+              });
+            }
+            await core.summary
+              .addHeading("Nightly runner benchmark watchdog")
+              .addRaw(`Cancelled stale runs: ${stale.length}\n`)
+              .write();

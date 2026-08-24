@@ -48,3 +48,20 @@ metrics = [
   { name = "python_conversion_s", direction = "lower" },
   { name = "udf_operator_accumulated_duration_median_s", direction = "lower" },
 ]
+
+[[benchmark]]
+id = "repository.ci_runner.turnaround"
+suite = "ci_runner_turnaround"
+owner = "repository-harness"
+entrypoint = "scripts/report_runner_benchmark.py"
+correctness_oracles = ["tests/static/test_runner_benchmark_report.py"]
+report_schema = "archetype.ci-runner-benchmark/v1"
+comparison_policy = "advisory"
+stable_runner = false
+profiles = ["nightly"]
+metrics = [
+  { name = "hosted_critical_path_s", direction = "lower" },
+  { name = "modal_critical_path_s", direction = "lower" },
+  { name = "modal_minus_hosted_s", direction = "lower" },
+  { name = "hosted_over_modal_ratio", direction = "higher" },
+]

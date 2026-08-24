@@ -421,9 +421,11 @@ outcome authority and retry/failure behavior.
 
 The required PR workflow owns static checks and fast product tests on Python
 3.12. Repository scenarios, coverage, packaging, examples, documentation, and
-compatibility evidence belong to full or release validation. Benchmarks stay
-user-triggered because shared CI hardware does not provide a trustworthy
-performance baseline.
+compatibility evidence belong to full or release validation. Product-runtime
+benchmarks stay user-triggered because shared CI hardware does not provide a
+trustworthy performance baseline. The advisory CI-runner benchmark is the
+narrow exception: the shared runner substrate is itself the subject, so it
+runs paired jobs only after `main` moves and never becomes a regression gate.
 
 Use these entry points:
 
