@@ -552,16 +552,33 @@ class _DispatchedMissionRunExecutor:
         self,
         context: WorldLibraryContext,
         *,
-        owner_id: str,
         name: str,
         config: Any,
         storage: str | Path | StorageConfig | None,
     ) -> None:
         self._context = context
-        self._owner_id = owner_id
         self._name = name
         self._config = config
         self._storage = storage
+
+    @staticmethod
+    def _execution_owner_id(run: MissionRun) -> str:
+        """Return the stable process owner for one durable MissionRun."""
+
+        return f"mission-run:{run.run_id}"
+
+    def prepare(self, run: MissionRun) -> None:
+        """Reserve one execution lifetime before its supervised task starts."""
+
+        owner_id = self._execution_owner_id(run)
+        try:
+            self._context.resources.owner(owner_id)
+        except KeyError:
+            self._context.resources.reserve_owner(
+                owner_id,
+                phase="workflow-handles",
+                closed_message=f"mission run {run.run_id!r} execution owner is closed",
+            )
 
     def _mission_config(self, run: MissionRun) -> Any:
         """Return the process-bound config or materialize the pinned profile.
@@ -584,9 +601,10 @@ class _DispatchedMissionRunExecutor:
         return binding.build_config()
 
     async def submit(self, run: MissionRun) -> Any:
+        self.prepare(run)
         return await self._context.resources.dispatcher.apply(
             SubmitMission(
-                owner_id=self._owner_id,
+                owner_id=self._execution_owner_id(run),
                 name=f"mission-run:{run.run_id}",
                 config=self._mission_config(run),
                 storage=self._storage,
@@ -596,7 +614,8 @@ class _DispatchedMissionRunExecutor:
         )
 
     async def load_existing(self, run: MissionRun) -> Any:
-        reservation = self._context.resources.owner(self._owner_id)
+        self.prepare(run)
+        reservation = self._context.resources.owner(self._execution_owner_id(run))
         try:
             service = reservation.require_bound()
         except RuntimeError:
@@ -610,9 +629,10 @@ class _DispatchedMissionRunExecutor:
         return _require_recovered_submission_matches(recovered, run.submission)
 
     async def run(self, run: MissionRun, mission: Any) -> Any:
+        self.prepare(run)
         return await self._context.resources.dispatcher.apply(
             RunMission(
-                owner_id=self._owner_id,
+                owner_id=self._execution_owner_id(run),
                 name=self._name,
                 config=self._mission_config(run),
                 storage=self._storage,
@@ -664,7 +684,6 @@ def _run_control(
         lifecycle,
         _DispatchedMissionRunExecutor(
             context,
-            owner_id=operation.owner_id,
             name=operation.name,
             config=operation.config,
             storage=operation.storage,

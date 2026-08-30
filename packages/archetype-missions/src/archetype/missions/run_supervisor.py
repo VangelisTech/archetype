@@ -38,6 +38,11 @@ _RUN_MISSION_OPERATION = "run_mission"
 class MissionRunExecutor(Protocol):
     """Ports over the governed SubmitMission and RunMission dispatch path."""
 
+    def prepare(self, run: MissionRun) -> None:
+        """Reserve process ownership before supervised execution can start."""
+
+        ...
+
     async def submit(self, run: MissionRun) -> SubmittedMission: ...
 
     async def load_existing(self, run: MissionRun) -> SubmittedMission | None: ...
@@ -70,6 +75,7 @@ class MissionRunSupervisor:
         existing = self._inflight.get(run.run_id)
         if existing is not None and not existing.done():
             return existing
+        self._executor.prepare(run)
         # Runtime task labels are bounded identifiers without ":"; keep the
         # label spawnable through a real owner reservation.
         task = self._spawn(lambda: self._drive(run.run_id), f"mission-run-{run.run_id}")

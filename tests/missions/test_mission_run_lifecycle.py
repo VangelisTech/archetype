@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
+import archetype.missions._extension as missions_extension
 from archetype.missions.contracts import (
     AgentMissionConfig,
     AgentTask,
@@ -224,6 +226,9 @@ class _FakeExecutor:
         self.result = _result()
         self.submitted = None
 
+    def prepare(self, run):
+        del run
+
     async def submit(self, run):
         self.submits += 1
         if self.submit_gate is not None:
@@ -252,6 +257,106 @@ class _FakeExecutor:
         if self.run_error is not None:
             raise self.run_error
         return self.result
+
+
+class _RuntimeReservation:
+    def __init__(self, owner: str) -> None:
+        self.owner = owner
+        self.bound = None
+
+    def require_bound(self):
+        if self.bound is None:
+            raise RuntimeError(f"runtime owner {self.owner!r} is not bound")
+        return self.bound
+
+
+class _RuntimeDispatcher:
+    def __init__(self) -> None:
+        self.operations = []
+
+    async def apply(self, operation):
+        self.operations.append(operation)
+        return operation
+
+
+class _RecoveredMissionService:
+    def __init__(self, mission: SubmittedMission) -> None:
+        self.mission = mission
+
+    async def recover_submitted(self) -> SubmittedMission:
+        return self.mission
+
+
+class _RuntimeResources:
+    def __init__(self) -> None:
+        self.dispatcher = _RuntimeDispatcher()
+        self.owners = {
+            "mission-control:runs": _RuntimeReservation("mission-control:runs")
+        }
+
+    def owner(self, owner: str):
+        try:
+            return self.owners[owner]
+        except KeyError:
+            raise KeyError(owner) from None
+
+    def reserve_owner(self, owner: str, **_kwargs):
+        reservation = _RuntimeReservation(owner)
+        self.owners[owner] = reservation
+        return reservation
+
+
+@pytest.mark.asyncio
+async def test_dispatched_executor_reserves_one_runtime_owner_per_run(
+    lifecycle: MissionRunLifecycle,
+) -> None:
+    """A second run must never recover the first run's bound MissionService."""
+
+    profile = execution_profile_identity(_config())
+    first = await lifecycle.accept(_request(), profile)
+    second_submission = MissionSubmission(
+        repository="VangelisTech/archetype",
+        branch="agent/run-2",
+        tasks=(_task(),),
+    )
+    second = await lifecycle.accept(
+        _request(idempotency_key="mission-2", submission=second_submission),
+        profile,
+    )
+    resources = _RuntimeResources()
+    resources.owners["mission-control:runs"].bound = _RecoveredMissionService(
+        SubmittedMission(
+            mission_id=1,
+            task_ids=(("implementation", 2),),
+            episode_id="mission-episode-1",
+            repository=first.submission.repository,
+            branch=first.submission.branch,
+            world_id=first.world_id,
+        )
+    )
+    executor = missions_extension._DispatchedMissionRunExecutor(
+        SimpleNamespace(resources=resources),
+        name="mission-control",
+        config=_config(),
+        storage=None,
+    )
+
+    executor.prepare(first)
+    executor.prepare(second)
+
+    first_owner = f"mission-run:{first.run_id}"
+    second_owner = f"mission-run:{second.run_id}"
+    assert first_owner in resources.owners
+    assert second_owner in resources.owners
+    assert first_owner != second_owner
+    assert await executor.load_existing(second) is None
+
+    await executor.submit(first)
+    await executor.submit(second)
+    assert [operation.owner_id for operation in resources.dispatcher.operations] == [
+        first_owner,
+        second_owner,
+    ]
 
 
 def _supervisor(
