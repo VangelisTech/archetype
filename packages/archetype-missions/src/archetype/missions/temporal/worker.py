@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from temporalio.client import Client
 from temporalio.worker import Worker
-from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
+from archetype.activities.temporal import create_temporal_worker
 from archetype.missions.run_supervisor import MissionRunExecutor
 
 from .activities import MissionActivities
@@ -25,7 +25,7 @@ def create_mission_worker(
     """Build a Worker without introducing a second orchestration authority."""
 
     activities = MissionActivities(executor)
-    return Worker(
+    return create_temporal_worker(
         client,
         task_queue=task_queue,
         workflows=[MissionWorkflow],
@@ -34,9 +34,7 @@ def create_mission_worker(
         # only uses the JSON-native temporal contracts, while re-importing the
         # package tree inside the sandbox would execute Daft's UDF registration
         # side effects and violate deterministic-import restrictions.
-        workflow_runner=SandboxedWorkflowRunner(
-            restrictions=SandboxRestrictions.default.with_passthrough_modules("archetype")
-        ),
+        passthrough_modules=("archetype",),
     )
 
 

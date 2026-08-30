@@ -252,6 +252,9 @@ research = [
 sim = [
     { name = "archetype-physical-ai", extra = ["sim"] },
 ]
+temporal = [
+    { name = "temporalio" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -282,24 +285,24 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyiceberg", extras = ["daft", "sql-sqlite"] },
     { name = "pypdf", specifier = ">=6.14.2" },
+    { name = "temporalio", marker = "extra == 'temporal'", specifier = "==1.27.2" },
     { name = "typer", specifier = ">=0.9" },
     { name = "uuid-utils", specifier = ">=0.11.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
     { name = "xxhash", specifier = ">=3.5" },
 ]
-provides-extras = ["missions", "physical-ai", "research", "all", "coding-agent", "sim", "otlp", "logfire"]
+provides-extras = ["temporal", "missions", "physical-ai", "research", "all", "coding-agent", "sim", "otlp", "logfire"]
 
 [[package]]
 name = "archetype-missions"
 version = "0.6.3"
 source = { editable = "packages/archetype-missions" }
 dependencies = [
-    { name = "archetype-ecs" },
+    { name = "archetype-ecs", extra = ["temporal"] },
     { name = "daft" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pydantic" },
-    { name = "temporalio" },
     { name = "uuid-utils" },
 ]
 
@@ -310,13 +313,12 @@ modal = [
 
 [package.metadata]
 requires-dist = [
-    { name = "archetype-ecs", editable = "packages/archetype-ecs" },
+    { name = "archetype-ecs", extras = ["temporal"], editable = "packages/archetype-ecs" },
     { name = "daft", specifier = ">=0.7.19" },
     { name = "fastapi", specifier = ">=0.110" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.5.2" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "temporalio", specifier = "==1.27.2" },
     { name = "uuid-utils", specifier = ">=0.11.0" },
 ]
 provides-extras = ["modal"]

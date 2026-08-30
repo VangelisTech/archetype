@@ -11,9 +11,9 @@ code.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass
+
+from archetype.activities.temporal import durable_workflow_id
 
 MISSION_WORKFLOW_NAME = "archetype.missions.MissionWorkflow"
 MISSION_SUBMIT_ACTIVITY = "archetype.missions.submit"
@@ -24,22 +24,12 @@ MISSION_TASK_QUEUE = "archetype-missions"
 def mission_workflow_id(principal: str, idempotency_key: str) -> str:
     """Derive one stable Workflow ID from the caller's idempotency identity."""
 
-    principal = principal.strip()
-    idempotency_key = idempotency_key.strip()
-    if not principal or not idempotency_key:
-        raise ValueError("mission Workflow identity requires principal and idempotency_key")
-    material = json.dumps(
-        {
-            "idempotency_key": idempotency_key,
-            "kind": "archetype.missions.workflow",
-            "principal": principal,
-            "schema_version": 1,
-        },
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode()
-    return f"mission-{hashlib.sha256(material).hexdigest()}"
+    return durable_workflow_id(
+        "archetype.missions.workflow",
+        principal,
+        idempotency_key,
+        prefix="mission",
+    )
 
 
 @dataclass(frozen=True, slots=True)
