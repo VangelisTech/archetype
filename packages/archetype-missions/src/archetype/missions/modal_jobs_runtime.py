@@ -48,6 +48,7 @@ class ModalMissionJobRuntimeConfig:
     author_function_name: str
     critic_function_name: str
     function_version: int | None = None
+    function_id: str | None = None
     create_if_missing: bool = False
 
     def __post_init__(self) -> None:
@@ -68,6 +69,12 @@ class ModalMissionJobRuntimeConfig:
             or self.function_version < 1
         ):
             raise ValueError("Modal Mission function_version must be a positive integer")
+        if self.function_id is not None and (
+            not isinstance(self.function_id, str)
+            or not self.function_id.startswith("fu-")
+            or len(self.function_id) > 1024
+        ):
+            raise ValueError("Modal Mission function_id is invalid")
 
     def function_name(self, family: ModalMissionFamily) -> str:
         if family == "author":
@@ -90,6 +97,7 @@ class ModalNamedMissionJobRuntime:
         config: ModalMissionJobRuntimeConfig,
         *,
         result_reader: ModalMissionResultReader,
+        functions: Mapping[ModalMissionFamily, object] | None = None,
     ) -> None:
         self._config = config
         self._result_reader = result_reader
@@ -97,7 +105,14 @@ class ModalNamedMissionJobRuntime:
         self._modal: Any | None = None
         self._client: Any | None = None
         self._dictionary: Any | None = None
-        self._functions: dict[ModalMissionFamily, Any] = {}
+        self._functions: dict[ModalMissionFamily, Any] = dict(functions or {})
+        if set(self._functions) - {"author", "critic"}:
+            raise ValueError("Modal Mission prebound Function family is invalid")
+        if self._config.function_id is not None and any(
+            getattr(function, "object_id", None) != self._config.function_id
+            for function in self._functions.values()
+        ):
+            raise ValueError("Modal Mission prebound Function conflicts with its pinned object ID")
 
     async def get(self, key: str) -> object:
         dictionary = await self._get_dictionary()
@@ -204,6 +219,13 @@ class ModalNamedMissionJobRuntime:
                     **kwargs,
                 )
                 await function.hydrate.aio()
+                if (
+                    self._config.function_id is not None
+                    and getattr(function, "object_id", None) != self._config.function_id
+                ):
+                    raise RuntimeError(
+                        "Modal Mission deployed Function conflicts with its pinned object ID"
+                    )
                 self._functions[family] = function
             return self._functions[family]
 

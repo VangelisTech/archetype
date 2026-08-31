@@ -299,6 +299,7 @@ class ModalMissionControllerDeploymentSpec:
         *,
         expected_deployment_digest: str,
         function_version: int | None = None,
+        function_id: str | None = None,
     ) -> ModalMissionControllerAppConfig:
         """Build fixed controller config after server-owned digest validation."""
 
@@ -317,6 +318,7 @@ class ModalMissionControllerDeploymentSpec:
             author_function_name=self.function_name,
             critic_function_name=self.function_name,
             function_version=function_version,
+            function_id=function_id,
             create_if_missing=False,
         )
         namespace = ModalMissionJobNamespace(
@@ -352,7 +354,7 @@ class ModalMissionControllerDeploymentReceipt:
     controller_image_id: str
     app_name: str
     function_name: str
-    function_version: int
+    function_version: int | None
     function_id: str
 
     def __post_init__(self) -> None:
@@ -362,7 +364,7 @@ class ModalMissionControllerDeploymentReceipt:
         ):
             if _DEPLOYMENT_DIGEST.fullmatch(value) is None:
                 raise ValueError(f"Modal Mission receipt {label} must be lowercase sha256")
-        if (
+        if self.function_version is not None and (
             isinstance(self.function_version, bool)
             or not isinstance(self.function_version, int)
             or self.function_version < 1
@@ -654,8 +656,14 @@ class ModalMissionBuiltinJobService:
     by the controller.
     """
 
-    def __init__(self, config: ModalMissionControllerAppConfig) -> None:
+    def __init__(
+        self,
+        config: ModalMissionControllerAppConfig,
+        *,
+        controller: object | None = None,
+    ) -> None:
         self._config = config
+        self._controller = controller
 
     async def start(
         self,
@@ -750,6 +758,11 @@ class ModalMissionBuiltinJobService:
         runtime = ModalNamedMissionJobRuntime(
             self._config.runtime,
             result_reader=read_result,
+            functions=(
+                None
+                if self._controller is None
+                else {"author": self._controller, "critic": self._controller}
+            ),
         )
         return ModalMissionJobClient(self._config.namespace, runtime)
 
@@ -825,49 +838,57 @@ async def provision_modal_mission_controller_state(
 async def verify_modal_mission_controller_deployment(
     config: ModalMissionControllerAppConfig,
     receipt: ModalMissionControllerDeploymentReceipt,
+    *,
+    function: object | None = None,
 ) -> str:
-    """Hydrate the exact version-pinned Function and verify its object ID."""
+    """Resolve once, then verify the receipt-pinned Function object ID."""
 
-    observed = await _hydrated_modal_mission_controller_function_id(
-        config,
-        function_version=receipt.function_version,
-    )
+    if function is None:
+        function = await _hydrated_modal_mission_controller_function(
+            config,
+            function_version=receipt.function_version,
+        )
+    observed = getattr(function, "object_id", None)
     if observed != receipt.function_id:
         raise RuntimeError("Modal Mission deployment receipt names another Function object")
     return receipt.function_id
 
 
-async def _hydrated_modal_mission_controller_function_id(
+async def _hydrated_modal_mission_controller_function(
     config: ModalMissionControllerAppConfig,
     *,
-    function_version: int,
-) -> str:
-    """Return the exact hydrated Function identity for one deployed version."""
+    function_version: int | None,
+) -> Any:
+    """Hydrate one version or active Function exactly once for caller-owned use."""
 
     modal = _load_modal()
     workspace = modal.Workspace.from_context()
     await workspace.hydrate.aio()
     if str(workspace.name or "") != config.runtime.workspace_name:
         raise RuntimeError("Modal workspace does not match the Mission controller namespace")
+    lookup: dict[str, object] = {
+        "environment_name": config.runtime.environment_name,
+        "client": workspace.client,
+    }
+    if function_version is not None:
+        lookup["version"] = function_version
     function = modal.Function.from_name(
         config.runtime.app_name,
         config.function_name,
-        version=function_version,
-        environment_name=config.runtime.environment_name,
-        client=workspace.client,
+        **lookup,
     )
     await function.hydrate.aio()
     observed = getattr(function, "object_id", None)
     if not isinstance(observed, str) or not observed.startswith("fu-"):
         raise RuntimeError("Modal Mission deployed Function has no durable object identity")
-    return observed
+    return function
 
 
 async def create_modal_mission_controller_deployment_receipt(
     spec: ModalMissionControllerDeploymentSpec,
     *,
     expected_deployment_digest: str,
-    function_version: int,
+    function_version: int | None,
 ) -> ModalMissionControllerDeploymentReceipt:
     """Finalize one post-deploy receipt after state and Function hydration."""
 
@@ -876,10 +897,11 @@ async def create_modal_mission_controller_deployment_receipt(
         function_version=function_version,
     )
     await provision_modal_mission_controller_state(config)
-    function_id = await _hydrated_modal_mission_controller_function_id(
+    function = await _hydrated_modal_mission_controller_function(
         config,
         function_version=function_version,
     )
+    function_id = function.object_id
     return ModalMissionControllerDeploymentReceipt(
         deployment_digest=spec.deployment_digest,
         controller_artifact_digest=spec.controller_artifact_digest,
@@ -1067,10 +1089,19 @@ async def prepare_modal_mission_job_worker(
     config = spec.app_config(
         expected_deployment_digest=expected_deployment_digest,
         function_version=receipt.function_version,
+        function_id=receipt.function_id,
     )
     provisioned = await provision_modal_mission_controller_state(config)
-    await verify_modal_mission_controller_deployment(config, receipt)
-    service = ModalMissionBuiltinJobService(config)
+    controller = await _hydrated_modal_mission_controller_function(
+        config,
+        function_version=receipt.function_version,
+    )
+    await verify_modal_mission_controller_deployment(
+        config,
+        receipt,
+        function=controller,
+    )
+    service = ModalMissionBuiltinJobService(config, controller=controller)
     worker = create_mission_modal_job_worker(
         client,
         service,

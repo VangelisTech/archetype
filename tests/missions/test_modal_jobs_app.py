@@ -84,6 +84,9 @@ class _FakeModalState:
     )
     decorator_kwargs: dict[str, object] = field(default_factory=dict)
     app_name: str = ""
+    function_lookups: list[tuple[tuple[object, ...], dict[str, object]]] = field(
+        default_factory=list
+    )
 
 
 def _fake_modal(state: _FakeModalState) -> object:
@@ -144,11 +147,7 @@ def _fake_modal(state: _FakeModalState) -> object:
         @staticmethod
         def from_name(*args: object, **kwargs: object) -> object:
             state.events.append(f"Function.from_name:{args[0]}:{args[1]}")
-            assert kwargs == {
-                "version": 17,
-                "environment_name": "proof",
-                "client": state.client,
-            }
+            state.function_lookups.append((args, dict(kwargs)))
             function = SimpleNamespace(object_id=state.function_id)
 
             async def hydrate() -> None:
@@ -731,8 +730,10 @@ async def test_builtin_host_service_collects_exact_result_without_reexecution(
             config: ModalMissionJobRuntimeConfig,
             *,
             result_reader: Callable[[ModalMissionJobRef], Awaitable[bytes | None]],
+            functions: object | None = None,
         ) -> None:
             assert not config.create_if_missing
+            assert functions is None
             self._result_reader = result_reader
 
         async def get(self, key: str) -> object:
@@ -858,6 +859,16 @@ async def test_deployment_receipt_hydrates_exact_version_and_function_id(
     observed = await verify_modal_mission_controller_deployment(config, receipt)
 
     assert observed == state.function_id
+    assert state.function_lookups == [
+        (
+            ("mission-controller-proof", "mission-controller"),
+            {
+                "version": 17,
+                "environment_name": "proof",
+                "client": state.client,
+            },
+        )
+    ]
     assert state.events == [
         "Workspace.from_context",
         "workspace.hydrate",
@@ -868,6 +879,38 @@ async def test_deployment_receipt_hydrates_exact_version_and_function_id(
     state.function_id = "fu-another-controller"
     with pytest.raises(RuntimeError, match="another Function"):
         await verify_modal_mission_controller_deployment(config, receipt)
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_receipt_can_pin_active_function_id_without_version_retention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _FakeModalState()
+    monkeypatch.setitem(sys.modules, "modal", _fake_modal(state))
+    spec = _deployment_spec(
+        environment_name="proof",
+        app_name="mission-controller-proof",
+        job_dict_name="mission-job-state",
+        result_dict_name="mission-results",
+    )
+
+    receipt = await create_modal_mission_controller_deployment_receipt(
+        spec,
+        expected_deployment_digest=spec.deployment_digest,
+        function_version=None,
+    )
+
+    assert receipt == _deployment_receipt(
+        spec,
+        function_version=None,
+        function_id=state.function_id,
+    )
+    assert state.function_lookups == [
+        (
+            ("mission-controller-proof", "mission-controller"),
+            {"environment_name": "proof", "client": state.client},
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -946,11 +989,13 @@ def test_production_config_rejects_server_digest_drift_and_pins_runtime() -> Non
     config = spec.app_config(
         expected_deployment_digest=spec.deployment_digest,
         function_version=17,
+        function_id="fu-mission-controller-v17",
     )
 
     assert config.namespace.deployment_digest == spec.deployment_digest
     assert config.namespace.image_id == spec.sandbox_image_id
     assert config.runtime.function_version == 17
+    assert config.runtime.function_id == "fu-mission-controller-v17"
     assert config.runtime.author_function_name == spec.function_name
     assert config.runtime.critic_function_name == spec.function_name
     assert not config.runtime.create_if_missing
@@ -1025,6 +1070,7 @@ async def test_prepared_worker_provisions_and_verifies_before_composition(
     spec = _deployment_spec()
     receipt = _deployment_receipt(spec)
     worker = object()
+    controller = SimpleNamespace(object_id=receipt.function_id)
     values = cast(Any, object())
     temporal_client = cast(Any, object())
 
@@ -1036,17 +1082,39 @@ async def test_prepared_worker_provisions_and_verifies_before_composition(
     async def verify(
         config: ModalMissionControllerAppConfig,
         received: ModalMissionControllerDeploymentReceipt,
+        *,
+        function: object | None = None,
     ) -> str:
-        assert events == ["provision-dicts"]
+        assert events == ["provision-dicts", "resolve-function"]
         assert config.runtime.function_version == receipt.function_version
+        assert config.runtime.function_id == receipt.function_id
         assert received is receipt
+        assert function is controller
         events.append("verify-function")
         return receipt.function_id
 
     class Service:
-        def __init__(self, config: ModalMissionControllerAppConfig) -> None:
+        def __init__(
+            self,
+            config: ModalMissionControllerAppConfig,
+            *,
+            controller: object | None = None,
+        ) -> None:
             assert config.runtime.function_version == receipt.function_version
+            assert config.runtime.function_id == receipt.function_id
+            assert controller is not None
             events.append("build-service")
+
+    async def resolve(
+        config: ModalMissionControllerAppConfig,
+        *,
+        function_version: int | None,
+    ) -> object:
+        assert events == ["provision-dicts"]
+        assert config.runtime.function_id == receipt.function_id
+        assert function_version == receipt.function_version
+        events.append("resolve-function")
+        return controller
 
     def build_worker(
         client: object,
@@ -1072,6 +1140,11 @@ async def test_prepared_worker_provisions_and_verifies_before_composition(
         "verify_modal_mission_controller_deployment",
         verify,
     )
+    monkeypatch.setattr(
+        modal_jobs_app,
+        "_hydrated_modal_mission_controller_function",
+        resolve,
+    )
     monkeypatch.setattr(modal_jobs_app, "ModalMissionBuiltinJobService", Service)
     monkeypatch.setattr(modal_jobs_app, "create_mission_modal_job_worker", build_worker)
 
@@ -1085,6 +1158,7 @@ async def test_prepared_worker_provisions_and_verifies_before_composition(
 
     assert events == [
         "provision-dicts",
+        "resolve-function",
         "verify-function",
         "build-service",
         "build-worker",

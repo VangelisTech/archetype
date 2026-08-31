@@ -37,6 +37,7 @@ class _FakeModalState:
     result: object = field(default_factory=lambda: {"status": "complete"})
     result_error: BaseException | None = None
     next_call: int = 0
+    function_id: str = "fu-mission-controller"
 
 
 class _FakeCall:
@@ -98,7 +99,7 @@ def _fake_modal(state: _FakeModalState) -> object:
         @staticmethod
         def from_name(*args: object, **kwargs: object) -> object:
             state.calls.append(("Function.from_name", args, kwargs))
-            function = SimpleNamespace()
+            function = SimpleNamespace(object_id=state.function_id)
 
             async def hydrate() -> None:
                 state.calls.append(("function.hydrate", args, {}))
@@ -126,7 +127,11 @@ def _fake_modal(state: _FakeModalState) -> object:
     )
 
 
-def _config(*, function_version: int | None = None) -> ModalMissionJobRuntimeConfig:
+def _config(
+    *,
+    function_version: int | None = None,
+    function_id: str | None = None,
+) -> ModalMissionJobRuntimeConfig:
     return ModalMissionJobRuntimeConfig(
         workspace_name="mission-workspace",
         environment_name="production",
@@ -135,6 +140,7 @@ def _config(*, function_version: int | None = None) -> ModalMissionJobRuntimeCon
         author_function_name="mission-author-controller",
         critic_function_name="mission-critic-controller",
         function_version=function_version,
+        function_id=function_id,
         create_if_missing=True,
     )
 
@@ -275,6 +281,59 @@ async def test_runtime_looks_up_the_server_pinned_function_version(
 
 
 @pytest.mark.asyncio
+async def test_runtime_fails_closed_when_active_function_id_drifted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _FakeModalState(function_id="fu-active-controller")
+    monkeypatch.setitem(sys.modules, "modal", _fake_modal(state))
+
+    async def result_reader(_ref: ModalMissionJobRef) -> bytes | None:
+        return None
+
+    runtime = ModalNamedMissionJobRuntime(
+        _config(function_id="fu-receipt-controller"),
+        result_reader=result_reader,
+    )
+
+    with pytest.raises(RuntimeError, match="pinned object ID"):
+        await runtime.spawn(
+            family="author",
+            operation_id="mission:author:dispatch-drifted",
+            request_bytes=b"author-request",
+            namespace_digest="a" * 64,
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_reuses_prebound_receipt_function_without_name_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _FakeModalState(function_id="fu-receipt-controller")
+    monkeypatch.setitem(sys.modules, "modal", _fake_modal(state))
+
+    async def result_reader(_ref: ModalMissionJobRef) -> bytes | None:
+        return None
+
+    prebound = _fake_modal(state).Function.from_name("ignored", "ignored")
+    state.calls.clear()
+    runtime = ModalNamedMissionJobRuntime(
+        _config(function_id=state.function_id),
+        result_reader=result_reader,
+        functions={"author": prebound, "critic": prebound},
+    )
+
+    call = await runtime.spawn(
+        family="author",
+        operation_id="mission:author:dispatch-prebound",
+        request_bytes=b"author-request",
+        namespace_digest="a" * 64,
+    )
+
+    assert runtime.call_id(call) == "fc-1"
+    assert not any(event[0] == "Function.from_name" for event in state.calls)
+
+
+@pytest.mark.asyncio
 async def test_runtime_translates_only_nonblocking_timeout_to_still_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -336,3 +395,5 @@ def test_runtime_config_rejects_invalid_modal_names_and_non_boolean_creation() -
         )
     with pytest.raises(ValueError, match="function_version"):
         _config(function_version=0)
+    with pytest.raises(ValueError, match="function_id"):
+        _config(function_id="mutable-name")
