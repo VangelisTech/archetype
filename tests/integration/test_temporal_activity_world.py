@@ -210,7 +210,7 @@ class _DoubleActivities:
             command.activity_id,
             ActivityExecutionIdentity(
                 provider="temporal",
-                operation_id=command.workflow_id,
+                operation_id=f"{command.workflow_id}/{command.activity_id}",
             ),
             result,
         )
@@ -569,7 +569,11 @@ async def test_trivial_temporal_activity_crosses_two_real_world_receipts(
                 source=source,
                 input_ref="inline://counter/21",
                 input_digest=input_digest,
-            )
+            ),
+            ActivityExecutionIdentity(
+                provider="temporal",
+                operation_id=f"{workflow_id}/{activity_id}",
+            ),
         )
         assert await coordinator.has_unsettled(str(info.world_id))
         with pytest.raises(WorldHasUnsettledWorkError):
@@ -611,7 +615,7 @@ async def test_trivial_temporal_activity_crosses_two_real_world_receipts(
         assert pending[0].result_fence is None
         inventory = inspect_sqlite_activity_catalog(catalog_path)
         assert inventory.attempt_count == 0
-        assert inventory.provider_operation_count == 1
+        assert inventory.provider_operation_count == 0
         projection["activity_id"] = activity_id
         projection["result_digest"] = result.result_digest
 

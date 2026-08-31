@@ -18,7 +18,13 @@ from archetype.storage.activity_catalog.records import (
 class ActivityCatalog(Protocol):
     """Physical activity authority; intentionally separate from ControlCatalog."""
 
-    async def admit_activity(self, admission: ActivityAdmissionRecord) -> ActivityRecord: ...
+    async def admit_activity(
+        self,
+        admission: ActivityAdmissionRecord,
+        *,
+        execution_provider: str | None = None,
+        execution_operation_id: str | None = None,
+    ) -> ActivityRecord: ...
 
     async def get_activity(
         self,

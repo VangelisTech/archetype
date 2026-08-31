@@ -73,6 +73,14 @@ _MIGRATION_TABLE_COLUMNS = {
         "activity_id",
         "bound_at",
     ),
+    "activity_executions": (
+        "source_world_id",
+        "kind",
+        "activity_id",
+        "provider",
+        "operation_id",
+        "bound_at",
+    ),
     "activity_attempts": (
         "source_world_id",
         "kind",
@@ -130,6 +138,18 @@ CREATE TABLE IF NOT EXISTS activities (
 CREATE INDEX IF NOT EXISTS activities_unobserved_result_idx
     ON activities (source_world_id, kind, observed_at, sequence)
     WHERE result_ref IS NOT NULL;
+CREATE TABLE IF NOT EXISTS activity_executions (
+    source_world_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    activity_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    bound_at TEXT NOT NULL,
+    PRIMARY KEY (source_world_id, kind, activity_id),
+    UNIQUE (provider, operation_id),
+    FOREIGN KEY (source_world_id, kind, activity_id)
+        REFERENCES activities (source_world_id, kind, activity_id)
+);
 CREATE TABLE IF NOT EXISTS activity_provider_operations (
     provider TEXT NOT NULL,
     provider_operation_id TEXT NOT NULL,
@@ -315,7 +335,13 @@ class SqliteActivityCatalog(HardenedSqliteCatalog):
         super().__init__(path, busy_timeout_ms=busy_timeout_ms)
         self._now_seconds = now_seconds
 
-    async def admit_activity(self, admission: ActivityAdmissionRecord) -> ActivityRecord:
+    async def admit_activity(
+        self,
+        admission: ActivityAdmissionRecord,
+        *,
+        execution_provider: str | None = None,
+        execution_operation_id: str | None = None,
+    ) -> ActivityRecord:
         """Idempotently admit immutable activity content."""
 
         _require_bounded_text(
@@ -323,6 +349,12 @@ class SqliteActivityCatalog(HardenedSqliteCatalog):
             "activity source visibility token",
             512,
         )
+        if (execution_provider is None) != (execution_operation_id is None):
+            raise ValueError("activity execution identity must be complete")
+        if execution_provider is not None:
+            _require_bounded_text(execution_provider, "activity execution provider", 255)
+            assert execution_operation_id is not None
+            _require_bounded_text(execution_operation_id, "activity execution operation_id", 1024)
 
         def _admit() -> ActivityRecord:
             conn = self._connect_sync()
@@ -358,7 +390,18 @@ class SqliteActivityCatalog(HardenedSqliteCatalog):
                             f"activity ({admission.source_world_id}, {admission.kind}, "
                             f"{admission.activity_id}) already has different immutable content"
                         )
-                    return existing
+                    _reserve_execution_identity(
+                        conn,
+                        (admission.source_world_id, admission.kind, admission.activity_id),
+                        provider=execution_provider,
+                        operation_id=execution_operation_id,
+                        allow_unbound=execution_provider is None,
+                    )
+                    refreshed = _select_activity(
+                        conn, admission.source_world_id, admission.kind, admission.activity_id
+                    )
+                    assert refreshed is not None
+                    return _activity_from_row(refreshed)
                 conn.execute(
                     "INSERT INTO activities "
                     "(source_world_id, activity_id, kind, source_run_id, source_tick, "
@@ -376,6 +419,19 @@ class SqliteActivityCatalog(HardenedSqliteCatalog):
                         now,
                         now,
                     ),
+                )
+                inserted = _select_activity(
+                    conn,
+                    admission.source_world_id,
+                    admission.kind,
+                    admission.activity_id,
+                )
+                _reserve_execution_identity(
+                    conn,
+                    (admission.source_world_id, admission.kind, admission.activity_id),
+                    provider=execution_provider,
+                    operation_id=execution_operation_id,
+                    allow_unbound=execution_provider is None,
                 )
                 inserted = _select_activity(
                     conn,
@@ -430,6 +486,10 @@ class SqliteActivityCatalog(HardenedSqliteCatalog):
                 if activity_row is None:
                     raise ActivityCatalogNotFoundError((world_id, kind, activity_id))
                 activity = _activity_from_row(activity_row)
+                if activity.execution_provider is not None:
+                    raise ActivityCatalogClaimError(
+                        "activity is routed to durable orchestration and cannot be claimed"
+                    )
                 latest = _latest_attempt(conn, world_id, kind, activity_id)
 
                 if activity.result_ref is not None:
@@ -982,14 +1042,18 @@ class SqliteActivityCatalog(HardenedSqliteCatalog):
                         "activity already entered legacy claim-based execution"
                     )
                 bound = conn.execute(
-                    "SELECT provider, provider_operation_id FROM activity_provider_operations "
+                    "SELECT provider, operation_id FROM activity_executions "
                     "WHERE source_world_id=? AND kind=? AND activity_id=?",
                     identity,
                 ).fetchall()
                 requested_operation = (provider, provider_operation_id)
+                if not bound:
+                    raise ActivityCatalogConflictError(
+                        "activity has no prebound orchestration execution identity"
+                    )
                 if bound and (
                     len(bound) != 1
-                    or (str(bound[0]["provider"]), str(bound[0]["provider_operation_id"]))
+                    or (str(bound[0]["provider"]), str(bound[0]["operation_id"]))
                     != requested_operation
                 ):
                     raise ActivityCatalogConflictError(
@@ -1010,22 +1074,9 @@ class SqliteActivityCatalog(HardenedSqliteCatalog):
                         raise ActivityCatalogConflictError(
                             "activity already has a different durable result"
                         )
-                    _reserve_provider_identity(
-                        conn,
-                        identity,
-                        provider=provider,
-                        operation_id=provider_operation_id,
-                    )
                     return stored
 
                 now = _utcnow()
-                _reserve_provider_identity(
-                    conn,
-                    identity,
-                    provider=provider,
-                    operation_id=provider_operation_id,
-                    bound_at=now,
-                )
                 conn.execute(
                     "UPDATE activities SET result_ref=?, result_digest=?, "
                     "result_media_type=?, result_size_bytes=?, result_attempt=NULL, "
@@ -1179,7 +1230,10 @@ class SqliteActivityCatalog(HardenedSqliteCatalog):
             rows = (
                 self._connect_sync()
                 .execute(
-                    "SELECT * FROM activities WHERE "
+                    "SELECT activities.*, activity_executions.provider AS execution_provider, "
+                    "activity_executions.operation_id AS execution_operation_id "
+                    "FROM activities LEFT JOIN activity_executions USING "
+                    "(source_world_id, kind, activity_id) WHERE "
                     + " AND ".join(conditions)
                     + " ORDER BY sequence LIMIT ?",
                     parameters,
@@ -1292,7 +1346,11 @@ def _select_activity(
     activity_id: str,
 ) -> sqlite3.Row | None:
     return conn.execute(
-        "SELECT * FROM activities WHERE source_world_id=? AND kind=? AND activity_id=?",
+        "SELECT activities.*, activity_executions.provider AS execution_provider, "
+        "activity_executions.operation_id AS execution_operation_id "
+        "FROM activities LEFT JOIN activity_executions USING "
+        "(source_world_id, kind, activity_id) "
+        "WHERE source_world_id=? AND kind=? AND activity_id=?",
         (world_id, kind, activity_id),
     ).fetchone()
 
@@ -1467,6 +1525,14 @@ def _activity_from_row(row: sqlite3.Row) -> ActivityRecord:
         ),
         input_ref=str(row["input_ref"]),
         input_digest=str(row["input_digest"]),
+        execution_provider=(
+            str(row["execution_provider"]) if row["execution_provider"] is not None else None
+        ),
+        execution_operation_id=(
+            str(row["execution_operation_id"])
+            if row["execution_operation_id"] is not None
+            else None
+        ),
         result_ref=str(row["result_ref"]) if row["result_ref"] is not None else None,
         result_digest=(str(row["result_digest"]) if row["result_digest"] is not None else None),
         result_media_type=(
@@ -1564,6 +1630,55 @@ def _reserve_provider_identity(
     if bound_identity != identity:
         raise ActivityCatalogConflictError(
             "provider operation is already bound to another activity"
+        )
+
+
+def _reserve_execution_identity(
+    conn: sqlite3.Connection,
+    identity: tuple[str, str, str],
+    *,
+    provider: str | None,
+    operation_id: str | None,
+    allow_unbound: bool,
+) -> None:
+    """Atomically bind the durable orchestrator route at admission."""
+
+    row = conn.execute(
+        "SELECT provider, operation_id FROM activity_executions "
+        "WHERE source_world_id=? AND kind=? AND activity_id=?",
+        identity,
+    ).fetchone()
+    if provider is None or operation_id is None:
+        if row is not None and allow_unbound:
+            raise ActivityCatalogConflictError(
+                "activity already has a durable orchestration execution identity"
+            )
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO activity_executions "
+        "(source_world_id, kind, activity_id, provider, operation_id, bound_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (*identity, provider, operation_id, _utcnow()),
+    )
+    row = conn.execute(
+        "SELECT source_world_id, kind, activity_id, provider, operation_id "
+        "FROM activity_executions WHERE provider=? AND operation_id=?",
+        (provider, operation_id),
+    ).fetchone()
+    if row is None:
+        raise ActivityCatalogConflictError(
+            "orchestration execution identity is already bound to another activity"
+        )
+    stored = (
+        str(row["source_world_id"]),
+        str(row["kind"]),
+        str(row["activity_id"]),
+        str(row["provider"]),
+        str(row["operation_id"]),
+    )
+    if stored != (*identity, provider, operation_id):
+        raise ActivityCatalogConflictError(
+            "orchestration execution identity is already bound to another activity"
         )
 
 

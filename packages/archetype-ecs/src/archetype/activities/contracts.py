@@ -173,6 +173,7 @@ class ActivitySnapshot:
     """
 
     admission: ActivityAdmission
+    execution: ActivityExecutionIdentity | None = None
     result: ActivityResultRef | None = None
     settlement: ActivitySettlement | None = None
     result_attempt: int | None = None
@@ -323,6 +324,7 @@ __all__ = [
     "ActivityClaim",
     "ActivityClaimError",
     "ActivityConflictError",
+    "ActivityExecutionIdentity",
     "ActivityNotFoundError",
     "ActivityResultRef",
     "ActivityRetryGuard",

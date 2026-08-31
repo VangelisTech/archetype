@@ -45,6 +45,8 @@ class ActivityRecord:
     source_visibility_token: str | None
     input_ref: str
     input_digest: str
+    execution_provider: str | None
+    execution_operation_id: str | None
     result_ref: str | None
     result_digest: str | None
     result_media_type: str | None

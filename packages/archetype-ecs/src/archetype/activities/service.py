@@ -43,9 +43,17 @@ class ActivityCoordinator:
     def __init__(self, catalog: ActivityCatalog) -> None:
         self._catalog = catalog
 
-    async def admit(self, admission: ActivityAdmission) -> ActivitySnapshot:
+    async def admit(
+        self,
+        admission: ActivityAdmission,
+        execution: ActivityExecutionIdentity | None = None,
+    ) -> ActivitySnapshot:
         record = await _translate_catalog_errors(
-            self._catalog.admit_activity(_admission_record(admission))
+            self._catalog.admit_activity(
+                _admission_record(admission),
+                execution_provider=execution.provider if execution is not None else None,
+                execution_operation_id=(execution.operation_id if execution is not None else None),
+            )
         )
         return _snapshot(record)
 
@@ -364,6 +372,12 @@ def _activity_record(snapshot: ActivitySnapshot) -> ActivityRecord:
         source_visibility_token=admission.source.visibility_token,
         input_ref=admission.input_ref,
         input_digest=admission.input_digest,
+        execution_provider=(
+            snapshot.execution.provider if snapshot.execution is not None else None
+        ),
+        execution_operation_id=(
+            snapshot.execution.operation_id if snapshot.execution is not None else None
+        ),
         result_ref=result.ref if result is not None else None,
         result_digest=result.digest if result is not None else None,
         result_media_type=result.media_type if result is not None else None,
@@ -481,6 +495,14 @@ def _snapshot(record: ActivityRecord) -> ActivitySnapshot:
         )
     return ActivitySnapshot(
         admission=admission,
+        execution=(
+            ActivityExecutionIdentity(
+                provider=record.execution_provider,
+                operation_id=record.execution_operation_id,
+            )
+            if record.execution_provider is not None and record.execution_operation_id is not None
+            else None
+        ),
         result=result,
         settlement=settlement,
         result_attempt=record.result_attempt,
