@@ -166,3 +166,105 @@ Every phase must include:
 4. Cut over generic Activity execution mechanics.
 5. Run the Modal reattachment spike before enabling retries for real Missions.
 
+## Mission durable-job behavior checklist
+
+Use these scenarios as executable behavior contracts.  `local` scenarios use
+deterministic provider doubles, `process` scenarios kill a real worker process,
+and `external` scenarios use paid Modal/Git/R2 infrastructure.
+
+### Already proven
+
+- [x] **Temporal admission excludes legacy ownership** (`local`): Given an
+  Activity admitted with an immutable Temporal execution identity, when a
+  legacy worker claims it, then the claim is rejected before any attempt or
+  lease is created.
+- [x] **Exact admission replay is idempotent** (`local`): Given a Temporal
+  admission, when the exact admission is repeated, then it returns the same
+  execution identity; a missing or conflicting identity fails closed.
+- [x] **Claim-free result settlement** (`local`): Given a Temporal-owned
+  Activity result, when it is recorded and later observed by a committed tick,
+  then it settles exactly once with zero legacy attempts.
+- [x] **Worker replacement preserves a world** (`process`): Given a fork
+  advancing toward an absolute tick, when its owner process dies, then a new
+  worker resumes the same world/run without duplicated ticks.
+- [x] **Durable Modal call reattachment** (`local`): Given a persisted call ID,
+  when the first runtime disappears, then a replacement attaches to that exact
+  call and does not spawn another.
+- [x] **Concurrent callers converge** (`local`): Given two callers for one
+  provider operation, when both observe the durable call record, then they
+  converge on one call and one first result.
+- [x] **Exact-call cancellation** (`local`): Given a durable call ID, when
+  cancellation is requested, then only that call is cancelled.
+- [x] **Ambiguous cancellation fails closed** (`local`): Given a start marker
+  without a durable call ID, when cancellation is requested, then no resource
+  is cancelled by mutable name.
+
+### Contract tests to write next
+
+- [ ] **Canonical author request** (`local`): Given an author request, when it
+  is encoded and decoded, then its bytes are canonical, bounded to 1 MiB, and
+  bind the active redaction policy.
+- [ ] **Recovered author result is revalidated** (`local`): Given a durable
+  author result, when another process decodes it, then a mismatched policy or
+  newly unsafe text is rejected.
+- [ ] **Start is the only spawning operation** (`local`): Given an existing
+  start or call record, when `poll`, `collect`, or `cleanup` runs, then none can
+  spawn provider work.
+- [ ] **Marker before spawn is non-replayable** (`local`): Given a permanent
+  marker but no provider call evidence, when start is retried, then it returns
+  `Unknown` and performs zero additional spawns.
+- [ ] **Remote call self-registration closes response loss** (`local`): Given
+  Modal accepted a spawn before the host stored its ID, when the remote
+  controller self-registers, then a replacement attaches to that exact ID.
+- [ ] **Duplicate remote calls cannot cross the effect boundary** (`local`):
+  Given two accidentally spawned controller calls, when both register, then
+  only the call matching the immutable record may create sandboxes or touch
+  Git.
+- [ ] **Poll is result-first** (`local`): Given a first-result record and a
+  missing, expired, or failed Function output, when polled, then the job is
+  `Ready` from the durable result.
+- [ ] **Terminal call without result is Unknown** (`local`): Given a remote
+  exception and no first result, when polled, then the job becomes `Unknown`
+  and is never automatically restarted.
+- [ ] **Collect is read-only and exact** (`local`): Given a ready job, when
+  collected repeatedly, then it returns the same typed/redacted value and
+  performs no execution or cleanup.
+- [ ] **Partial sandbox creation is recoverable** (`local`): Given durable
+  resource intent and only the auth or mission sandbox exists, when cleanup
+  runs, then it removes only the exact recorded generation.
+- [ ] **Cleanup is idempotent and preserves evidence** (`local`): Given a
+  completed or cancelled job, when cleanup is repeated, then exact resources
+  are absent and markers, call records, results, and audit evidence remain.
+- [ ] **Identity mismatch touches nothing** (`local`): Given a wrong request,
+  family, namespace, deployment, policy, call ID, sandbox ID, role, or cohort,
+  when any operation runs, then it fails closed without effects.
+
+### Process integration tests
+
+- [ ] **Temporal worker dies during provider execution** (`process`): Given one
+  running durable Mission job, when the Activity worker is hard-killed, then a
+  fresh process polls the same call ID without another spawn.
+- [ ] **Result survives worker death before ECS settlement** (`process`): Given
+  a published provider result, when the worker dies before observation, then a
+  replacement collects and settles the exact result once.
+- [ ] **Cancellation survives worker replacement** (`process`): Given a running
+  call and exact resource records, when the cancelling worker dies, then a
+  replacement completes exact cancellation and cleanup.
+- [ ] **Projector crash reuses the deterministic Workflow** (`process`): Given
+  committed admission but a crash before Workflow-start acknowledgement, when
+  projection repeats, then it uses the existing Workflow and request digest.
+
+### Paid external release gates
+
+- [ ] **Real Modal reattachment** (`external`): Given a deployed controller
+  Function and running coding job, when the Temporal worker is hard-killed,
+  then a replacement reconstructs the same `FunctionCall.object_id`; exactly
+  one Modal call and one coding execution occur.
+- [ ] **Git push without result never duplicates publication** (`external`):
+  Given Git publication succeeds but durable result publication is interrupted,
+  when recovery runs, then either the original result appears or the Mission is
+  `Unknown`; there is exactly one push and no respawn.
+- [ ] **Mermaid Mission dogfood** (`external`): Given the Mermaid repair
+  Mission, when one worker is replaced during execution, then it produces one
+  branch, one authorized pull request, one first result, exact cleanup, and an
+  exactly settled ECS observation.
