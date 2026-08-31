@@ -80,7 +80,11 @@ class MissionModalJobService(Protocol):
 class MissionModalJobValueStore(Protocol):
     """Family-owned request/result values outside Temporal history."""
 
-    async def get_request(self, ref: MissionJobValueRef) -> bytes: ...
+    async def get_request(
+        self,
+        family: MissionModalJobFamily,
+        ref: MissionJobValueRef,
+    ) -> bytes: ...
 
     async def put_result(
         self,
@@ -180,7 +184,7 @@ class MissionModalJobActivities:
 
     async def _request_bytes(self, command: MissionModalJobWorkflowInput) -> bytes:
         _validate_value_ref(command.request)
-        request_bytes = await self._values.get_request(command.request)
+        request_bytes = await self._values.get_request(command.family, command.request)
         if type(request_bytes) is not bytes:
             raise TypeError("Mission request store returned a non-bytes value")
         if len(request_bytes) != command.request.size_bytes:

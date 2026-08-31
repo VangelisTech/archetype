@@ -628,9 +628,14 @@ class _SqliteMissionJobValues:
         connection.execute("PRAGMA busy_timeout=5000")
         return connection
 
-    async def get_request(self, ref: MissionJobValueRef) -> bytes:
+    async def get_request(
+        self,
+        family: Literal["author", "critic"],
+        ref: MissionJobValueRef,
+    ) -> bytes:
         if (
-            ref.digest != _REQUEST_DIGEST
+            family != _FAMILY
+            or ref.digest != _REQUEST_DIGEST
             or ref.size_bytes != len(_REQUEST_BYTES)
             or ref.ref != f"sqlite-value://mission-requests/{_REQUEST_DIGEST}"
         ):

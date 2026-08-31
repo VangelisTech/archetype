@@ -25,7 +25,8 @@ from archetype.missions.author_activity import MissionAuthorRedactor
 from archetype.missions.coding_agents.contracts import TaskDispatchRequest
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
-_REF_PREFIX = "mission-author+json:sha256:"
+AUTHOR_ACTIVITY_VALUE_REF_PREFIX = "mission-author+json:sha256:"
+_REF_PREFIX = AUTHOR_ACTIVITY_VALUE_REF_PREFIX
 
 
 class LocalMissionAuthorValueStore:
@@ -55,6 +56,13 @@ class LocalMissionAuthorValueStore:
         encoded = await asyncio.to_thread(self._read_encoded, value, "request")
         return self._codec.decode_request(encoded)
 
+    async def get_encoded_request(self, value: AuthorActivityRequestRef) -> bytes:
+        """Read exact canonical request bytes for provider orchestration."""
+
+        encoded = await asyncio.to_thread(self._read_encoded, value, "request")
+        self._codec.decode_request(encoded)
+        return encoded
+
     async def put_result(
         self,
         observation: AuthorExecutionObservation,
@@ -71,6 +79,22 @@ class LocalMissionAuthorValueStore:
     ) -> DurableAuthorExecutionObservation:
         encoded = await asyncio.to_thread(self._read_encoded, value, "result")
         return self._codec.decode_observation(encoded)
+
+    async def put_encoded_result(
+        self,
+        encoded: bytes,
+        *,
+        digest: str,
+    ) -> AuthorActivityResultRef:
+        """Revalidate and persist one controller-produced canonical result."""
+
+        if hashlib.sha256(encoded).hexdigest() != digest:
+            raise ValueError("author encoded result does not match its provider digest")
+        self._codec.decode_observation(encoded)
+        value = await asyncio.to_thread(self._put_encoded, "result", encoded)
+        if not isinstance(value, AuthorActivityResultRef):
+            raise AssertionError("encoded result persistence returned a request reference")
+        return value
 
     def _put_result(
         self,
@@ -191,4 +215,4 @@ class LocalMissionAuthorValueStore:
         return self._root / digest[:2] / f"{digest}.json"
 
 
-__all__ = ["LocalMissionAuthorValueStore"]
+__all__ = ["AUTHOR_ACTIVITY_VALUE_REF_PREFIX", "LocalMissionAuthorValueStore"]

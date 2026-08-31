@@ -25,7 +25,8 @@ from archetype.missions.critics import (
 )
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
-_REF_PREFIX = "mission-critic+json:sha256:"
+CRITIC_ACTIVITY_VALUE_REF_PREFIX = "mission-critic+json:sha256:"
+_REF_PREFIX = CRITIC_ACTIVITY_VALUE_REF_PREFIX
 
 
 class LocalMissionCriticValueStore:
@@ -65,6 +66,20 @@ class LocalMissionCriticValueStore:
             raise ValueError("critic request reference does not match its canonical value")
         return decoded
 
+    async def get_encoded_request(self, value: CriticActivityRequestRef) -> bytes:
+        """Read exact canonical request bytes for provider orchestration."""
+
+        payload = await asyncio.to_thread(
+            self._read,
+            ref=value.ref,
+            digest=value.digest,
+            expected_size=0,
+        )
+        decoded = self._codec.decode_request(payload)
+        if self._codec.encode_request(decoded).payload != payload:
+            raise ValueError("critic request reference does not match its canonical value")
+        return payload
+
     async def put_result(
         self,
         result: CriticExecutionResult,
@@ -102,6 +117,28 @@ class LocalMissionCriticValueStore:
         ):
             raise ValueError("critic result reference does not match its canonical value")
         return decoded
+
+    async def put_encoded_result(
+        self,
+        payload: bytes,
+        *,
+        digest: str,
+    ) -> CriticActivityResultRef:
+        """Revalidate and persist one controller-produced canonical result."""
+
+        if hashlib.sha256(payload).hexdigest() != digest:
+            raise ValueError("critic encoded result does not match its provider digest")
+        decoded = self._codec.decode_result(payload)
+        value = self._codec.encode_result(decoded)
+        if value.payload != payload or value.digest != digest:
+            raise ValueError("critic encoded result is not its exact canonical value")
+        await asyncio.to_thread(self._put, value)
+        return CriticActivityResultRef(
+            ref=value.ref,
+            digest=value.digest,
+            media_type=value.media_type,
+            size_bytes=value.size_bytes,
+        )
 
     def _put(self, value: CriticActivityValue) -> None:
         path = self._path(value.digest)
@@ -162,4 +199,4 @@ class LocalMissionCriticValueStore:
         return self._root / digest[:2] / f"{digest}.json"
 
 
-__all__ = ["LocalMissionCriticValueStore"]
+__all__ = ["CRITIC_ACTIVITY_VALUE_REF_PREFIX", "LocalMissionCriticValueStore"]

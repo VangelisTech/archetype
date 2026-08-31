@@ -35,7 +35,8 @@ class _Values:
         self.request = request
         self.results: dict[str, bytes] = {}
 
-    async def get_request(self, ref: MissionJobValueRef) -> bytes:
+    async def get_request(self, family: str, ref: MissionJobValueRef) -> bytes:
+        assert family == "author"
         assert ref.digest == hashlib.sha256(self.request).hexdigest()
         return self.request
 
