@@ -635,6 +635,40 @@ class ModalSandboxOperationCleanup:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ModalSandboxOperationResourceCleanup:
+    """Durable cleanup intent for a complete or partially created cohort.
+
+    The random cohort is persisted before either provider create.  A role ID
+    is added only after Modal acknowledges that exact resource.  Missing role
+    IDs are therefore not absence claims: cleanup resolves the stable name and
+    accepts a handle only when its immutable tags prove the same operation and
+    cohort.
+    """
+
+    identity: ModalSandboxOperationIdentity
+    cohort_id: str
+    mission_sandbox_id: str | None = None
+    auth_sandbox_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not _MODAL_OPERATION_COHORT.fullmatch(self.cohort_id)
+            or len(self.cohort_id) > _MAX_PROVIDER_COHORT_ID_LENGTH
+        ):
+            raise ValueError("Modal operation resource cleanup cohort identity is invalid")
+        for role, value in (
+            ("mission", self.mission_sandbox_id),
+            ("auth", self.auth_sandbox_id),
+        ):
+            if value is not None and (
+                not value.strip() or len(value) > _MAX_PROVIDER_OBJECT_ID_LENGTH
+            ):
+                raise ValueError(f"Modal operation {role} cleanup identity is invalid")
+        if self.mission_sandbox_id is not None and self.mission_sandbox_id == self.auth_sandbox_id:
+            raise ValueError("Modal operation cleanup sandbox identities must be distinct")
+
+
 type ModalSandboxResourceObserver = Callable[
     [
         ModalSandboxOperationIdentity,
@@ -2978,6 +3012,31 @@ class ModalSandboxOperationCapability:
         terminating either exact handle.
         """
 
+        await self.cleanup_resources(
+            cleanup=ModalSandboxOperationResourceCleanup(
+                identity=cleanup.identity,
+                cohort_id=cleanup.cohort_id,
+                mission_sandbox_id=cleanup.mission_sandbox_id,
+                auth_sandbox_id=cleanup.auth_sandbox_id,
+            ),
+            spec=spec,
+        )
+
+    async def cleanup_resources(
+        self,
+        *,
+        cleanup: ModalSandboxOperationResourceCleanup,
+        spec: SandboxSpec,
+    ) -> None:
+        """Retry exact teardown from intent written before resource creation.
+
+        A missing durable role ID is not treated as provider absence.  The
+        stable role name is reopened and may be terminated only when its tags
+        prove the exact persisted operation digest and random cohort.  This
+        closes the provider-response-loss window without granting general
+        name-based cleanup authority.
+        """
+
         identity = cleanup.identity
         if self.identity(identity.operation_id) != identity:
             raise ValueError("Modal cleanup belongs to another operation capability")
@@ -3009,7 +3068,7 @@ class ModalSandboxOperationCapability:
         if failures:
             raise RuntimeError("; ".join(sorted(failures)))
 
-        expected_ids = {
+        expected_ids: dict[str, str | None] = {
             "mission": cleanup.mission_sandbox_id,
             "auth": cleanup.auth_sandbox_id,
         }
@@ -3019,7 +3078,8 @@ class ModalSandboxOperationCapability:
         if not present:
             return
         for role, handle in present.items():
-            if str(handle.object_id) != expected_ids[role]:
+            expected_id = expected_ids[role]
+            if expected_id is not None and str(handle.object_id) != expected_id:
                 raise RuntimeError(f"{role} cleanup resolved a different Modal sandbox generation")
 
         tags = await asyncio.gather(
@@ -3144,6 +3204,7 @@ __all__ = [
     "ModalSandboxOperationCapability",
     "ModalSandboxOperationCleanup",
     "ModalSandboxOperationIdentity",
+    "ModalSandboxOperationResourceCleanup",
     "ModalSandboxOperationReconciliation",
     "ModalSandboxOperationRunning",
     "ModalSandboxOperationUnknown",

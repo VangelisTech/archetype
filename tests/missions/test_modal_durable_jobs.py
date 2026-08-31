@@ -16,6 +16,7 @@ from archetype.missions.modal_jobs import (
     ModalMissionJobNamespace,
     ModalMissionJobReady,
     ModalMissionJobRef,
+    ModalMissionJobResourceRecorder,
     ModalMissionJobResources,
     ModalMissionJobRunning,
     ModalMissionJobStillRunning,
@@ -30,6 +31,7 @@ from archetype.missions.modal_jobs import (
     parse_modal_mission_resource_intent_record,
     parse_modal_mission_resource_record,
 )
+from archetype.missions.sandboxes import ModalSandboxOperationIdentity
 
 
 class _Runtime:
@@ -372,3 +374,84 @@ async def test_cancellation_persists_intent_before_cancelling_only_the_exact_cal
     assert runtime.values[
         modal_mission_job_key(started.family, started.operation_id, "cancel")
     ] == {**modal_mission_call_record(started), "phase": "cancel"}
+
+
+@pytest.mark.asyncio
+async def test_resource_observer_and_cleanup_replay_preserve_exact_partial_evidence() -> None:
+    runtime = _Runtime()
+    client = ModalMissionJobClient(_namespace(), runtime)
+    request = b"canonical-request"
+    digest = hashlib.sha256(request).hexdigest()
+    started = await client.start(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_bytes=request,
+        request_digest=digest,
+    )
+    assert isinstance(started, ModalMissionJobRef)
+    identity = ModalSandboxOperationIdentity(
+        workspace_name="workspace",
+        environment_name="main",
+        app_name="mission-app",
+        operation_id=started.operation_id,
+        protocol_epoch=1,
+    )
+    cohort_id = "cohort-v1:" + "d" * 32
+    recorder = ModalMissionJobResourceRecorder(client, started)
+
+    await recorder.observe(identity, cohort_id, "intent", "")
+    await recorder.observe(identity, cohort_id, "auth", "sb-auth-partial")
+    observed: list[ModalMissionJobResources] = []
+
+    async def clean(resources: ModalMissionJobResources) -> None:
+        observed.append(resources)
+
+    assert await client.cleanup(started, cleaner=clean) == started
+    assert await client.cleanup(started, cleaner=clean) == started
+
+    resources = await client.resources(started)
+    assert resources is not None
+    assert resources.intent.operation_digest == identity.digest
+    assert resources.intent.cohort_id == cohort_id
+    assert resources.auth is not None
+    assert resources.auth.sandbox_id == "sb-auth-partial"
+    assert resources.mission is None
+    assert observed == [resources, resources]
+    assert runtime.values[
+        modal_mission_job_key(started.family, started.operation_id, "cleanup")
+    ] == {**modal_mission_resource_intent_record(resources.intent), "phase": "cleanup"}
+
+
+@pytest.mark.asyncio
+async def test_resource_observer_rejects_mismatched_operation_before_recording() -> None:
+    runtime = _Runtime()
+    client = ModalMissionJobClient(_namespace(), runtime)
+    request = b"canonical-request"
+    digest = hashlib.sha256(request).hexdigest()
+    started = await client.start(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_bytes=request,
+        request_digest=digest,
+    )
+    assert isinstance(started, ModalMissionJobRef)
+    mismatched = ModalSandboxOperationIdentity(
+        workspace_name="workspace",
+        environment_name="main",
+        app_name="mission-app",
+        operation_id="mission:author:other-dispatch",
+        protocol_epoch=1,
+    )
+
+    with pytest.raises(ValueError, match="another Mission job"):
+        await ModalMissionJobResourceRecorder(client, started).observe(
+            mismatched,
+            "cohort-v1:" + "d" * 32,
+            "intent",
+            "",
+        )
+
+    assert (
+        modal_mission_job_key(started.family, started.operation_id, "resource-intent")
+        not in runtime.values
+    )

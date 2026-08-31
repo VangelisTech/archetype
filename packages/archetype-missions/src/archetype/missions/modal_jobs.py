@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -127,6 +127,9 @@ class ModalMissionJobResources:
         for role, value in (("auth", self.auth), ("mission", self.mission)):
             if value is not None and (value.role != role or value.intent != self.intent):
                 raise ValueError("Modal Mission resource evidence conflicts with its intent")
+
+
+type ModalMissionResourceCleaner = Callable[[ModalMissionJobResources], Awaitable[None]]
 
 
 @runtime_checkable
@@ -483,6 +486,39 @@ class ModalMissionJobClient:
         await self._runtime.cancel(call)
         return ref
 
+    async def cleanup(
+        self,
+        ref: ModalMissionJobRef,
+        *,
+        cleaner: ModalMissionResourceCleaner,
+    ) -> ModalMissionJobRef:
+        """Persist cleanup intent and retry exact resource teardown only."""
+
+        self._require_ref(
+            ref,
+            family=ref.family,
+            operation_id=ref.operation_id,
+            request_digest=ref.request_digest,
+        )
+        await self._require_records(ref)
+        resources = await self.resources(ref)
+        record: dict[str, str | int] = {
+            **(
+                modal_mission_call_record(ref)
+                if resources is None
+                else modal_mission_resource_intent_record(resources.intent)
+            ),
+            "phase": "cleanup",
+        }
+        key = modal_mission_job_key(ref.family, ref.operation_id, "cleanup")
+        inserted = await self._runtime.put_if_absent(key, record)
+        stored = await self._runtime.get(key)
+        if not ((inserted and stored == record) or (not inserted and stored == record)):
+            raise ValueError("durable cleanup intent conflicts")
+        if resources is not None:
+            await cleaner(resources)
+        return ref
+
     async def register_remote_call(
         self,
         *,
@@ -661,6 +697,50 @@ class ModalMissionJobClient:
         return ref
 
 
+@dataclass(frozen=True, slots=True)
+class ModalMissionJobResourceRecorder:
+    """Bridge sandbox creation observations into exact durable job records."""
+
+    client: ModalMissionJobClient
+    ref: ModalMissionJobRef
+
+    async def observe(
+        self,
+        identity: object,
+        cohort_id: str,
+        role: Literal["intent", "auth", "mission"],
+        sandbox_id: str,
+    ) -> None:
+        operation_id = getattr(identity, "operation_id", None)
+        operation_digest = getattr(identity, "digest", None)
+        if operation_id != self.ref.operation_id or not isinstance(operation_digest, str):
+            raise ValueError("Modal sandbox observation belongs to another Mission job")
+        if role == "intent":
+            if sandbox_id:
+                raise ValueError("Modal sandbox intent must not contain a resource identity")
+            outcome = await self.client.register_resource_intent(
+                self.ref,
+                operation_digest=operation_digest,
+                cohort_id=cohort_id,
+            )
+        else:
+            if not sandbox_id:
+                raise ValueError("Modal sandbox resource observation requires an identity")
+            resources = await self.client.resources(self.ref)
+            if resources is None:
+                raise ValueError("Modal sandbox resource was observed before durable intent")
+            intent = resources.intent
+            if intent.operation_digest != operation_digest or intent.cohort_id != cohort_id:
+                raise ValueError("Modal sandbox resource observation conflicts with its intent")
+            outcome = await self.client.register_resource(
+                intent,
+                role=role,
+                sandbox_id=sandbox_id,
+            )
+        if isinstance(outcome, ModalMissionJobUnknown):
+            raise ValueError(outcome.reason)
+
+
 __all__ = [
     "ModalMissionFamily",
     "ModalMissionJobNamespace",
@@ -668,12 +748,14 @@ __all__ = [
     "ModalMissionJobPoll",
     "ModalMissionJobReady",
     "ModalMissionJobRef",
+    "ModalMissionJobResourceRecorder",
     "ModalMissionJobResources",
     "ModalMissionJobRunning",
     "ModalMissionJobRuntime",
     "ModalMissionJobStillRunning",
     "ModalMissionJobUnknown",
     "ModalMissionResourceIntent",
+    "ModalMissionResourceCleaner",
     "ModalMissionResourceRef",
     "modal_mission_call_record",
     "modal_mission_job_key",
