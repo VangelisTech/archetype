@@ -13,6 +13,12 @@ from archetype.orchestration.temporal import create_temporal_worker
 
 from .activities import MissionActivities
 from .contracts import MISSION_TASK_QUEUE
+from .modal_job_activities import (
+    MissionModalJobActivities,
+    MissionModalJobService,
+    MissionModalJobValueStore,
+)
+from .modal_job_workflow import MissionModalJobWorkflow
 from .workflow import MissionWorkflow
 
 
@@ -38,4 +44,29 @@ def create_mission_worker(
     )
 
 
-__all__ = ["create_mission_worker"]
+def create_mission_modal_job_worker(
+    client: Client,
+    jobs: MissionModalJobService,
+    values: MissionModalJobValueStore,
+    *,
+    task_queue: str = MISSION_TASK_QUEUE,
+) -> Worker:
+    """Build the provider-job Worker without exposing callback-bearing seams."""
+
+    activities = MissionModalJobActivities(jobs, values)
+    return create_temporal_worker(
+        client,
+        task_queue=task_queue,
+        workflows=[MissionModalJobWorkflow],
+        activities=[
+            activities.start,
+            activities.poll,
+            activities.collect,
+            activities.cancel,
+            activities.cleanup,
+        ],
+        passthrough_modules=("archetype",),
+    )
+
+
+__all__ = ["create_mission_modal_job_worker", "create_mission_worker"]
