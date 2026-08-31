@@ -682,6 +682,69 @@ async def test_named_modal_operation_reports_running_without_sharing_execution_h
 
 
 @pytest.mark.asyncio
+async def test_named_modal_operation_persists_intent_and_each_resource_before_execution(
+    modal_operation,
+) -> None:
+    registry, backend, _capability, spec = modal_operation
+    events: list[tuple[ModalSandboxOperationIdentity, str, str, str]] = []
+
+    async def observe(
+        identity: ModalSandboxOperationIdentity,
+        cohort_id: str,
+        role: str,
+        object_id: str,
+    ) -> None:
+        events.append((identity, cohort_id, role, object_id))
+
+    capability = ModalSandboxOperationCapability(
+        ModalSandboxBackend(backend.config),
+        resource_observer=observe,
+    )
+    operation_id = "missions.author:world-a:dispatch-resource-intent"
+    identity = capability.identity(operation_id)
+
+    _barrier, started = await _start_once(capability, spec, operation_id)
+    cleanup = started.session.operation_cleanup
+
+    assert events == [
+        (identity, cleanup.cohort_id, "intent", ""),
+        (identity, cleanup.cohort_id, "auth", cleanup.auth_sandbox_id),
+        (identity, cleanup.cohort_id, "mission", cleanup.mission_sandbox_id),
+    ]
+    await started.session.close()
+
+
+@pytest.mark.asyncio
+async def test_resource_recording_failure_closes_every_created_resource(
+    modal_operation,
+) -> None:
+    registry, backend, _capability, spec = modal_operation
+
+    async def reject_mission(
+        _identity: ModalSandboxOperationIdentity,
+        _cohort_id: str,
+        role: str,
+        _object_id: str,
+    ) -> None:
+        if role == "mission":
+            raise RuntimeError("durable resource write failed")
+
+    capability = ModalSandboxOperationCapability(
+        ModalSandboxBackend(backend.config),
+        resource_observer=reject_mission,
+    )
+
+    with pytest.raises(RuntimeError, match="durable resource write failed"):
+        await _start_once(
+            capability,
+            spec,
+            "missions.author:world-a:dispatch-resource-write-failure",
+        )
+
+    assert registry.resources == {}
+
+
+@pytest.mark.asyncio
 async def test_completed_operation_cleanup_reopens_only_exact_durable_cohort(
     modal_operation,
 ) -> None:

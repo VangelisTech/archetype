@@ -15,6 +15,8 @@ from typing import Any, Literal, Protocol, runtime_checkable
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,1023}$")
 _CALL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,1023}$")
+_OPERATION_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_COHORT_ID = re.compile(r"^cohort-v1:[0-9a-f]{32}$")
 _SCHEMA_VERSION = 1
 
 ModalMissionFamily = Literal["author", "critic"]
@@ -82,6 +84,49 @@ class ModalMissionJobUnknown:
 
 
 ModalMissionJobPoll = ModalMissionJobRunning | ModalMissionJobReady | ModalMissionJobUnknown
+
+
+@dataclass(frozen=True, slots=True)
+class ModalMissionResourceIntent:
+    """Durable cleanup authority written before either sandbox is created."""
+
+    ref: ModalMissionJobRef
+    operation_digest: str
+    cohort_id: str
+
+    def __post_init__(self) -> None:
+        if _OPERATION_DIGEST.fullmatch(self.operation_digest) is None:
+            raise ValueError("Modal Mission resource operation digest is invalid")
+        if _COHORT_ID.fullmatch(self.cohort_id) is None:
+            raise ValueError("Modal Mission resource cohort identity is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ModalMissionResourceRef:
+    """One exact provider resource bound to a durable resource intent."""
+
+    intent: ModalMissionResourceIntent
+    role: Literal["auth", "mission"]
+    sandbox_id: str
+
+    def __post_init__(self) -> None:
+        if self.role not in {"auth", "mission"}:
+            raise ValueError("Modal Mission resource role is invalid")
+        _require_identity(self.sandbox_id, "Modal Mission sandbox_id", _CALL_ID)
+
+
+@dataclass(frozen=True, slots=True)
+class ModalMissionJobResources:
+    """Current durable resource evidence for one exact controller call."""
+
+    intent: ModalMissionResourceIntent
+    auth: ModalMissionResourceRef | None = None
+    mission: ModalMissionResourceRef | None = None
+
+    def __post_init__(self) -> None:
+        for role, value in (("auth", self.auth), ("mission", self.mission)):
+            if value is not None and (value.role != role or value.intent != self.intent):
+                raise ValueError("Modal Mission resource evidence conflicts with its intent")
 
 
 @runtime_checkable
@@ -181,7 +226,15 @@ class ModalMissionJobNamespace:
 def modal_mission_job_key(
     family: ModalMissionFamily,
     operation_id: str,
-    phase: Literal["start", "call", "cancel"],
+    phase: Literal[
+        "start",
+        "call",
+        "resource-intent",
+        "resource-auth",
+        "resource-mission",
+        "cancel",
+        "cleanup",
+    ],
 ) -> str:
     ModalMissionJobRef(
         family=family,
@@ -232,6 +285,81 @@ def parse_modal_mission_call_record(raw: object) -> ModalMissionJobRef:
     if modal_mission_call_record(ref) != record:
         raise ValueError("Modal Mission call record is not canonical")
     return ref
+
+
+def modal_mission_resource_intent_record(
+    intent: ModalMissionResourceIntent,
+) -> dict[str, str | int]:
+    ref = intent.ref
+    return {
+        "call_id": ref.call_id,
+        "cohort_id": intent.cohort_id,
+        "family": ref.family,
+        "namespace_digest": ref.namespace_digest,
+        "operation_digest": intent.operation_digest,
+        "operation_id": ref.operation_id,
+        "request_digest": ref.request_digest,
+        "schema_version": _SCHEMA_VERSION,
+    }
+
+
+def parse_modal_mission_resource_intent_record(raw: object) -> ModalMissionResourceIntent:
+    if not isinstance(raw, dict):
+        raise ValueError("Modal Mission resource intent record is not an object")
+    record = dict(raw)
+    if (
+        set(record)
+        != {
+            "call_id",
+            "cohort_id",
+            "family",
+            "namespace_digest",
+            "operation_digest",
+            "operation_id",
+            "request_digest",
+            "schema_version",
+        }
+        or record.get("schema_version") != _SCHEMA_VERSION
+    ):
+        raise ValueError("Modal Mission resource intent record is incompatible")
+    intent = ModalMissionResourceIntent(
+        ref=ModalMissionJobRef(
+            family=record["family"],
+            operation_id=record["operation_id"],
+            request_digest=record["request_digest"],
+            namespace_digest=record["namespace_digest"],
+            call_id=record["call_id"],
+        ),
+        operation_digest=record["operation_digest"],
+        cohort_id=record["cohort_id"],
+    )
+    if modal_mission_resource_intent_record(intent) != record:
+        raise ValueError("Modal Mission resource intent record is not canonical")
+    return intent
+
+
+def modal_mission_resource_record(resource: ModalMissionResourceRef) -> dict[str, str | int]:
+    return {
+        **modal_mission_resource_intent_record(resource.intent),
+        "role": resource.role,
+        "sandbox_id": resource.sandbox_id,
+    }
+
+
+def parse_modal_mission_resource_record(raw: object) -> ModalMissionResourceRef:
+    if not isinstance(raw, dict):
+        raise ValueError("Modal Mission resource record is not an object")
+    record = dict(raw)
+    role = record.pop("role", None)
+    sandbox_id = record.pop("sandbox_id", None)
+    resource = ModalMissionResourceRef(
+        intent=parse_modal_mission_resource_intent_record(record),
+        role=role,
+        sandbox_id=sandbox_id,
+    )
+    if modal_mission_resource_record(resource) != raw:
+        raise ValueError("Modal Mission resource record is not canonical")
+    return resource
 
 
 class ModalMissionJobClient:
@@ -367,6 +495,113 @@ class ModalMissionJobClient:
             "another provider call already owns this Mission operation",
         )
 
+    async def register_resource_intent(
+        self,
+        ref: ModalMissionJobRef,
+        *,
+        operation_digest: str,
+        cohort_id: str,
+    ) -> ModalMissionResourceIntent | ModalMissionJobUnknown:
+        """Persist immutable cleanup intent before the first sandbox effect."""
+
+        try:
+            self._require_ref(
+                ref,
+                family=ref.family,
+                operation_id=ref.operation_id,
+                request_digest=ref.request_digest,
+            )
+            await self._require_records(ref)
+            intent = ModalMissionResourceIntent(
+                ref=ref,
+                operation_digest=operation_digest,
+                cohort_id=cohort_id,
+            )
+            key = modal_mission_job_key(ref.family, ref.operation_id, "resource-intent")
+            record = modal_mission_resource_intent_record(intent)
+            inserted = await self._runtime.put_if_absent(key, record)
+            stored = await self._runtime.get(key)
+            if (inserted and stored == record) or (not inserted and stored == record):
+                return intent
+            return ModalMissionJobUnknown(ref, "durable sandbox resource intent conflicts")
+        except ValueError as exc:
+            return ModalMissionJobUnknown(ref, str(exc))
+
+    async def register_resource(
+        self,
+        intent: ModalMissionResourceIntent,
+        *,
+        role: Literal["auth", "mission"],
+        sandbox_id: str,
+    ) -> ModalMissionResourceRef | ModalMissionJobUnknown:
+        """Persist one exact role ID before execution may cross the boundary."""
+
+        try:
+            await self._require_resource_intent(intent)
+            resource = ModalMissionResourceRef(
+                intent=intent,
+                role=role,
+                sandbox_id=sandbox_id,
+            )
+            key = modal_mission_job_key(
+                intent.ref.family,
+                intent.ref.operation_id,
+                "resource-auth" if role == "auth" else "resource-mission",
+            )
+            record = modal_mission_resource_record(resource)
+            inserted = await self._runtime.put_if_absent(key, record)
+            stored = await self._runtime.get(key)
+            if (inserted and stored == record) or (not inserted and stored == record):
+                return resource
+            return ModalMissionJobUnknown(intent.ref, f"durable {role} sandbox identity conflicts")
+        except ValueError as exc:
+            return ModalMissionJobUnknown(intent.ref, str(exc))
+
+    async def resources(self, ref: ModalMissionJobRef) -> ModalMissionJobResources | None:
+        """Read exact resource evidence without creating, cancelling, or cleaning up."""
+
+        self._require_ref(
+            ref,
+            family=ref.family,
+            operation_id=ref.operation_id,
+            request_digest=ref.request_digest,
+        )
+        await self._require_records(ref)
+        raw_intent = await self._runtime.get(
+            modal_mission_job_key(ref.family, ref.operation_id, "resource-intent")
+        )
+        if raw_intent is None:
+            return None
+        intent = parse_modal_mission_resource_intent_record(raw_intent)
+        if intent.ref != ref:
+            raise ValueError("durable sandbox resource intent belongs to another call")
+        roles: dict[str, ModalMissionResourceRef | None] = {}
+        for role in ("auth", "mission"):
+            raw = await self._runtime.get(
+                modal_mission_job_key(
+                    ref.family,
+                    ref.operation_id,
+                    "resource-auth" if role == "auth" else "resource-mission",
+                )
+            )
+            resource = None if raw is None else parse_modal_mission_resource_record(raw)
+            if resource is not None and (resource.intent != intent or resource.role != role):
+                raise ValueError(f"durable {role} sandbox evidence conflicts")
+            roles[role] = resource
+        return ModalMissionJobResources(
+            intent=intent,
+            auth=roles["auth"],
+            mission=roles["mission"],
+        )
+
+    async def _require_resource_intent(self, intent: ModalMissionResourceIntent) -> None:
+        await self._require_records(intent.ref)
+        stored = await self._runtime.get(
+            modal_mission_job_key(intent.ref.family, intent.ref.operation_id, "resource-intent")
+        )
+        if stored != modal_mission_resource_intent_record(intent):
+            raise ValueError("durable sandbox resource intent conflicts")
+
     async def _require_records(self, ref: ModalMissionJobRef) -> None:
         marker = self._namespace.start_record(
             family=ref.family,
@@ -409,11 +644,18 @@ __all__ = [
     "ModalMissionJobPoll",
     "ModalMissionJobReady",
     "ModalMissionJobRef",
+    "ModalMissionJobResources",
     "ModalMissionJobRunning",
     "ModalMissionJobRuntime",
     "ModalMissionJobStillRunning",
     "ModalMissionJobUnknown",
+    "ModalMissionResourceIntent",
+    "ModalMissionResourceRef",
     "modal_mission_call_record",
     "modal_mission_job_key",
+    "modal_mission_resource_intent_record",
+    "modal_mission_resource_record",
     "parse_modal_mission_call_record",
+    "parse_modal_mission_resource_intent_record",
+    "parse_modal_mission_resource_record",
 ]

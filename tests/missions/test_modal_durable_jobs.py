@@ -16,12 +16,19 @@ from archetype.missions.modal_jobs import (
     ModalMissionJobNamespace,
     ModalMissionJobReady,
     ModalMissionJobRef,
+    ModalMissionJobResources,
     ModalMissionJobRunning,
     ModalMissionJobStillRunning,
     ModalMissionJobUnknown,
+    ModalMissionResourceIntent,
+    ModalMissionResourceRef,
     modal_mission_call_record,
     modal_mission_job_key,
+    modal_mission_resource_intent_record,
+    modal_mission_resource_record,
     parse_modal_mission_call_record,
+    parse_modal_mission_resource_intent_record,
+    parse_modal_mission_resource_record,
 )
 
 
@@ -252,3 +259,89 @@ async def test_remote_self_registration_requires_exact_start_marker() -> None:
     assert isinstance(outcome, ModalMissionJobUnknown)
     assert "no exact durable start" in outcome.reason
     assert not runtime.values
+
+
+@pytest.mark.asyncio
+async def test_resource_intent_and_each_role_are_immutable_and_reconstructable() -> None:
+    runtime = _Runtime()
+    client = ModalMissionJobClient(_namespace(), runtime)
+    request = b"canonical-request"
+    digest = hashlib.sha256(request).hexdigest()
+    started = await client.start(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_bytes=request,
+        request_digest=digest,
+    )
+    assert isinstance(started, ModalMissionJobRef)
+
+    intent = await client.register_resource_intent(
+        started,
+        operation_digest="sha256:" + "c" * 64,
+        cohort_id="cohort-v1:" + "d" * 32,
+    )
+    assert isinstance(intent, ModalMissionResourceIntent)
+    auth = await client.register_resource(intent, role="auth", sandbox_id="sb-auth-1")
+    mission = await client.register_resource(
+        intent,
+        role="mission",
+        sandbox_id="sb-mission-1",
+    )
+    assert isinstance(auth, ModalMissionResourceRef)
+    assert isinstance(mission, ModalMissionResourceRef)
+
+    observed = await client.resources(started)
+    assert observed == ModalMissionJobResources(
+        intent=intent,
+        auth=auth,
+        mission=mission,
+    )
+    assert (
+        parse_modal_mission_resource_intent_record(modal_mission_resource_intent_record(intent))
+        == intent
+    )
+    assert parse_modal_mission_resource_record(modal_mission_resource_record(auth)) == auth
+
+
+@pytest.mark.asyncio
+async def test_resource_identity_conflicts_fail_closed_without_replacing_evidence() -> None:
+    runtime = _Runtime()
+    client = ModalMissionJobClient(_namespace(), runtime)
+    request = b"canonical-request"
+    digest = hashlib.sha256(request).hexdigest()
+    started = await client.start(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_bytes=request,
+        request_digest=digest,
+    )
+    assert isinstance(started, ModalMissionJobRef)
+    intent = await client.register_resource_intent(
+        started,
+        operation_digest="sha256:" + "c" * 64,
+        cohort_id="cohort-v1:" + "d" * 32,
+    )
+    assert isinstance(intent, ModalMissionResourceIntent)
+    assert isinstance(
+        await client.register_resource(intent, role="auth", sandbox_id="sb-auth-1"),
+        ModalMissionResourceRef,
+    )
+
+    conflicting_intent = await client.register_resource_intent(
+        started,
+        operation_digest="sha256:" + "e" * 64,
+        cohort_id=intent.cohort_id,
+    )
+    conflicting_role = await client.register_resource(
+        intent,
+        role="auth",
+        sandbox_id="sb-auth-2",
+    )
+
+    assert isinstance(conflicting_intent, ModalMissionJobUnknown)
+    assert isinstance(conflicting_role, ModalMissionJobUnknown)
+    observed = await client.resources(started)
+    assert observed is not None
+    assert observed.intent == intent
+    assert observed.auth is not None
+    assert observed.auth.sandbox_id == "sb-auth-1"
