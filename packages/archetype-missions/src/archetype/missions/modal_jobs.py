@@ -150,6 +150,8 @@ class ModalMissionJobRuntime(Protocol):
 
     async def reattach(self, call_id: str) -> object: ...
 
+    async def cancel(self, call: object) -> None: ...
+
     async def call_result(self, call: object, *, timeout_seconds: float) -> object: ...
 
     async def result_ready(self, ref: ModalMissionJobRef) -> bool: ...
@@ -458,6 +460,28 @@ class ModalMissionJobClient:
             return ModalMissionJobUnknown(ref, "provider call completed without a durable result")
         except ValueError as exc:
             return ModalMissionJobUnknown(ref, str(exc))
+
+    async def cancel(self, ref: ModalMissionJobRef) -> ModalMissionJobRef:
+        """Persist cancellation intent, then cancel only the exact durable call."""
+
+        self._require_ref(
+            ref,
+            family=ref.family,
+            operation_id=ref.operation_id,
+            request_digest=ref.request_digest,
+        )
+        await self._require_records(ref)
+        key = modal_mission_job_key(ref.family, ref.operation_id, "cancel")
+        record = {**modal_mission_call_record(ref), "phase": "cancel"}
+        inserted = await self._runtime.put_if_absent(key, record)
+        stored = await self._runtime.get(key)
+        if not ((inserted and stored == record) or (not inserted and stored == record)):
+            raise ValueError("durable cancellation intent conflicts")
+        call = await self._runtime.reattach(ref.call_id)
+        if self._runtime.call_id(call) != ref.call_id:
+            raise ValueError("Modal cancellation reattached a different provider call")
+        await self._runtime.cancel(call)
+        return ref
 
     async def register_remote_call(
         self,

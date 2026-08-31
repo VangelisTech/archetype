@@ -121,6 +121,12 @@ class ModalNamedMissionJobRuntime:
         modal, client = await self._get_context()
         return modal.FunctionCall.from_id(call_id, client=client)
 
+    async def cancel(self, call: object) -> None:
+        cancel = getattr(call, "cancel", None)
+        if cancel is None or not hasattr(cancel, "aio"):
+            raise TypeError("Modal Mission FunctionCall has no async cancellation boundary")
+        await cancel.aio()
+
     async def call_result(self, call: object, *, timeout_seconds: float) -> object:
         if isinstance(timeout_seconds, bool) or timeout_seconds != 0:
             raise ValueError("Modal Mission job polling must use a zero-second timeout")

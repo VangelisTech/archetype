@@ -39,6 +39,7 @@ class _Runtime:
         self.ready = False
         self.terminal: BaseException | None = None
         self.running = True
+        self.cancelled: list[str] = []
 
     async def get(self, key: str) -> object:
         return self.values.get(key)
@@ -58,6 +59,9 @@ class _Runtime:
 
     async def reattach(self, call_id: str) -> object:
         return call_id
+
+    async def cancel(self, call: object) -> None:
+        self.cancelled.append(str(call))
 
     async def call_result(self, call: object, *, timeout_seconds: float) -> object:
         assert call == "fc-123"
@@ -345,3 +349,26 @@ async def test_resource_identity_conflicts_fail_closed_without_replacing_evidenc
     assert observed.intent == intent
     assert observed.auth is not None
     assert observed.auth.sandbox_id == "sb-auth-1"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_persists_intent_before_cancelling_only_the_exact_call() -> None:
+    runtime = _Runtime()
+    client = ModalMissionJobClient(_namespace(), runtime)
+    request = b"canonical-request"
+    digest = hashlib.sha256(request).hexdigest()
+    started = await client.start(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_bytes=request,
+        request_digest=digest,
+    )
+    assert isinstance(started, ModalMissionJobRef)
+
+    assert await client.cancel(started) == started
+    assert await client.cancel(started) == started
+
+    assert runtime.cancelled == [started.call_id, started.call_id]
+    assert runtime.values[
+        modal_mission_job_key(started.family, started.operation_id, "cancel")
+    ] == {**modal_mission_call_record(started), "phase": "cancel"}

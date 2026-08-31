@@ -311,6 +311,27 @@ class _SqliteMissionJobRuntime:
             connection.close()
         return _Call(call_id)
 
+    async def cancel(self, call: object) -> None:
+        call_id = self.call_id(call)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT call_id FROM provider_calls WHERE call_id = ?",
+                (call_id,),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"provider call {call_id!r} is absent")
+            self._event(
+                connection,
+                worker=self._worker,
+                event="cancel",
+                call_id=call_id,
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
     async def call_result(self, call: object, *, timeout_seconds: float) -> object:
         if timeout_seconds != 0:
             raise ValueError("process provider polling must be nonblocking")

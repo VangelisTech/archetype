@@ -43,6 +43,7 @@ class _FakeCall:
     def __init__(self, state: _FakeModalState, object_id: str) -> None:
         self.object_id = object_id
         self.get = _AioMethod(self._get)
+        self.cancel = _AioMethod(self._cancel)
         self._state = state
 
     async def _get(self, **kwargs: object) -> object:
@@ -50,6 +51,9 @@ class _FakeCall:
         if self._state.result_error is not None:
             raise self._state.result_error
         return self._state.result
+
+    async def _cancel(self) -> None:
+        self._state.calls.append(("call.cancel", (), {}))
 
 
 def _fake_modal(state: _FakeModalState) -> object:
@@ -226,12 +230,14 @@ async def test_runtime_reattaches_by_function_call_id_and_polls_without_waiting(
 
     assert runtime.call_id(call) == "fc-existing"
     assert await runtime.call_result(call, timeout_seconds=0.0) == {"finished": True}
+    await runtime.cancel(call)
     assert (
         "FunctionCall.from_id",
         ("fc-existing",),
         {"client": state.client},
     ) in state.calls
     assert ("call.get", (), {"timeout": 0}) in state.calls
+    assert ("call.cancel", (), {}) in state.calls
 
 
 @pytest.mark.asyncio
