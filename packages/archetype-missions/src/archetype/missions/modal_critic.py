@@ -508,12 +508,12 @@ class ModalMissionCriticExecutor:
         if existing is not None:
             await self._require_cleanup_before_recovered_result(
                 existing,
-                spec=self._sandbox_spec(request),
+                spec=self.sandbox_spec(request),
             )
             return self._execution_result(request, existing.result)
 
         provision_started_at_ms = int(time.time() * 1000)
-        spec = self._sandbox_spec(request)
+        spec = self.sandbox_spec(request)
         if retry_guard is None:
             outcome = await self._barrier.start_initial(
                 identity=identity,
@@ -603,7 +603,7 @@ class ModalMissionCriticExecutor:
         if existing is not None:
             recovery = await self._cleanup_recovery(
                 existing,
-                spec=self._sandbox_spec(request),
+                spec=self.sandbox_spec(request),
             )
             if recovery is not None:
                 return recovery
@@ -623,7 +623,7 @@ class ModalMissionCriticExecutor:
         if existing is not None:
             recovery = await self._cleanup_recovery(
                 existing,
-                spec=self._sandbox_spec(request),
+                spec=self.sandbox_spec(request),
             )
             if recovery is not None:
                 return recovery
@@ -704,7 +704,9 @@ class ModalMissionCriticExecutor:
                 f"exact provider cleanup failed ({type(exc).__name__[:128]})",
             ) from exc
 
-    def _sandbox_spec(self, request: CriticActivityRequest) -> SandboxSpec:
+    def sandbox_spec(self, request: CriticActivityRequest) -> SandboxSpec:
+        """Return the exact provider resource contract for this request."""
+
         return SandboxSpec(
             provider=self.provider,
             environment=self._config.sandbox_environment,

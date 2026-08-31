@@ -16,6 +16,7 @@ from typing import Any, cast
 
 import pytest
 
+import archetype.missions.modal_jobs_app as modal_jobs_app
 from archetype.missions.activity_values import MissionAuthorValueCodec
 from archetype.missions.coding_agents.contracts import (
     DispatchedValidator,
@@ -37,6 +38,7 @@ from archetype.missions.modal_jobs import (
 from archetype.missions.modal_jobs_app import (
     MODAL_MISSION_CONTROLLER_MAX_RECEIPT_BYTES,
     ModalMissionControllerAppConfig,
+    ModalMissionControllerExecutionFailed,
     ModalMissionControllerFailpoint,
     ModalMissionControllerFailpointReached,
     ModalMissionControllerRejected,
@@ -272,10 +274,76 @@ def _build(
     monkeypatch: pytest.MonkeyPatch,
     state: _FakeModalState,
     config: ModalMissionControllerAppConfig,
+    *,
+    stub_builtin: bool = True,
 ) -> _Controller:
+    async def no_effect(**_kwargs: object) -> None:
+        return None
+
     monkeypatch.setitem(sys.modules, "modal", _fake_modal(state))
+    if stub_builtin:
+        monkeypatch.setattr(modal_jobs_app, "_execute_builtin_job", no_effect)
     _app, controller = build_modal_mission_controller_app(config, image=object())
     return cast(_Controller, controller)
+
+
+@pytest.mark.asyncio
+async def test_builtin_controller_binds_resource_recorder_and_pinned_image_before_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _FakeModalState()
+    config = _config()
+    request_bytes = _author_request()
+    operation_id = _operation("author")
+    _admit_start(
+        state,
+        config,
+        family="author",
+        operation_id=operation_id,
+        request_bytes=request_bytes,
+    )
+    captured: dict[str, object] = {}
+
+    class FakeAuthorExecutor:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+            self.capability = kwargs["capability"]
+
+        def sandbox_spec(self, _request: object) -> object:
+            return object()
+
+        async def execute(self, *, operation_id: str, **_kwargs: object) -> None:
+            capability = cast(Any, self.capability)
+            observer = capability._resource_observer
+            assert observer is not None
+            identity = capability.identity(operation_id)
+            cohort_id = "cohort-v1:" + "d" * 32
+            await observer(identity, cohort_id, "intent", "")
+            await observer(identity, cohort_id, "auth", "sb-controller-auth")
+            await observer(identity, cohort_id, "mission", "sb-controller-mission")
+
+    cleanup_calls: list[object] = []
+
+    async def cleanup_resources(_self: object, *, cleanup: object, spec: object) -> None:
+        cleanup_calls.append((cleanup, spec))
+
+    monkeypatch.setattr(modal_jobs_app, "ModalMissionAuthorExecutor", FakeAuthorExecutor)
+    monkeypatch.setattr(
+        modal_jobs_app.ModalSandboxOperationCapability,
+        "cleanup_resources",
+        cleanup_resources,
+    )
+    controller = _build(monkeypatch, state, config, stub_builtin=False)
+
+    await controller("author", operation_id, request_bytes, config.namespace.digest)
+
+    executor_config = cast(Any, captured["config"])
+    assert executor_config.sandbox_environment == (f"modal-image://{config.namespace.image_id}")
+    assert modal_mission_job_key("author", operation_id, "resource-intent") in state.values
+    assert modal_mission_job_key("author", operation_id, "resource-auth") in state.values
+    assert modal_mission_job_key("author", operation_id, "resource-mission") in state.values
+    assert modal_mission_job_key("author", operation_id, "cleanup") in state.values
+    assert len(cleanup_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -445,7 +513,7 @@ async def test_identity_mismatch_never_opens_named_modal_state(
         operation_id = "invalid operation identity"
     controller = _build(monkeypatch, state, config)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ModalMissionControllerExecutionFailed):
         await controller("author", operation_id, request_bytes, namespace_digest)
 
     assert state.events == ["current_function_call_id"]
@@ -460,7 +528,7 @@ async def test_missing_current_function_call_identity_fails_before_registration(
     config = _config()
     controller = _build(monkeypatch, state, config)
 
-    with pytest.raises(RuntimeError, match="no current Function call identity"):
+    with pytest.raises(ModalMissionControllerExecutionFailed) as raised:
         await controller(
             "author",
             _operation("author"),
@@ -468,8 +536,38 @@ async def test_missing_current_function_call_identity_fails_before_registration(
             config.namespace.digest,
         )
 
+    assert raised.value.error_type == "RuntimeError"
     assert state.events == ["current_function_call_id"]
     assert not state.values
+
+
+@pytest.mark.asyncio
+async def test_controller_canonicalizes_remote_timeout_as_a_non_timeout_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _FakeModalState()
+    config = _config()
+    request_bytes = _author_request()
+    operation_id = _operation("author")
+    _admit_start(
+        state,
+        config,
+        family="author",
+        operation_id=operation_id,
+        request_bytes=request_bytes,
+    )
+    controller = _build(monkeypatch, state, config)
+
+    async def timeout(**_kwargs: object) -> None:
+        raise TimeoutError("must not escape the deployed controller")
+
+    monkeypatch.setattr(modal_jobs_app, "_execute_builtin_job", timeout)
+
+    with pytest.raises(ModalMissionControllerExecutionFailed) as raised:
+        await controller("author", operation_id, request_bytes, config.namespace.digest)
+
+    assert not isinstance(raised.value, TimeoutError)
+    assert raised.value.error_type == "TimeoutError"
 
 
 def test_controller_config_is_fixed_to_one_function_and_builtin_redaction() -> None:
@@ -482,6 +580,18 @@ def test_controller_config_is_fixed_to_one_function_and_builtin_redaction() -> N
     with pytest.raises(ValueError, match="redaction capability conflicts"):
         ModalMissionControllerAppConfig(
             namespace=_namespace(redaction_policy_id="custom-redaction-v1"),
+            runtime=_runtime_config(),
+            redactor=RedactionService(),
+        )
+    with pytest.raises(ValueError, match="built-in redaction service"):
+        ModalMissionControllerAppConfig(
+            namespace=_namespace(),
+            runtime=_runtime_config(),
+            redactor=object(),
+        )
+    with pytest.raises(ValueError, match="pinned im-"):
+        ModalMissionControllerAppConfig(
+            namespace=_namespace(image_id="mutable-image-tag"),
             runtime=_runtime_config(),
             redactor=RedactionService(),
         )

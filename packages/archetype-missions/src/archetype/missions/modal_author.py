@@ -577,11 +577,11 @@ class ModalMissionAuthorExecutor:
             self._validate_result(sanitized_request, existing.observation.result)
             await self._require_cleanup_before_recovered_result(
                 existing,
-                spec=self._sandbox_spec(sanitized_request),
+                spec=self.sandbox_spec(sanitized_request),
             )
             return self._codec.execution_observation(existing.observation)
 
-        spec = self._sandbox_spec(sanitized_request)
+        spec = self.sandbox_spec(sanitized_request)
         if retry_guard is None:
             outcome = await self._barrier.start_initial(
                 identity=identity,
@@ -739,7 +739,7 @@ class ModalMissionAuthorExecutor:
                 return AuthorRecoveryUnknown(str(exc))
             recovery = await self._cleanup_recovery(
                 existing,
-                spec=self._sandbox_spec(sanitized_request),
+                spec=self.sandbox_spec(sanitized_request),
             )
             if recovery is not None:
                 return recovery
@@ -764,7 +764,7 @@ class ModalMissionAuthorExecutor:
                 return AuthorRecoveryUnknown(str(exc))
             recovery = await self._cleanup_recovery(
                 existing,
-                spec=self._sandbox_spec(sanitized_request),
+                spec=self.sandbox_spec(sanitized_request),
             )
             if recovery is not None:
                 return recovery
@@ -847,7 +847,9 @@ class ModalMissionAuthorExecutor:
                 f"exact provider cleanup failed ({type(exc).__name__[:128]})",
             ) from exc
 
-    def _sandbox_spec(self, request: TaskDispatchRequest) -> SandboxSpec:
+    def sandbox_spec(self, request: TaskDispatchRequest) -> SandboxSpec:
+        """Return the exact provider resource contract for this request."""
+
         return SandboxSpec(
             provider=self.provider,
             environment=self._config.sandbox_environment,
