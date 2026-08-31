@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from archetype.activities.temporal import durable_workflow_id
+from archetype.orchestration.temporal import durable_workflow_id
 
 MISSION_WORKFLOW_NAME = "archetype.missions.MissionWorkflow"
 MISSION_SUBMIT_ACTIVITY = "archetype.missions.submit"

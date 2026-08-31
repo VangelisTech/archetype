@@ -18,7 +18,7 @@ def durable_workflow_id(
 ) -> str:
     """Derive one stable Workflow ID from a namespaced idempotency identity.
 
-    The hash deliberately contains no process-local or wall-clock values.  A
+    The hash deliberately contains no process-local or wall-clock values. A
     family chooses the namespace and human-readable prefix while the shared
     adapter owns canonicalization of the durable identity.
     """

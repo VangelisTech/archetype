@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Architecture and identity evidence for the optional Temporal adapter."""
+"""Architecture and identity evidence for shared Temporal infrastructure."""
 
 from __future__ import annotations
 
@@ -10,12 +10,17 @@ from pathlib import Path
 
 import pytest
 
-from archetype.activities.temporal import durable_workflow_id
 from archetype.missions.temporal import mission_workflow_id
+from archetype.orchestration.temporal import durable_workflow_id
 
 _ROOT = Path(__file__).resolve().parents[2]
-_ADAPTER_ROOT = (
-    _ROOT / "packages" / "archetype-ecs" / "src" / "archetype" / "activities" / "temporal"
+_ADAPTER_ROOT = _ROOT / "packages" / "archetype-ecs" / "src" / "archetype" / "orchestration"
+_DOMAIN_ROOTS = (
+    _ROOT / "packages" / "archetype-ecs" / "src" / "archetype" / "activities",
+    _ROOT / "packages" / "archetype-ecs" / "src" / "archetype" / "commands",
+    _ROOT / "packages" / "archetype-ecs" / "src" / "archetype" / "evaluation",
+    _ROOT / "packages" / "archetype-ecs" / "src" / "archetype" / "migration",
+    _ROOT / "packages" / "archetype-research" / "src" / "archetype" / "research",
 )
 _RUNTIME_ROOT = _ROOT / "packages" / "archetype-ecs" / "src" / "archetype" / "runtime"
 
@@ -33,15 +38,32 @@ def _imports(path: Path) -> set[str]:
 
 def test_shared_temporal_adapter_does_not_import_domain_families() -> None:
     domain_prefixes = (
+        "archetype.activities",
+        "archetype.commands",
+        "archetype.evaluation",
+        "archetype.migration",
         "archetype.missions",
         "archetype.physical_ai",
         "archetype.research",
+        "archetype.world",
     )
     imported = {
         module
-        for path in _ADAPTER_ROOT.glob("*.py")
+        for path in _ADAPTER_ROOT.rglob("*.py")
         for module in _imports(path)
         if module.startswith(domain_prefixes)
+    }
+
+    assert imported == set()
+
+
+def test_domain_families_do_not_import_temporal_sdk_directly() -> None:
+    imported = {
+        (path, module)
+        for root in _DOMAIN_ROOTS
+        for path in root.rglob("*.py")
+        for module in _imports(path)
+        if module == "temporalio" or module.startswith("temporalio.")
     }
 
     assert imported == set()
@@ -54,8 +76,8 @@ def test_runtime_facade_does_not_import_temporal_adapter_or_sdk() -> None:
         for module in _imports(path)
         if module == "temporalio"
         or module.startswith("temporalio.")
-        or module == "archetype.activities.temporal"
-        or module.startswith("archetype.activities.temporal.")
+        or module == "archetype.orchestration.temporal"
+        or module.startswith("archetype.orchestration.temporal.")
     }
 
     assert imported == set()

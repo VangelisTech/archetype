@@ -8,8 +8,8 @@ from __future__ import annotations
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from archetype.activities.temporal import create_temporal_worker
 from archetype.missions.run_supervisor import MissionRunExecutor
+from archetype.orchestration.temporal import create_temporal_worker
 
 from .activities import MissionActivities
 from .contracts import MISSION_TASK_QUEUE
