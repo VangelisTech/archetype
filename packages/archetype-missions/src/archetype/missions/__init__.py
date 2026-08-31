@@ -33,7 +33,11 @@ from archetype.missions.components import (
     TaskWorkspace,
     ValidationResult,
 )
-from archetype.missions.config import MissionsExtensionConfig, installed_execution_profiles
+from archetype.missions.config import (
+    MissionsExtensionConfig,
+    MissionTemporalActivityConfig,
+    installed_execution_profiles,
+)
 from archetype.missions.contracts import (
     AgentMissionConfig,
     AgentTask,
@@ -134,6 +138,7 @@ __all__ = [
     "MissionRunStatus",
     "MissionState",
     "MissionStatus",
+    "MissionTemporalActivityConfig",
     "MissionSubmission",
     "MissionProfileRequest",
     "Missions",

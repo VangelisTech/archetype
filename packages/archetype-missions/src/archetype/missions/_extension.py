@@ -86,6 +86,13 @@ from archetype.missions.sandboxes.modal import (
 from archetype.missions.sandboxes.modal_barrier import ModalProviderStartBarrier
 from archetype.missions.sandboxes.service import SandboxService
 from archetype.missions.service import MissionService
+from archetype.missions.temporal.activity_runtime import (
+    MissionTemporalActivityBinding,
+    MissionTemporalAuthorActivityCatalog,
+    MissionTemporalCriticActivityCatalog,
+)
+from archetype.missions.temporal.activity_values import MissionModalActivityValueStore
+from archetype.missions.temporal.modal_job_client import MissionModalJobWorkflowLauncher
 from archetype.missions.trajectories.models import (
     GradeTrajectory,
     IngestClaudeTranscript,
@@ -306,6 +313,7 @@ async def _create_run_world(
 
 async def _handle_mission(
     context: WorldLibraryContext,
+    extension_config: MissionsExtensionConfig,
     operation: SubmitMission | RunMission,
 ) -> Any:
     backend = operation.config.sandbox_backend
@@ -391,7 +399,9 @@ async def _handle_mission(
                 ),
             )
 
-            async def bind_mission_activity(world_id: str) -> MissionActivityBinding:
+            async def bind_mission_activity(
+                world_id: str,
+            ) -> MissionActivityBinding | MissionTemporalActivityBinding:
                 storage_record = await context.worlds.storage_record(world_id)
                 if storage_record is None:
                     raise WorldNotFoundError(world_id)
@@ -406,48 +416,86 @@ async def _handle_mission(
                     context.storage,
                     storage_config,
                 )
-                author = MissionAuthorActivityBinding(
-                    world_id=world_id,
-                    owner=f"mission-author:{reservation.owner}",
-                    reader=reader,
-                    catalog=MissionAuthorActivityCoordinator(coordinator),
-                    values=LocalMissionAuthorValueStore(
-                        catalog_path.with_name(f"{catalog_path.stem}-author-values"),
-                        redactor=context.redaction,
-                    ),
-                    executor=author_executor,
-                    stager=WorldMissionAuthorObservationStager(
-                        storage=context.storage,
-                        registry=context.worlds,
-                    ),
+                author_values = LocalMissionAuthorValueStore(
+                    catalog_path.with_name(f"{catalog_path.stem}-author-values"),
+                    redactor=context.redaction,
                 )
-                critic = MissionCriticActivityBinding(
-                    world_id=world_id,
-                    owner=f"mission-critic:{reservation.owner}",
-                    reader=reader,
-                    catalog=MissionCriticActivityCoordinator(coordinator),
-                    values=LocalMissionCriticValueStore(
-                        catalog_path.with_name(f"{catalog_path.stem}-critic-values"),
-                        codec=CriticActivityCodec(context.redaction),
-                    ),
-                    executor=critic_executor,
-                    stager=WorldMissionCriticObservationStager(
-                        storage=context.storage,
-                        registry=context.worlds,
-                    ),
+                critic_values = LocalMissionCriticValueStore(
+                    catalog_path.with_name(f"{catalog_path.stem}-critic-values"),
+                    codec=CriticActivityCodec(context.redaction),
                 )
-                binding: MissionActivityBinding
+                author_stager = WorldMissionAuthorObservationStager(
+                    storage=context.storage,
+                    registry=context.worlds,
+                )
+                critic_stager = WorldMissionCriticObservationStager(
+                    storage=context.storage,
+                    registry=context.worlds,
+                )
+                binding: MissionActivityBinding | MissionTemporalActivityBinding
 
                 async def close_binding() -> None:
                     await physical.close()
                     await context.required_projectors.unbind(world_id, binding)
 
-                binding = MissionActivityBinding(
-                    world_id=world_id,
-                    author=author,
-                    critic=critic,
-                    close=close_binding,
-                )
+                temporal = extension_config.temporal_activities
+                if temporal is None:
+                    author = MissionAuthorActivityBinding(
+                        world_id=world_id,
+                        owner=f"mission-author:{reservation.owner}",
+                        reader=reader,
+                        catalog=MissionAuthorActivityCoordinator(coordinator),
+                        values=author_values,
+                        executor=author_executor,
+                        stager=author_stager,
+                    )
+                    critic = MissionCriticActivityBinding(
+                        world_id=world_id,
+                        owner=f"mission-critic:{reservation.owner}",
+                        reader=reader,
+                        catalog=MissionCriticActivityCoordinator(coordinator),
+                        values=critic_values,
+                        executor=critic_executor,
+                        stager=critic_stager,
+                    )
+                    binding = MissionActivityBinding(
+                        world_id=world_id,
+                        author=author,
+                        critic=critic,
+                        close=close_binding,
+                    )
+                else:
+                    values = MissionModalActivityValueStore(
+                        author=author_values,
+                        critic=critic_values,
+                    )
+                    workflows = cast(
+                        MissionModalJobWorkflowLauncher,
+                        temporal.workflows,
+                    )
+                    temporal_author = MissionTemporalAuthorActivityCatalog(
+                        index=coordinator,
+                        workflows=workflows,
+                        values=values,
+                        namespace_digest=temporal.namespace_digest,
+                    )
+                    temporal_critic = MissionTemporalCriticActivityCatalog(
+                        index=coordinator,
+                        workflows=workflows,
+                        values=values,
+                        namespace_digest=temporal.namespace_digest,
+                    )
+                    binding = MissionTemporalActivityBinding(
+                        world_id=world_id,
+                        reader=reader,
+                        author=temporal_author,
+                        critic=temporal_critic,
+                        author_values=author_values,
+                        critic_values=critic_values,
+                        author_stager=author_stager,
+                        critic_stager=critic_stager,
+                        close=close_binding,
+                    )
                 reservation.retain_anchor(binding)
                 await context.required_projectors.bind(world_id, binding)
                 try:
@@ -807,6 +855,7 @@ async def _handle_restore_mission_sandbox(
 
 def _operation_handlers(
     context: WorldLibraryContext,
+    config: MissionsExtensionConfig,
     transcripts: TranscriptIngestionService,
     trajectories: TrajectoryService,
 ) -> dict[type[BaseModel], Callable[[BaseModel], Awaitable[Any]]]:
@@ -827,8 +876,8 @@ def _operation_handlers(
             Any,
             partial(_handle_grade_trajectory, context, trajectories),
         ),
-        SubmitMission: cast(Any, partial(_handle_mission, context)),
-        RunMission: cast(Any, partial(_handle_mission, context)),
+        SubmitMission: cast(Any, partial(_handle_mission, context, config)),
+        RunMission: cast(Any, partial(_handle_mission, context, config)),
         RestoreMissionSandbox: cast(
             Any,
             partial(_handle_restore_mission_sandbox, context),
@@ -858,7 +907,7 @@ def install(context: WorldLibraryContext) -> InstalledWorldLibrary:
         context.artifact_store_config,
     )
     trajectories = TrajectoryService(context.storage)
-    handlers = _operation_handlers(context, transcripts, trajectories)
+    handlers = _operation_handlers(context, config, transcripts, trajectories)
 
     if set(handlers) != set(MISSION_OPERATION_MODELS):
         raise RuntimeError("Missions operation composition is incomplete")

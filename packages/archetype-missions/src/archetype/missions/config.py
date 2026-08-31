@@ -11,16 +11,38 @@ from archetype.missions.execution_profiles import ExecutionProfileCatalog
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class MissionTemporalActivityConfig:
+    """Host-owned route from committed Mission Activities into Temporal."""
+
+    workflows: object
+    namespace_digest: str
+
+    def __post_init__(self) -> None:
+        if not callable(getattr(self.workflows, "start", None)):
+            raise TypeError("Mission Temporal Activity config requires a Workflow launcher")
+        if len(self.namespace_digest) != 64 or any(
+            character not in "0123456789abcdef" for character in self.namespace_digest
+        ):
+            raise ValueError("Mission Temporal Activity namespace digest is invalid")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class MissionsExtensionConfig:
     """Bind server-owned mission profiles during the wiring transaction."""
 
     execution_profiles: ExecutionProfileCatalog = field(
         default_factory=ExecutionProfileCatalog.empty
     )
+    temporal_activities: MissionTemporalActivityConfig | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.execution_profiles, ExecutionProfileCatalog):
             raise TypeError("execution_profiles must be an ExecutionProfileCatalog")
+        if self.temporal_activities is not None and not isinstance(
+            self.temporal_activities,
+            MissionTemporalActivityConfig,
+        ):
+            raise TypeError("temporal_activities must be a MissionTemporalActivityConfig")
 
 
 def installed_execution_profiles(installed: object) -> ExecutionProfileCatalog:
@@ -39,4 +61,8 @@ def installed_execution_profiles(installed: object) -> ExecutionProfileCatalog:
     return config.execution_profiles
 
 
-__all__ = ["MissionsExtensionConfig", "installed_execution_profiles"]
+__all__ = [
+    "MissionTemporalActivityConfig",
+    "MissionsExtensionConfig",
+    "installed_execution_profiles",
+]
