@@ -28,6 +28,7 @@ from archetype.missions.execution_profiles import (
     ExecutionProfileBinding,
     ExecutionProfileCatalog,
 )
+from archetype.missions.temporal.activity_values import MissionModalActivityValueStore
 from archetype.missions.trajectories import ClaudeTranscriptSource, TrajectorySelection
 from archetype.missions.trajectories.models import (
     GradeTrajectory,
@@ -168,6 +169,10 @@ def test_temporal_activity_configuration_is_explicit_and_digest_bound(
 
     temporal = MissionTemporalActivityConfig(
         workflows=Workflows(),
+        values=MissionModalActivityValueStore(
+            author=SimpleNamespace(),
+            critic=SimpleNamespace(),
+        ),
         namespace_digest="a" * 64,
     )
     context = replace(
@@ -185,12 +190,26 @@ def test_temporal_activity_configuration_rejects_unusable_authority() -> None:
     with pytest.raises(TypeError, match="Workflow launcher"):
         MissionTemporalActivityConfig(
             workflows=object(),
+            values=MissionModalActivityValueStore(
+                author=SimpleNamespace(),
+                critic=SimpleNamespace(),
+            ),
             namespace_digest="a" * 64,
         )
     with pytest.raises(ValueError, match="namespace digest"):
         MissionTemporalActivityConfig(
             workflows=SimpleNamespace(start=lambda _command: None),
+            values=MissionModalActivityValueStore(
+                author=SimpleNamespace(),
+                critic=SimpleNamespace(),
+            ),
             namespace_digest="mutable-name",
+        )
+    with pytest.raises(TypeError, match="shared value store"):
+        MissionTemporalActivityConfig(
+            workflows=SimpleNamespace(start=lambda _command: None),
+            values=SimpleNamespace(),  # type: ignore[arg-type]
+            namespace_digest="a" * 64,
         )
 
 

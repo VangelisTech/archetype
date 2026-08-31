@@ -9,6 +9,7 @@ import asyncio
 import json
 from collections.abc import Awaitable
 from contextlib import suppress
+from typing import Protocol
 
 from pydantic import TypeAdapter
 from temporalio import activity
@@ -21,7 +22,6 @@ from archetype.missions.run_contracts import (
     mission_result_payload,
     submission_from_json,
 )
-from archetype.missions.run_supervisor import MissionRunExecutor
 
 from .contracts import (
     MISSION_EXECUTE_ACTIVITY,
@@ -36,10 +36,20 @@ _SUBMITTED_ADAPTER = TypeAdapter(SubmittedMission)
 _HEARTBEAT_SECONDS = 20.0
 
 
+class MissionTemporalExecutor(Protocol):
+    """Effect ports invoked by Temporal; lifecycle ownership stays in Temporal."""
+
+    async def submit(self, run: MissionRun) -> SubmittedMission: ...
+
+    async def load_existing(self, run: MissionRun) -> SubmittedMission | None: ...
+
+    async def run(self, run: MissionRun, mission: SubmittedMission) -> MissionResult: ...
+
+
 class MissionActivities:
     """Expose submit/run ports as Temporal Activities during migration."""
 
-    def __init__(self, executor: MissionRunExecutor) -> None:
+    def __init__(self, executor: MissionTemporalExecutor) -> None:
         self._executor = executor
 
     @activity.defn(name=MISSION_SUBMIT_ACTIVITY)
@@ -48,7 +58,6 @@ class MissionActivities:
             command,
             active_operation="submit_mission",
         )
-        self._executor.prepare(run)
         submitted = await self._executor.load_existing(run)
         if submitted is None:
             submitted = await self._executor.submit(run)
@@ -126,4 +135,4 @@ async def _await_with_heartbeats(awaitable: Awaitable[MissionResult]) -> Mission
         raise
 
 
-__all__ = ["MissionActivities"]
+__all__ = ["MissionActivities", "MissionTemporalExecutor"]

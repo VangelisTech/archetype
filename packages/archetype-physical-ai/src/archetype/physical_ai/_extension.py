@@ -5,31 +5,15 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
 from pydantic import BaseModel
 
-from archetype.activities import ActivityCoordinator
 from archetype.commands.registry import OperationSpec
-from archetype.errors import WorldNotFoundError
-from archetype.physical_ai import hosted_workflow
 from archetype.physical_ai.config import PhysicalAIExtensionConfig
-from archetype.physical_ai.hosted_activities import PhysicalHostedActivityCoordinator
-from archetype.physical_ai.hosted_activity_values import LocalHostedEpisodeValueStore
-from archetype.physical_ai.hosted_activity_world import (
-    PhysicalHostedActivityBinding,
-    StoragePhysicalCommittedIntentReader,
-    WorldHostedEpisodeObservationStager,
-)
-from archetype.physical_ai.hosted_modal import ModalHostedEpisodeProvider
 from archetype.physical_ai.models import RunHostedEpisode, summarize_physical_ai_operation
 from archetype.physical_ai.runtime import PhysicalAI
-from archetype.storage.activity_catalog import (
-    SqliteActivityCatalog,
-    activity_catalog_path_for,
-)
 from archetype.world_libraries import (
     InstalledWorldLibrary,
     WorldLibraryContext,
@@ -43,126 +27,30 @@ def _world_key(operation: RunHostedEpisode) -> object:
     return operation.world_id
 
 
-async def _handle_run_hosted_episode(
-    worlds: Any,
-    hosted_activity_for: Callable[[RunHostedEpisode], Awaitable[PhysicalHostedActivityBinding]],
-    operation: RunHostedEpisode,
-) -> Any:
-    binding = await hosted_activity_for(operation)
-    return await hosted_workflow.run_hosted_episode(worlds, binding, operation)
+async def _handle_run_hosted_episode(operation: RunHostedEpisode) -> Any:
+    """Reject the removed SQLite-backed hosted activity route.
+
+    Hosted Physical-AI execution used the generic SQLite claim/lease system.
+    That system is being removed in favor of Temporal; this operation remains
+    registered only so callers receive an explicit migration error instead of
+    silently receiving the obsolete durability model.
+    """
+
+    raise RuntimeError(
+        "run_hosted_episode is unavailable during the Temporal cutover; "
+        "the SQLite-backed hosted Physical-AI route has been removed"
+    )
 
 
 def _install(context: WorldLibraryContext) -> InstalledWorldLibrary:
-    config = context.config
-    if config is None:
-        physical_config = PhysicalAIExtensionConfig()
-    elif isinstance(config, PhysicalAIExtensionConfig):
-        physical_config = config
-    else:
+    if context.config is not None and not isinstance(
+        context.config,
+        PhysicalAIExtensionConfig,
+    ):
         raise TypeError("physical-ai config must be a PhysicalAIExtensionConfig")
 
-    worlds = context.worlds
-    storage = context.storage
-    resources = context.resources
-    required_projectors = context.required_projectors
-    hosted_bindings: dict[str, tuple[object, PhysicalHostedActivityBinding]] = {}
-    hosted_bindings_lock = asyncio.Lock()
-
-    async def hosted_activity_for(
-        operation: RunHostedEpisode,
-    ) -> PhysicalHostedActivityBinding:
-        world_id = str(operation.world_id)
-        async with hosted_bindings_lock:
-            retained = hosted_bindings.get(world_id)
-            if retained is not None:
-                retained_config, binding = retained
-                if retained_config != operation.provider:
-                    raise ValueError("one world cannot change its hosted Modal provider namespace")
-                return binding
-
-            storage_record = await worlds.storage_record(world_id)
-            if storage_record is None:
-                raise WorldNotFoundError(world_id)
-            storage_config = storage_record[0]
-            if storage_config != operation.storage_config:
-                raise ValueError("hosted operation storage does not match the live world")
-            catalog_path = activity_catalog_path_for(
-                storage_config,
-                context.control_catalog_config,
-            )
-            physical = SqliteActivityCatalog(catalog_path)
-            reservation = resources.reserve_owner(
-                f"physical-ai:hosted:{world_id}",
-                phase="workflow-handles",
-                closed_message="hosted Physical-AI worker is closed",
-            )
-            physical_open = True
-
-            async def construct() -> PhysicalHostedActivityBinding:
-                nonlocal physical_open
-                coordinator = PhysicalHostedActivityCoordinator(
-                    ActivityCoordinator(physical),
-                    lease_seconds=physical_config.hosted_activity_lease_seconds,
-                )
-                provider_factory = physical_config.hosted_episode_provider_factory
-                provider = (
-                    provider_factory(operation.provider)
-                    if provider_factory is not None
-                    else ModalHostedEpisodeProvider(operation.provider)
-                )
-                if provider.provider != operation.provider.provider_identity:
-                    raise ValueError(
-                        "hosted provider does not implement the requested Modal namespace"
-                    )
-                binding: PhysicalHostedActivityBinding
-
-                async def close_binding() -> None:
-                    nonlocal physical_open
-                    await required_projectors.unbind(world_id, binding)
-                    if physical_open:
-                        await physical.close()
-                        physical_open = False
-
-                binding = PhysicalHostedActivityBinding(
-                    world_id=world_id,
-                    owner=f"physical-hosted:{reservation.owner}",
-                    reader=StoragePhysicalCommittedIntentReader(
-                        storage,
-                        storage_config,
-                    ),
-                    catalog=coordinator,
-                    values=LocalHostedEpisodeValueStore(
-                        catalog_path.with_name(f"{catalog_path.stem}-physical-values")
-                    ),
-                    provider=provider,
-                    stager=WorldHostedEpisodeObservationStager(
-                        storage=storage,
-                        registry=worlds,
-                    ),
-                    close=close_binding,
-                )
-                reservation.bind(binding, close=close_binding)
-                await required_projectors.bind(world_id, binding)
-                routed = required_projectors.required_projector_for(world_id)
-                if worlds.required_projector(world_id) is not routed:
-                    await worlds.bind_required_projector(world_id, routed)
-                return binding
-
-            try:
-                binding = await reservation.construct(construct)
-            except BaseException:
-                try:
-                    await reservation.aclose()
-                finally:
-                    if physical_open:
-                        await physical.close()
-                        physical_open = False
-                raise
-            hosted_bindings[world_id] = (operation.provider, binding)
-            return binding
-
     async def handle(operation: RunHostedEpisode) -> Any:
-        return await _handle_run_hosted_episode(worlds, hosted_activity_for, operation)
+        return await _handle_run_hosted_episode(operation)
 
     context.registry.register(
         OperationSpec(

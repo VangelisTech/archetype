@@ -226,8 +226,6 @@ def test_published_result_survives_worker_death_before_exact_settlement(
     _assert_one_self_registered_call(before_settlement)
     assert before_settlement["activity"]["result"]["digest"] == result_digest
     assert before_settlement["activity"]["result_pending_observation"] is True
-    assert before_settlement["activity"]["result_attempt"] is None
-    assert before_settlement["activity"]["result_fence"] is None
     assert before_settlement["activity"]["settlement"] is None
     assert before_settlement["activity_inventory"] == {
         "activity_count": 1,

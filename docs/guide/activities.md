@@ -2,55 +2,36 @@
 
 **Document type:** Normative accepted-target contract.
 
-**Status:** The generic boundary, local catalog, and migration order are
-ratified and implemented. Each consuming family owns its semantic schemas,
-provider recovery meaning, crash matrix, and executable oracles. See
-[Agent Missions](../missions/recovery.md) and
-[Physical AI](physical-ai.md#hosted-episode-recovery) for the two implemented
-first-party consumers.
+**Status:** Temporal is the single authority for durable orchestration. The
+generic Archetype Activity boundary retains only committed admission, bounded
+result evidence, ECS observation, and exact-receipt settlement.
 
-**Scope:** Durable work admitted after one committed tick and observed by a
-later committed tick. This specification refines the required-projector rule
-in [Atomic Tick Visibility](atomic-visibility.md) without changing tick
-atomicity.
+**Scope:** Work admitted from one committed tick whose factual result is
+observed by a later committed tick. This specification refines the
+required-projector rule in [Atomic Tick Visibility](atomic-visibility.md)
+without changing tick atomicity.
 
 ## 1. Resource and Activity
 
-### Resource
-
 > A Resource is a capability available while executing a tick. Correctness
-> must not depend on its process-local lifetime. It should be read-only,
-> reconstructible, or safely idempotent.
+> must not depend on its process-local lifetime.
 
-### Activity
+> An Activity is external work derived from committed world intent and
+> supervised by the application's durable orchestrator.
 
-> An Activity is durably coordinated work admitted from one committed tick and
-> observed by a later committed tick.
-
-Consequential or hosted work derived from committed world intent is an
-Activity. Expensive or long-lived work may also use this boundary when its
-result must survive worker loss even if the underlying computation is
-deterministic and safe to repeat. This rule does not reclassify direct handlers
-such as artifact ingestion that do not follow the
-intent-in-one-tick/observation-in-a-later-tick protocol.
-
-The existing `archetype.core.Resources` object remains the plain type-keyed
-container passed to processors. A persistent client can still be a useful
-optimization for inference, messaging, or local simulation. Its process
-lifetime belongs to its runtime or executor owner; world correctness may not
-depend on that Python object surviving.
+Temporal owns scheduling, retries, timers, cancellation, worker replacement,
+and workflow history. Archetype does not duplicate those facilities in an
+Activity catalog. Family Components remain the semantic record, while the
+slim Activity settlement index binds committed intent to a bounded result and
+the later receipt that observed it.
 
 An Activity is not:
 
 - a generic ECS Component;
-- a live sandbox, simulator, model, or robot handle;
-- permission for a provider result to advance workflow state directly;
-- a second workflow state machine competing with processors; or
-- an exactly-once promise for arbitrary external effects.
-
-Family Components remain the semantic record. Activity control records exist
-to deliver work, recover it, and bind a factual result to the later committed
-receipt that observed it.
+- a live sandbox, provider client, simulator, model, or robot handle;
+- a SQLite-backed attempt, lease, claim, or fence;
+- permission for a provider result to advance workflow state directly; or
+- a second workflow state machine competing with Temporal or ECS processors.
 
 ## 2. The committed-state protocol
 
@@ -64,10 +45,7 @@ tick T commits semantic intent
 required projector admits one logical Activity
         |
         v
-worker claims a fenced attempt
-        |
-        v
-family adapter executes or reconciles provider work
+Temporal supervises provider work outside the world lock
         |
         v
 bounded result reference and digest become durable
@@ -86,68 +64,28 @@ later processors decide the next semantic transition
 ```
 
 The required projector reads the exact visibility snapshot named by a
-`CommittedTickReceipt`. It deterministically admits Activity intent by the
-owning family's stable logical identity. Repeating projection for the same
-receipt and logical identity is an idempotent no-op only when the immutable
-request identity and digest agree. A conflicting replay fails closed.
+`CommittedTickReceipt`. It deterministically admits Activity intent using the
+owning family's stable logical identity. Repeating projection is an idempotent
+no-op only when immutable identity and request digest agree; conflicts fail
+closed.
 
-Both the source receipt and the later observation receipt MUST carry a durable,
-non-empty visibility token. Tokenless bare-core or uncoordinated ticks do not
-name the pinned snapshot required for Activity admission or settlement and
-cannot use this contract.
+Both source and observation receipts carry a durable, non-empty visibility
+token. Tokenless or uncoordinated ticks cannot admit or settle an Activity.
+The projector performs no provider, sandbox, Git, simulator, model, or
+hardware I/O.
 
-The projector performs no provider, sandbox, Git, simulator, model, or hardware
-I/O. Activity workers claim outside the world lock. One claim names an attempt
-and carries a fence so a stale worker cannot record or settle a result after a
-newer claimant has taken authority.
+Temporal execution records the bounded result, or a durable reference to a
+larger result, before ECS observation staging. Staging is idempotent and may
+repeat after restart. Family-owned completion evidence binds Activity kind and
+identity to the exact result reference and digest. Settlement occurs only when
+that binding appears in the exact later committed receipt. Settlement never
+decides mission acceptance, physical success, retry, or any other semantic
+transition.
 
-Fencing limits who may change the control record. It cannot undo an external
-effect and cannot prove that an expired worker did nothing. Before any external
-effect, the worker MUST durably bind a stable logical provider operation
-identity. An adapter that cannot bind that identity fails closed without
-executing. A provider-returned execution handle may arrive later, but it is
-supplemental evidence; its absence is not permission to replay.
-
-An expired attempt that is still unbound and performed no external effect may
-be reclaimed under a new fence. Once provider operation identity is bound, a
-replacement claimant must reconcile, retrieve, resume, compensate, or fail
-closed according to the owning adapter. Lease expiry alone never authorizes
-blind replay.
-
-Provider-family reconciliation reaches one of three factual conclusions. These
-are recovery outcomes, not a generic lifecycle enum:
-
-| Reconciliation conclusion | Catalog action under the live fence | Execution permission |
-|---|---|---|
-| Recovered result | Record the bounded result reference and digest | No fresh execution; proceed toward observation |
-| Confirmed absent | Record confirmed absence and a bounded provider retry-guard reference/digest | A fresh attempt is permitted only when that guard proves atomic provider deduplication by logical operation identity or proves that every stale claimant is irrevocably unable to start |
-| Unknown | Retain the provider-bound work for later reconciliation | No fresh execution; retry reconciliation or require family/operator intervention |
-
-Confirmed absence is authoritative only when recorded under the live
-reconciliation fence. An in-memory lookup result, timeout, missing
-provider-returned handle, or lease expiry is not confirmed absence. Confirmed
-absence alone is also not execution permission: after an absence check, a stale
-worker could still start the original effect. The provider adapter must first
-produce a retry guard backed by atomic create-if-absent/idempotency for the same
-logical provider operation, a provider-enforced fence, or other durable proof
-that the stale claimant can no longer start. The Activity catalog records the
-bounded guard reference and digest; the owning adapter retains its meaning.
-
-The complete bounded result, or a durable reference to a larger result, is
-recorded before its ECS observation is staged. Staging is idempotent and may be
-repeated after restart until a later tick commits the factual observation.
-Family-owned observation completion evidence MUST bind the Activity kind and
-identity to the exact recorded result reference/digest and prove that the
-family's complete result-derived fact set is present. The Activity settles only
-when that binding appears in the exact later `CommittedTickReceipt`. A
-correlation ID by itself is not completion evidence. Settlement does not decide
-mission acceptance, physical success, retry, or any other family transition.
-
-The receipt reader fails closed unless the requested world/run/tick is still
-the current committed head and its visibility token is the sole token at that
-head and is present in the pinned visibility allowlist. A historical tick,
-sibling token, ambiguous multi-token head, missing visibility entry, wrong
-world/run, or tokenless receipt cannot admit or settle work.
+The receipt reader fails closed unless the requested world, run, tick, and
+visibility token identify the current committed head. Historical, sibling,
+ambiguous, missing, wrong-world, or tokenless receipts cannot admit or settle
+work.
 
 ## 3. Commands and Activities are different
 
@@ -155,161 +93,76 @@ world/run, or tokenless receipt cannot admit or settle work.
 |---|---|---|
 | Direction | Enters world execution | Leaves one committed tick and returns to a later tick |
 | Admission | Before materialization | After semantic intent is committed |
-| Execution | Materialized under exact-world authority | Performed outside the world lock |
+| Execution | Materialized under exact-world authority | Supervised by Temporal outside the world lock |
 | Settlement | Coupled to the target tick manifest | Coupled to the later receipt that commits its observation |
-| Meaning | Request to apply registered world/application behavior | Durable coordination of external work |
+| Meaning | Request to apply registered behavior | External work whose result becomes an ECS fact |
 
-Activities do not reuse `CommandScheduler`. The two mechanisms may share
-physical control-catalog techniques, but they have different authority,
-ordering, and settlement boundaries.
+Atomic commands remain in Archetype. Commands that start a durable process may
+delegate orchestration to Temporal, but Activity settlement does not reuse the
+command scheduler.
 
 ## 4. Authority
 
 | Owner | Responsibility |
 |---|---|
-| `archetype.activities` | Generic contracts, coordinator port/service, logical identity, immutable admission, claims, attempts, leases, fences, bounded provider retry-guard and result references/digests, and observation settlement |
-| `archetype.storage.activity_catalog` | Flattened physical records, structural catalog port, and local SQLite implementation; a future remote implementation is a separate parity slice |
-| Owning top-level family | Semantic intent and observation schemas, provider protocol and reconciliation facts, intent-to-Activity projection, worker choreography, observation staging, and declared lower-family composition |
-| `RuntimeResources` | Retained process-lifetime ownership, owner admission/drain, and ordered teardown for installed Activity bindings |
-| Owning world library's private `_extension.py` | Concrete family binding and executor construction over the bounded `WorldLibraryContext`, including exact operation registration |
-| Iceberg or `archetype.artifacts` | Large or unbounded result payloads published before their bounded Activity reference |
+| Temporal | Workflow history, scheduling, timers, retries, cancellation, signals, queries, and worker recovery |
+| `archetype.activities` | Logical identity, immutable admission, bounded result references/digests, unsettled-work queries, and observation settlement |
+| `archetype.storage.activity_catalog` | The slim settlement index and its local SQLite representation; it stores ECS facts, not orchestration state |
+| Owning top-level family | Semantic intent and observation schemas, provider protocol, projection, result staging, and domain decisions |
+| Provider adapter | Stable provider-operation identity, reattachment, cancellation, cleanup, and bounded result publication |
+| Iceberg or `archetype.artifacts` | Large or unbounded payloads published before their bounded Activity reference |
 
-`archetype.activities` owns mechanics, not a universal recovery policy. A Git
-publication, seeded simulation, and real robot may share claim and fence
-machinery without sharing a replay decision:
-
-- Mission Git work reconciles the exact repository, branch, base, provider
-  operation identity, and published head.
-- A seeded simulation reuses the first durable result for its stable operation
-  identity; byte-identical GPU replay is not a correctness assumption.
-- Real hardware follows its adapter's explicit reconciliation or operator
-  intervention path and never blindly repeats a consequential action.
-
-No generic recovery-policy enum or lifecycle-status enum is ratified by this
-document. The initial catalog records durable facts and permits only the
-transitions required by the crash oracles. Shared vocabulary may be extracted
-after the Mission author, critic, and hosted Physical-AI consumers demonstrate
-that it has the same meaning.
-
-`archetype.missions` owns Agent Missions workflow authority, including its
-intent-to-Activity-to-observation choreography. `archetype.physical_ai` owns
-the corresponding hosted-physical choreography. Both families retain their
-Components, processors, value contracts, provider protocols, and recovery
-meaning; neither requires an `archetype.app` mirror.
+No generic recovery-policy or lifecycle-status enum exists in this boundary.
+Mission Git work, simulations, and hardware retain family-specific provider
+meaning while sharing Temporal orchestration and ECS settlement.
 
 ## 5. Identity and bounded durability
 
-The generic control key is `(world_id, kind, activity_id)`. An `activity_id`
-may be only family-local: two worlds or two Activity kinds can legitimately
-produce the same value. Source `run_id`, committed tick, and visibility token
-are immutable bindings on that key. Provider operation identity must namespace
-the same family/kind and `world_id` with the family-local identifier; the bare
-identifier or `world_id:activity_id` is not globally sufficient.
-
-The generic control record must preserve enough immutable identity to reject a
-different operation masquerading as a retry:
+The settlement key is `(world_id, kind, activity_id)`. Source `run_id`, source
+tick, visibility token, input reference, and input digest are immutable. The
+index stores only:
 
 - logical Activity identity and kind;
 - source world, run, committed tick, and visibility token;
 - immutable input reference and digest;
-- attempt identity, lease, and fence;
-- stable logical provider operation identity bound before provider work starts;
-- bounded provider retry-guard reference and digest before a provider-bound
-  absence authorizes another attempt;
-- bounded result reference and digest once a result exists; and
+- bounded result reference and digest, once available; and
 - the exact later committed receipt that observed the result.
 
-Both receipt bindings include their durable visibility token; world/run/tick
-coordinates without that token are insufficient.
-
-Secrets, live handles, provider clients, complete transcripts, repositories,
-trajectories, frames, and other unbounded values do not belong in the Activity
-catalog. Large results are first made durable through storage or artifacts. The
-catalog then records their bounded reference and digest. Repeating the same
-write is idempotent; the same identity with a different immutable digest is a
-conflict.
-
-Attempt identity is not logical Activity identity. A logical Activity may
-acquire more than one fenced attempt across worker loss. All attempts still
-refer to the same provider operation and semantic request. A new attempt does
-not create permission to repeat an ambiguous effect.
+Provider call IDs and workflow IDs belong to Temporal history and provider
+integration, not the SQLite settlement index. Secrets, live handles,
+transcripts, repositories, trajectories, and frames are excluded. Large
+results are first persisted through storage or artifacts, then referenced by
+digest. Repeating the same write is idempotent; a different digest for the same
+identity is a conflict.
 
 ### World lifecycle interaction
 
-V1 does not transfer or duplicate an in-flight Activity across world lineage.
-Before an Activity-backed family is wired into a fork-capable world, the
-application lifecycle path MUST hold the source world's exact-world lock,
-reconcile its retained required-projector receipt, and refuse both `fork_world`
-and `destroy_world` while that source world has any admitted Activity without
-an exact later-receipt settlement. The catalog therefore exposes one
-world-scoped unsettled-work oracle for lifecycle integration.
-
-This check is conservative by design. A fork is permitted after every source
-Activity visible at the selected head has settled; its complete factual
-observation is then ordinary lineage-visible ECS state. A fork never inherits
-a source control record, reprojects an ancestor tick, adopts a provider
-operation, or silently starts replacement work. Destroy likewise cannot make
-an admitted Activity permanently unobservable. Transfer, cancellation, and
-orphan policies require a separate family-owned proposal if a later consumer
-proves that blocking is insufficient.
-
-Public destroy reserves sticky close before waiting for an admitted tick, then
-reconciles and runs this oracle under exact cleanup authority. An unsettled
-refusal rolls back only that provisional public close so the worker can stage
-the missing observation. A pre-owned cleanup lease stays sticky. Public-close
-reopen authority also survives a required-projector failure, because its retry
-may be the operation that first durably admits the Activity.
-
-Package-specific crash matrices and completeness evidence live with their
-owners: [Agent Missions](../missions/recovery.md) and
-[Physical AI](physical-ai.md#hosted-episode-recovery).
+V1 does not transfer an unsettled Activity across world lineage. Under the
+source world's exact-world lock, `fork_world` and `destroy_world` refuse while
+the settlement index reports admitted work without a later observation
+receipt. Once settled, its observation is ordinary lineage-visible ECS state.
+A fork never inherits a settlement row or adopts a provider operation.
 
 ## 6. Resource-spike disposition
 
-The `AsyncResources`/WorldHost prototype is retained as architecture evidence
-and is frozen. It is not the implementation path for Agent Missions or
-whole-episode Physical AI.
-
-This decision preserves the useful part of the Resource finding: process hosts
-may still own long-lived clients, placement, readiness, and teardown. It rejects
-the stronger assumption that world-host lifetime machinery should carry the
-durability of consequential work performed between committed states.
-
-The core `Resources` bag does not change in the Activity migration. A later
-focused Resource proposal may address an in-tick capability that cannot be
-handled as read-only, reconstructible, safely idempotent access or as an
-Activity. Evidence from the frozen spike should inform that proposal rather
-than silently entering the current refactor.
+The `AsyncResources`/WorldHost prototype remains architecture evidence, not an
+Activity durability implementation. Process hosts may own clients, placement,
+readiness, and teardown; Temporal owns durable orchestration. The core
+`Resources` bag remains a plain type-keyed capability container.
 
 ## 7. Verification gates
 
-The Activity migration is conforming only when focused contracts prove:
+The boundary conforms when tests prove:
 
-- projection is exact-receipt-bound, deterministic, and idempotent;
-- later heads, sibling or multiple head tokens, wrong world/run identities,
-  missing visibility entries, and tokenless receipts fail closed;
-- tokenless uncoordinated receipts are rejected for both admission and
-  settlement;
-- provider I/O never occurs in the required projector or under the world lock;
-- only the live fenced attempt can bind provider work or record its result,
-  while only the exact later receipt with complete family evidence can settle;
-- provider-bound recovery reconciles instead of blindly replaying;
-- recovered-result, confirmed-absence, and unknown reconciliation paths are
-  fenced; only recorded confirmed absence plus a provider retry guard permits
-  a fresh execution-authorized attempt;
-- a complete result becomes durable before ECS staging;
-- restart repeatedly restages completed-but-unobserved results;
-- claim and result-delivery scans page the pending set to exhaustion, so a
-  leased prefix cannot strand a claimable Activity or skip an unobserved
-  durable result — a larger finite prefix is not conforming;
-- settlement binds the exact observation receipt and matching result
-  reference/digest completeness evidence;
-- equal world-local Activity IDs in two worlds remain isolated in both control
-  and provider operation identity;
-- equal family-local Activity IDs from two kinds in one world remain isolated;
-- family processors remain the only semantic transition authority;
-- large or unbounded outputs use bounded catalog references to payloads made
-  durable before the Activity result is recorded.
+- exact-receipt-bound, deterministic, idempotent admission;
+- fail-closed rejection of wrong, historical, ambiguous, or tokenless receipts;
+- no provider I/O in projectors or under the world lock;
+- Temporal-owned execution produces no SQLite attempts, claims, leases, or fences;
+- a bounded result is durable before idempotent ECS staging;
+- settlement requires exact later-receipt completeness evidence;
+- equal family-local IDs remain isolated across worlds and kinds;
+- family processors remain the only semantic transition authority; and
+- large outputs use durable bounded references.
 
 The implementation sequence and release cut lines are tracked in
 [Activity-boundary refactor](../planning/activity-boundary-refactor.md).

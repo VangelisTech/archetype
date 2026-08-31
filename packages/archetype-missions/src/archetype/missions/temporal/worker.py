@@ -8,17 +8,16 @@ from __future__ import annotations
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from archetype.missions.run_supervisor import MissionRunExecutor
 from archetype.orchestration.temporal import create_temporal_worker
 
-from .activities import MissionActivities
+from .activities import MissionActivities, MissionTemporalExecutor
 from .contracts import MISSION_TASK_QUEUE
 from .workflow import MissionWorkflow
 
 
 def create_mission_worker(
     client: Client,
-    executor: MissionRunExecutor,
+    executor: MissionTemporalExecutor,
     *,
     task_queue: str = MISSION_TASK_QUEUE,
 ) -> Worker:

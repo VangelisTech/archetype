@@ -99,5 +99,43 @@ class MissionTemporalClient:
             result_type=MissionWorkflowState,
         )
 
+    @property
+    def client(self) -> Client:
+        """Return the host-owned Temporal connection for Worker composition."""
+
+        return self._client
+
+    @property
+    def task_queue(self) -> str:
+        """Return the queue shared by Mission Workflows and their Activities."""
+
+        return self._task_queue
+
+    async def list_for_principal(
+        self,
+        principal: str,
+        *,
+        limit: int,
+    ) -> tuple[WorkflowHandle[MissionWorkflow, MissionWorkflowState], ...]:
+        """Return Mission Workflows through Temporal Visibility, never SQLite."""
+
+        query = f"WorkflowType = '{MISSION_WORKFLOW_NAME}'"
+        handles: list[WorkflowHandle[MissionWorkflow, MissionWorkflowState]] = []
+        # This is intentionally the simple initial Visibility path.  If the
+        # control plane needs indexed principal lookups at scale, provision a
+        # Temporal Search Attribute there; do not recreate an SQLite index.
+        async for execution in self._client.list_workflows(query=query):
+            handle = self._client.get_workflow_handle(
+                execution.id,
+                run_id=execution.run_id,
+                result_type=MissionWorkflowState,
+            )
+            state = await handle.query(MissionWorkflow.state)
+            if state is not None and state.principal == principal:
+                handles.append(handle)
+                if len(handles) >= limit:
+                    break
+        return tuple(handles)
+
 
 __all__ = ["MissionTemporalClient"]

@@ -28,14 +28,18 @@ from archetype.missions.activities import (
     author_provider_operation_id,
 )
 from archetype.missions.activity_world import (
-    MissionAuthorActivityProjector,
     StorageMissionCommittedIntentReader,
     WorldMissionAuthorObservationStager,
 )
-from archetype.missions.author_activity import AuthorActivityResultDelivery
-from archetype.missions.critic_activity import CriticActivityResultDelivery
-from archetype.missions.critic_activity_world import (
+from archetype.missions.author_activity import (
+    AuthorActivityResultDelivery,
+    MissionAuthorActivityProjector,
+)
+from archetype.missions.critic_activity import (
+    CriticActivityResultDelivery,
     MissionCriticActivityProjector,
+)
+from archetype.missions.critic_activity_world import (
     WorldMissionCriticObservationStager,
 )
 from archetype.missions.critics import (
@@ -44,11 +48,13 @@ from archetype.missions.critics import (
     CriticActivityResultRef,
     critic_provider_operation_id,
 )
-from archetype.missions.local_activity_values import LocalMissionAuthorValueStore
-from archetype.missions.local_critic_activity_values import LocalMissionCriticValueStore
 from archetype.world.simulation import RequiredProjector
 
-from .activity_values import MissionModalActivityValueStore
+from .activity_values import (
+    MissionModalActivityValueStore,
+    MissionModalAuthorValueStore,
+    MissionModalCriticValueStore,
+)
 from .contracts import (
     MissionJobValueRef,
     MissionModalJobFamily,
@@ -441,8 +447,8 @@ class MissionTemporalActivityWorker:
         world_id: str,
         author: MissionTemporalAuthorActivityCatalog,
         critic: MissionTemporalCriticActivityCatalog,
-        author_values: LocalMissionAuthorValueStore,
-        critic_values: LocalMissionCriticValueStore,
+        author_values: MissionModalAuthorValueStore,
+        critic_values: MissionModalCriticValueStore,
         author_stager: WorldMissionAuthorObservationStager,
         critic_stager: WorldMissionCriticObservationStager,
     ) -> None:
@@ -525,8 +531,8 @@ class MissionTemporalActivityBinding:
         reader: StorageMissionCommittedIntentReader,
         author: MissionTemporalAuthorActivityCatalog,
         critic: MissionTemporalCriticActivityCatalog,
-        author_values: LocalMissionAuthorValueStore,
-        critic_values: LocalMissionCriticValueStore,
+        author_values: MissionModalAuthorValueStore,
+        critic_values: MissionModalCriticValueStore,
         author_stager: WorldMissionAuthorObservationStager,
         critic_stager: WorldMissionCriticObservationStager,
         close: Callable[[], Awaitable[None]] | None = None,

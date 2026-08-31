@@ -22,7 +22,6 @@ from archetype.missions.critics import (
     CriticActivityRequest,
     CriticActivityResult,
     CriticActivityResultRef,
-    MissionCriticExecutor,
     complete_critic_activity_fact_bundle,
     complete_critic_activity_fact_count,
 )
@@ -36,22 +35,14 @@ from archetype.storage.interfaces import iStorageService
 from archetype.world.interfaces import iWorldRegistry
 from archetype.world.mutation import _create_entities_atomically_locked
 from archetype.world.query import PinnedWorldQuerySnapshot, pin_query_snapshot
-from archetype.world.simulation import RequiredProjector
 
 from .activity_world import (
     _MISSION_QUERY_GROUPS,
-    StorageMissionCommittedIntentReader,
     _component_from_row,
     _has_recorded_group,
     _query_groups,
 )
 from .author_activity import CommittedMissionSnapshot
-from .critic_activity import (
-    MissionCriticActivityCatalog,
-    MissionCriticActivityProjector,
-    MissionCriticActivityWorker,
-    MissionCriticValueStore,
-)
 
 
 def _pending_component_facts(
@@ -315,56 +306,6 @@ class WorldMissionCriticObservationStager:
             raise ValueError("critic delivery reused the author sandbox identity")
 
 
-class MissionCriticActivityBinding:
-    """Opt one exact world into the Activity-backed critic choreography."""
-
-    def __init__(
-        self,
-        *,
-        world_id: str,
-        owner: str,
-        reader: StorageMissionCommittedIntentReader,
-        catalog: MissionCriticActivityCatalog,
-        values: MissionCriticValueStore,
-        executor: MissionCriticExecutor,
-        stager: WorldMissionCriticObservationStager,
-    ) -> None:
-        if not world_id.strip():
-            raise ValueError("mission critic binding requires a world identity")
-        self.world_id = world_id
-        self.projector = MissionCriticActivityProjector(
-            reader=reader,
-            catalog=catalog,
-            values=values,
-        )
-        self.required_projector = RequiredProjector(
-            consumer_name=self.projector.consumer_name,
-            project=self.projector.project,
-        )
-        self.worker = MissionCriticActivityWorker(
-            world_id=world_id,
-            owner=owner,
-            catalog=catalog,
-            values=values,
-            executor=executor,
-            stager=stager,
-        )
-        self._catalog = catalog
-
-    def required_projector_for(self, world_id: str) -> RequiredProjector | None:
-        """Bind the sole projector slot only for this explicitly selected world."""
-
-        return self.required_projector if str(world_id) == self.world_id else None
-
-    async def has_unsettled_work(self, world_id: str) -> bool:
-        """Report only this binding's exact world to the lifecycle gate."""
-
-        if str(world_id) != self.world_id:
-            return False
-        return await self._catalog.has_unsettled_work(self.world_id)
-
-
 __all__ = [
-    "MissionCriticActivityBinding",
     "WorldMissionCriticObservationStager",
 ]

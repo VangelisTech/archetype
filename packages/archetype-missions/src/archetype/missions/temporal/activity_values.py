@@ -11,17 +11,34 @@ from typing import Protocol
 from archetype.missions.activities import (
     AuthorActivityRequestRef,
     AuthorActivityResultRef,
+    DurableAuthorExecutionObservation,
 )
+from archetype.missions.coding_agents.contracts import TaskDispatchRequest
 from archetype.missions.critics import (
+    CandidateReviewRequest,
+    CriticActivityRequest,
     CriticActivityRequestRef,
+    CriticActivityResult,
     CriticActivityResultRef,
 )
 
 from .contracts import MissionJobValueRef, MissionModalJobFamily
 
+AUTHOR_ACTIVITY_VALUE_REF_PREFIX = "mission-author+json:sha256:"
+CRITIC_ACTIVITY_VALUE_REF_PREFIX = "mission-critic+json:sha256:"
+
 
 class MissionModalAuthorValueStore(Protocol):
     """Canonical author bytes retained outside Temporal history."""
+
+    async def put_request(self, request: TaskDispatchRequest) -> AuthorActivityRequestRef: ...
+
+    async def get_request(self, value: AuthorActivityRequestRef) -> TaskDispatchRequest: ...
+
+    async def get_result(
+        self,
+        value: AuthorActivityResultRef,
+    ) -> DurableAuthorExecutionObservation: ...
 
     async def get_encoded_request(self, value: AuthorActivityRequestRef) -> bytes: ...
 
@@ -35,6 +52,15 @@ class MissionModalAuthorValueStore(Protocol):
 
 class MissionModalCriticValueStore(Protocol):
     """Canonical critic bytes retained outside Temporal history."""
+
+    async def put_request(
+        self,
+        request: CandidateReviewRequest,
+    ) -> CriticActivityRequestRef: ...
+
+    async def get_request(self, value: CriticActivityRequestRef) -> CriticActivityRequest: ...
+
+    async def get_result(self, value: CriticActivityResultRef) -> CriticActivityResult: ...
 
     async def get_encoded_request(self, value: CriticActivityRequestRef) -> bytes: ...
 
@@ -57,6 +83,14 @@ class MissionModalActivityValueStore:
     ) -> None:
         self._author = author
         self._critic = critic
+
+    @property
+    def author(self) -> MissionModalAuthorValueStore:
+        return self._author
+
+    @property
+    def critic(self) -> MissionModalCriticValueStore:
+        return self._critic
 
     async def author_request(self, value: AuthorActivityRequestRef) -> MissionJobValueRef:
         payload = await self._author.get_encoded_request(value)
@@ -147,6 +181,8 @@ def _require_payload(ref: MissionJobValueRef, payload: bytes) -> None:
 
 
 __all__ = [
+    "AUTHOR_ACTIVITY_VALUE_REF_PREFIX",
+    "CRITIC_ACTIVITY_VALUE_REF_PREFIX",
     "MissionModalActivityValueStore",
     "MissionModalAuthorValueStore",
     "MissionModalCriticValueStore",

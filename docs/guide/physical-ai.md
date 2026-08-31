@@ -5,186 +5,59 @@
 ## Purpose and Scope
 
 Physical AI is an [application-layer](app-overview.md) family for evaluating
-embodied policies against environments. Archetype supports two deliberately
-different execution shapes:
+embodied policies against environments. Pure in-process processors, such as
+the MuJoCo cart-pole example, remain supported.
 
-- pure in-process processors, such as the MuJoCo cart-pole example; and
-- one public distributed operation: a complete episode batch executed through
-  a Modal-hosted [Activity](activities.md).
-
-Remote environment and policy clients are not installed in retryable ticks.
-The hosted contract crosses committed World state as immutable episode intent
-and returns only complete, content-addressed episode evidence.
+The former hosted-episode route is deliberately disabled by the Temporal
+cutover. It depended on Archetype's removed SQLite Activity claim, lease,
+fence, and attempt machinery. Calling `run_hosted_episode` now fails explicitly
+instead of silently using a second durability authority.
 
 ```mermaid
 graph TB
     RT["ArchetypeRuntime"] --> World["RuntimeWorld"]
-    Req["HostedEpisodeRequest batch"] --> Adapter["PhysicalAI(world)"]
-    Adapter --> World
-    World --> Dispatch["CommandDispatcher"]
-    Dispatch --> Act["Modal-hosted Activity"]
-    Act --> Obs["HostedEpisodeObservation<br/>result_ref + digests"]
-    World --> Evidence["Committed world evidence"]
-    Obs -.-> Evidence
+    World --> Local["In-process Physical AI processors"]
+    Hosted["Hosted episode request"] --> Disabled["Explicit migration error"]
+    Disabled --> Future["Future Temporal workflow"]
 ```
 
 ## Key Capabilities
 
-| Capability | Implementation |
+| Capability | Current implementation |
 |---|---|
-| **In-process evals** | Processors + env/policy resources inside ordinary ticks |
-| **Hosted episodes** | Activity admits intent at tick T; observation commits at tick U |
-| **Stable activity IDs** | Caller-stable within a world; content mismatch fails closed |
-| **Fork-safe identity** | Provider identity includes `world_id`; parent/child stay independent |
-| **Ledger evidence** | Complete payloads referenced by digest, not live attachable clients |
+| **In-process evals** | Processors plus environment and policy resources inside ordinary ticks |
+| **Hosted episodes** | Disabled until migrated to a dedicated Temporal workflow |
+| **Canonical evidence** | Episode request, trajectory, results, and manifest schemas remain reusable |
+| **Modal provider integration** | Provider contracts remain available for the future Temporal adapter |
 
-## Run a hosted episode
+## Hosted episode migration
 
-Create a world from `ArchetypeRuntime`, supply explicit durable storage, and
-wrap it with the typed `PhysicalAI` adapter:
+Installing `archetype-physical-ai` continues to register the public operation
+so callers receive a clear migration error. It no longer constructs a hosted
+Activity worker or SQLite-backed workflow. There is no compatibility mode and
+no configurable Activity lease.
 
-```python
-from archetype import ArchetypeRuntime, StorageConfig
-from archetype.physical_ai import (
-    HostedEpisodeRequest,
-    ModalHostedEpisodeConfig,
-    PhysicalAI,
-)
-
-storage = StorageConfig(uri="./data", namespace="physical-evals")
-provider = ModalHostedEpisodeConfig(
-    workspace_name="my-workspace",
-    environment_name="main",
-    app_name="physical-ai",
-    function_name="run-episode",
-    result_dict_name="physical-ai-results",
-    result_volume_name="physical-ai-values",
-)
-
-request = HostedEpisodeRequest(
-    trial_id=0,
-    suite="libero",
-    task_id=7,
-    seed=100,
-    instruction="place the red block in the bowl",
-    max_transitions=200,
-    environment_id="libero@v1",
-    policy_id="openvla@v1",
-    config_json="{}",
-)
-
-async with ArchetypeRuntime() as runtime:
-    world = runtime.world("physical-eval", storage=storage)
-    observation = await PhysicalAI(world).run_hosted_episode(
-        [request],
-        provider=provider,
-        activity_id="evaluation-7-seed-100",
-    )
-    print(observation.result_ref, observation.success_count)
-```
-
-Installing `archetype-physical-ai` registers the operation; it does not add a
-method to generic async or sync world handles. The typed adapter is async.
-
-`activity_id` is caller-stable within a World. Repeating it with the same
-canonical request reconciles the same durable Activity. Reusing it with a
-different request content fails closed. A fork may reuse the family-local ID:
-provider operation identity includes `world_id`, so parent and child execution
-remain independent.
-
-For an embedded host that supplies a custom provider factory or lease duration,
-pass `PhysicalAIExtensionConfig` through the generic runtime composition seam:
-
-```python
-from archetype import ArchetypeRuntime
-from archetype.physical_ai import PhysicalAIExtensionConfig
-
-async with ArchetypeRuntime(
-    world_library_configs={
-        "physical-ai": PhysicalAIExtensionConfig(
-            hosted_activity_lease_seconds=600,
-        )
-    }
-) as runtime:
-    world = runtime.world("physical-eval")
-    # Run hosted episodes through PhysicalAI(world) while the runtime is open.
-```
-
-This is trusted process-host configuration, not per-world state.
-
-## Committed-state sequence
+The replacement must use the same architecture as Temporal-backed Missions:
 
 ```text
 tick T commits HostedEpisodeIntent
-    -> required projection admits the exact receipt
-    -> Modal provider executes or reconciles outside the World lock
-    -> complete request, trajectory, episode-results, and manifest payloads
-    -> generic Activity records their bounded result reference and digest
+    -> required projection admits exact receipt-bound settlement intent
+    -> Temporal starts or reattaches to one stable Modal operation
+    -> complete canonical payloads become durable
     -> HostedEpisodeObservation is staged
     -> tick U commits the observation
-    -> required projection settles the exact result digest to tick U
+    -> settlement index binds the exact result digest to tick U
 ```
 
-`RuntimeResources` owns the world-scoped hosted binding and worker for the
-process lifetime. Required projection uses deterministic consumer-name order,
-so Mission and Physical-AI Activities can be bound to the same World without
-one replacing the other.
+Temporal will own workflow history, scheduling, retries, cancellation, and
+worker recovery. The provider adapter will own stable Modal call identity,
+reattachment, cleanup, and complete-result publication. Archetype will retain
+only semantic intent and observation Components, canonical evidence, exact
+receipt projection, and settlement.
 
-The provider adapter owns Modal recovery meaning:
-
-- a complete first result is recovered and never re-executed;
-- confirmed absence permits a fresh attempt only behind the exact
-  provider-side retry guard; and
-- a permanent start without a complete result remains unknown and fails
-  closed.
-
-The release profile additionally runs one paid seeded episode on a real Modal
-T4 while the World's committed intent and observation rows use a unique
-Cloudflare R2 prefix. A fresh runtime cold-resumes that R2-backed World,
-reconstructs the exact result digest, and reconciles the same Activity without
-a second provider completion. The job deletes its unique Modal Dict, Modal
-Volume, and R2 prefix on both success and failure.
-
-Lease expiry by itself never authorizes provider replay.
-
-## Hosted-episode recovery
-
-The hosted consumer uses `kind="physical_ai.hosted_episode"`. Its committed
-`HostedEpisodeIntent` contains only a family-local Activity identity, the
-world-scoped stable provider operation identity, and the exact
-content-addressed request identity. Its later `HostedEpisodeObservation` binds
-the bounded Activity result descriptor to the request, complete trajectory,
-derived episode results, manifest, and exact completeness counts.
-
-| Crash window | Durable evidence after restart | Required behavior |
-|---|---|---|
-| After intent commit, before projection | Exact receipt and request reference | Retry required projection; admit the same immutable Activity. |
-| After provider result publication, before generic result recording | Permanent operation start plus complete provider result index | Reconcile by operation identity, publish the same family payloads, and do not execute another episode. |
-| After generic result recording, before observation staging | Bounded descriptor plus complete content-addressed payloads | Reconstruct and restage the exact marker without provider work. |
-| After staging, before observation commit | Result remains unobserved; staged mutation may be lost | Restage the same marker idempotently until a tick commits it. |
-| After observation commit, before settlement | Exact later receipt contains the complete marker | Settle against that receipt without provider work or another tick. |
-| Permanent provider start exists without a complete result | Stable operation identity but ambiguous external truth | Remain unknown. Lease expiry and deterministic seeds do not authorize replay. |
-| Provider returns a partial trajectory | No valid complete manifest can be built | Publish no Activity result; remain unknown after the permanent start. |
-
-The local provider proof uses an atomic permanent start marker and a
-provider-durable first-result index. It deliberately sacrifices liveness after
-an ambiguous start rather than assume a seeded GPU rerun is equivalent.
-
-The Modal parity adapter preserves that contract under an exact workspace,
-Environment, App, Function, named Dict, named Volume, and protocol epoch. An
-atomic Dict `put(..., skip_if_exists=True)` selects one start winner. The remote
-function commits the four canonical Arrow payloads to the Volume before it
-atomically installs the bounded first-result index in the Dict. A lost function
-response is therefore recoverable; a permanent start without that index
-remains unknown and cannot be replayed. Provider placement diagnostics never
-enter canonical payloads or Components.
-
-The local family value store and SQLite Activity catalog remain executable
-proof substrates, not claims of remote storage parity. The Modal Volume and
-Dict prove provider-side start and first-result durability only. Production
-trajectory and frame publication still belongs in Iceberg or the artifact
-substrate, while a remote control-catalog implementation is its own parity
-slice.
+Until that workflow exists, a hosted request fails before provider work. This
+breaking behavior prevents the removed SQLite durability path from remaining
+as a hidden second authority.
 
 ## Canonical episode contract
 
@@ -200,37 +73,31 @@ Provider completion requires all four canonical Arrow payloads to agree:
 - one manifest binding their identities, digests, and completeness counts.
 
 Partial trajectories and provider-local paths are not successful results.
-Credentials, placement, attempt metadata, and timings are excluded from replay
-identity.
+Credentials, placement, timings, and orchestration metadata are excluded from
+replay identity.
 
 ## Ownership
 
 | Location | Responsibility |
 |---|---|
-| `archetype.physical_ai` | Public `PhysicalAI` adapter, request, Modal configuration, and observation values |
-| `archetype.physical_ai.models` | Definitions for those values plus the internal exact operation model |
+| `archetype.physical_ai` | Public adapter, request, Modal configuration, and observation values |
+| `archetype.physical_ai.models` | Public values and exact operation model |
 | `archetype.physical_ai.hosted_episode` | Canonical Arrow schemas, codecs, identities, digests, and completeness validation |
-| `archetype.physical_ai.hosted_activity_contracts` | Intent/observation Components, bounded references, and provider reconciliation protocol |
-| `archetype.physical_ai.hosted_activities` | Exact-receipt projector, Activity adapter, fenced worker, redelivery, and settlement |
-| `archetype.physical_ai.hosted_activity_values` | Content-addressed values and local deterministic proof provider |
-| `archetype.physical_ai.hosted_activity_world` | Storage reader, idempotent observation stager, and world binding |
-| `archetype.physical_ai.hosted_workflow` | Intent tick, out-of-lock worker call, and observation tick |
-| `archetype.physical_ai.hosted_modal` | Modal namespace, atomic start, Volume-first publication, and reconciliation |
-| `archetype.world.projectors` | Deterministic multi-family required-projector fan-out |
-| `archetype.physical_ai._extension` | Exact operation registration, hosted-binding construction, and binding into the framework process owner |
-| `RuntimeResources` | Retained process ownership, admission/drain, and ordered teardown |
+| `archetype.physical_ai.hosted_activity_contracts` | Retained intent and observation domain values for a future Temporal workflow |
+| `archetype.physical_ai.hosted_activity_values` | Content-addressed episode values |
+| `archetype.physical_ai.hosted_modal` | Modal provider integration available to the future workflow |
+| `archetype.physical_ai._extension` | Operation registration and explicit hosted-route migration failure |
 
-The generic `activities` family knows admissions, attempts, fences, result
-references, and settlement receipts. It does not know whether a Modal episode
-is complete or safe to repeat.
+Deleted modules such as `hosted_activities`, `hosted_activity_world`, and
+`hosted_workflow` are not compatibility surfaces. Their orchestration belonged
+to the retired SQLite durability implementation.
 
 ## Pure in-process paths
 
 `archetype.physical_ai.mujoco_cartpole` remains a local DataFrame processor
 example. Its worker-local MuJoCo model and data are in-memory scratch, not a
-remote provider session. Internal environment/policy processor protocols are
-available for explicit in-process composition, but they are not a public
-distributed runtime operation.
+remote provider session. Internal environment and policy processor protocols
+remain available for explicit in-process composition.
 
-See [Activities](activities.md) for the generic durability contract and
+See [Activities](activities.md) for the settlement boundary and
 [Architecture](architecture.md) for the ownership map.

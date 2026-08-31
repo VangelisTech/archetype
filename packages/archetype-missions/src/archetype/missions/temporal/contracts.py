@@ -117,8 +117,12 @@ class MissionWorkflowState:
     principal: str
     idempotency_key: str
     request_digest: str
+    profile_id: str
+    profile_version: str
+    profile_digest: str
     status: str
     active_operation: str = ""
+    submission_json: str = ""
     submitted_json: str = ""
     result_json: str = ""
     cancellation_requested: bool = False

@@ -272,8 +272,6 @@ async def test_projector_retry_reuses_prebound_workflow_and_records_one_result(
         assert completed.result is not None
         assert completed.result.ref == _RESULT_REF.ref
         assert completed.result.digest == _RESULT_REF.digest
-        assert completed.result_attempt is None
-        assert completed.result_fence is None
         inventory = inspect_sqlite_activity_catalog(path)
         assert inventory.attempt_count == 0
         assert inventory.provider_operation_count == 0

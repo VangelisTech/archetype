@@ -73,12 +73,6 @@ def test_physical_ai_install_registers_its_exact_operation() -> None:
     assert spec.token_cost == 0
 
 
-@pytest.mark.parametrize("lease", [0, -1, float("inf"), float("nan")])
-def test_physical_ai_extension_config_rejects_invalid_lease(lease: float) -> None:
-    with pytest.raises(ValueError, match="finite and positive"):
-        PhysicalAIExtensionConfig(hosted_activity_lease_seconds=lease)
-
-
 def test_physical_ai_install_rejects_foreign_config() -> None:
     with pytest.raises(TypeError, match="PhysicalAIExtensionConfig"):
         get_manifest().install(_context(OperationRegistry(), config=object()))

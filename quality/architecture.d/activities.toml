@@ -10,7 +10,7 @@ allowed_families = ["archetype.storage"]
 [[module_rule]]
 module = "archetype.activities.service"
 allowed_interfaces = [
-  "archetype.activities.interfaces.iActivityCoordinator",
+  "archetype.activities.interfaces.iActivitySettlementIndex",
   "archetype.core.interfaces.CommittedTickReceipt",
   "archetype.storage.activity_catalog.interfaces.ActivityCatalog",
 ]

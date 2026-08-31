@@ -21,7 +21,7 @@ import sys
 
 class BlockedImport:
     def find_spec(self, fullname, path=None, target=None):
-        if fullname == 'modal' or fullname == 'archetype.missions.run_supervisor':
+        if fullname == 'modal':
             raise RuntimeError(f'forbidden import: {fullname}')
         return None
 

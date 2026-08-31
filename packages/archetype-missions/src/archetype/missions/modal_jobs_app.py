@@ -30,6 +30,7 @@ from archetype.missions.coding_agents.harness import (
     CodingAgentHarness,
     CodingAgentHarnessConfig,
 )
+from archetype.missions.config import MissionsExtensionConfig, MissionTemporalActivityConfig
 from archetype.missions.critics.activities import (
     CriticActivityCodec,
 )
@@ -38,6 +39,7 @@ from archetype.missions.critics.harness import (
     CriticHarness,
     CriticHarnessConfig,
 )
+from archetype.missions.execution_profiles import ExecutionProfileCatalog
 from archetype.missions.modal_author import (
     ModalMissionAuthorExecutor,
     ModalMissionAuthorExecutorConfig,
@@ -72,11 +74,14 @@ from archetype.missions.sandboxes.modal import (
     ModalSandboxOperationResourceCleanup,
 )
 from archetype.missions.sandboxes.modal_barrier import ModalProviderStartBarrier
+from archetype.missions.temporal.activity_values import MissionModalActivityValueStore
+from archetype.missions.temporal.client import MissionTemporalClient
 from archetype.missions.temporal.contracts import (
     MISSION_MODAL_JOB_TASK_QUEUE,
     MISSION_TASK_QUEUE,
 )
 from archetype.missions.temporal.modal_job_activities import MissionModalJobValueStore
+from archetype.missions.temporal.modal_job_client import MissionModalJobTemporalClient
 from archetype.missions.temporal.modal_job_worker import create_mission_modal_job_worker
 from archetype.redaction import RedactionService
 
@@ -806,6 +811,14 @@ class PreparedModalMissionJobWorker:
     provisioned_dict_names: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedModalMissionTemporalRoute:
+    """One shared value authority bound to both Worker and Mission extension."""
+
+    jobs: PreparedModalMissionJobWorker
+    extension_config: MissionsExtensionConfig
+
+
 async def provision_modal_mission_controller_state(
     config: ModalMissionControllerAppConfig,
 ) -> tuple[str, ...]:
@@ -1118,6 +1131,41 @@ async def prepare_modal_mission_job_worker(
     )
 
 
+async def prepare_modal_mission_temporal_route(
+    client: Client,
+    values: MissionModalActivityValueStore,
+    *,
+    spec: ModalMissionControllerDeploymentSpec,
+    receipt: ModalMissionControllerDeploymentReceipt,
+    expected_deployment_digest: str,
+    execution_profiles: ExecutionProfileCatalog | None = None,
+) -> PreparedModalMissionTemporalRoute:
+    """Prepare one split Worker and its exact ECS admission configuration."""
+
+    jobs = await prepare_modal_mission_job_worker(
+        client,
+        values,
+        spec=spec,
+        receipt=receipt,
+        expected_deployment_digest=expected_deployment_digest,
+    )
+    workflows = MissionModalJobTemporalClient(client, task_queue=spec.task_queue)
+    temporal = MissionTemporalActivityConfig(
+        workflows=workflows,
+        values=values,
+        namespace_digest=jobs.config.namespace.digest,
+    )
+    return PreparedModalMissionTemporalRoute(
+        jobs=jobs,
+        extension_config=MissionsExtensionConfig(
+            execution_profiles=(execution_profiles or ExecutionProfileCatalog.empty()),
+            temporal_activities=temporal,
+            temporal_runs=MissionTemporalClient(client, task_queue=MISSION_TASK_QUEUE),
+            temporal_workers=(jobs.worker,),
+        ),
+    )
+
+
 __all__ = [
     "MODAL_MISSION_CONTROLLER_MAX_RECEIPT_BYTES",
     "MODAL_MISSION_CONTROLLER_MAX_REQUEST_BYTES",
@@ -1131,10 +1179,12 @@ __all__ = [
     "ModalMissionControllerFailpointReached",
     "ModalMissionControllerRejected",
     "PreparedModalMissionJobWorker",
+    "PreparedModalMissionTemporalRoute",
     "build_modal_mission_controller_deployment",
     "build_modal_mission_controller_app",
     "create_modal_mission_controller_deployment_receipt",
     "prepare_modal_mission_job_worker",
+    "prepare_modal_mission_temporal_route",
     "provision_modal_mission_controller_state",
     "verify_modal_mission_controller_deployment",
 ]

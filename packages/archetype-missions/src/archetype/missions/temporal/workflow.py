@@ -47,7 +47,11 @@ class MissionWorkflow:
             principal=command.principal,
             idempotency_key=command.idempotency_key,
             request_digest=command.request_digest,
+            profile_id=command.profile_id,
+            profile_version=command.profile_version,
+            profile_digest=command.profile_digest,
             status="accepted",
+            submission_json=command.submission_json,
         )
         self._record("accepted", "admission")
         try:

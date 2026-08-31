@@ -17,11 +17,11 @@ from archetype.missions.critics import (
     CriticActivityRequestRef,
     CriticActivityResultRef,
 )
-from archetype.missions.local_activity_values import AUTHOR_ACTIVITY_VALUE_REF_PREFIX
-from archetype.missions.local_critic_activity_values import (
+from archetype.missions.temporal.activity_values import (
+    AUTHOR_ACTIVITY_VALUE_REF_PREFIX,
     CRITIC_ACTIVITY_VALUE_REF_PREFIX,
+    MissionModalActivityValueStore,
 )
-from archetype.missions.temporal.activity_values import MissionModalActivityValueStore
 from archetype.missions.temporal.contracts import (
     MissionJobValueRef,
     MissionModalJobFamily,

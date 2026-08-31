@@ -804,9 +804,7 @@ async def _activity_snapshot(path: Path) -> dict[str, Any] | None:
                 "size_bytes": result.size_bytes,
             }
         ),
-        "result_fence": snapshot.result_fence,
         "result_pending_observation": snapshot.result_pending_observation,
-        "result_attempt": snapshot.result_attempt,
         "settlement": (
             None
             if settlement is None

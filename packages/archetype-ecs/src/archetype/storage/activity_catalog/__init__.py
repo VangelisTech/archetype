@@ -11,10 +11,8 @@ from archetype.storage.activity_catalog.migration import (
 )
 from archetype.storage.activity_catalog.records import (
     ActivityAdmissionRecord,
-    ActivityCatalogClaimError,
     ActivityCatalogConflictError,
     ActivityCatalogNotFoundError,
-    ActivityClaimRecord,
     ActivityRecord,
 )
 from archetype.storage.activity_catalog.sqlite import (
@@ -30,10 +28,8 @@ __all__ = [
     "ActivityCatalogInspectionError",
     "ActivityCatalogInventory",
     "ActivityCatalogMigrationInspector",
-    "ActivityCatalogClaimError",
     "ActivityCatalogConflictError",
     "ActivityCatalogNotFoundError",
-    "ActivityClaimRecord",
     "ActivityRecord",
     "SqliteActivityCatalog",
     "SqliteActivityCatalogMigrationInspector",

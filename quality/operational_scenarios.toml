@@ -538,22 +538,22 @@ artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
-id = "dogfood.agent_mission.modal_activity_contracts"
+id = "dogfood.agent_mission.temporal_modal_contracts"
 kind = "dogfood"
 owner = "missions"
 owner_paths = [
   "packages/archetype-missions/src/archetype/missions",
   "packages/archetype-ecs/src/archetype/runtime_resources.py",
   "packages/archetype-ecs/src/archetype/wiring.py",
-  "tests/missions/test_modal_activity_executors.py",
-  "tests/missions/test_mission_author_world_integration.py",
+  "tests/missions/test_temporal_modal_job_values.py",
+  "tests/missions/test_modal_durable_jobs_process.py",
 ]
-source_path = "tests/missions/test_modal_activity_executors.py"
+source_path = "tests/missions/test_modal_durable_jobs_process.py"
 source_command = [
   "pytest",
   "-q",
-  "tests/missions/test_modal_activity_executors.py",
-  "tests/missions/test_mission_author_world_integration.py",
+  "tests/missions/test_temporal_modal_job_values.py",
+  "tests/missions/test_modal_durable_jobs_process.py",
 ]
 required_extras = []
 tier = 1
@@ -561,7 +561,7 @@ applicability = ["source", "wheel"]
 timeout_seconds = 300
 prerequisites = []
 missing_prerequisite = "fail"
-semantic_oracle = { kind = "pytest", ref = "tests/missions/test_modal_activity_executors.py::test_modal_critic_cold_restart_recovers_exact_receipt_with_one_start" }
+semantic_oracle = { kind = "pytest", ref = "tests/missions/test_modal_durable_jobs_process.py" }
 contracts = [
   "missions.agent_v1.validator_gated",
   "missions.agent_v1.exact_head_critic",

@@ -16,44 +16,18 @@ from archetype.activities import ActivityCoordinator
 from archetype.commands.registry import OperationSpec
 from archetype.core.config import StorageConfig
 from archetype.errors import ConflictError, WorldNotFoundError
-from archetype.missions.activity_binding import MissionActivityBinding
-from archetype.missions.activity_coordinator import MissionAuthorActivityCoordinator
 from archetype.missions.activity_world import (
-    MissionAuthorActivityBinding,
     StorageMissionCommittedIntentReader,
     WorldMissionAuthorObservationStager,
 )
 from archetype.missions.api import create_router
-from archetype.missions.coding_agents.app_server import CodexAppServerDriver
-from archetype.missions.coding_agents.harness import (
-    CodingAgentHarness,
-    CodingAgentHarnessConfig,
-)
 from archetype.missions.config import (
     MissionsExtensionConfig,
     installed_execution_profiles,
 )
 from archetype.missions.contracts import MissionSubmission, SubmittedMission
-from archetype.missions.critic_activity_coordinator import MissionCriticActivityCoordinator
 from archetype.missions.critic_activity_world import (
-    MissionCriticActivityBinding,
     WorldMissionCriticObservationStager,
-)
-from archetype.missions.critics import (
-    CodexAppServerCriticDriver,
-    CriticActivityCodec,
-    CriticHarness,
-    CriticHarnessConfig,
-)
-from archetype.missions.local_activity_values import LocalMissionAuthorValueStore
-from archetype.missions.local_critic_activity_values import LocalMissionCriticValueStore
-from archetype.missions.modal_author import (
-    ModalMissionAuthorExecutor,
-    ModalMissionAuthorExecutorConfig,
-)
-from archetype.missions.modal_critic import (
-    ModalMissionCriticExecutor,
-    ModalMissionCriticExecutorConfig,
 )
 from archetype.missions.models import (
     AcceptMissionRun,
@@ -66,24 +40,19 @@ from archetype.missions.models import (
     SubmitMission,
     summarize_mission_operation,
 )
-from archetype.missions.run_catalog import (
-    SqliteMissionRunCatalog,
-    mission_run_catalog_path_for,
-)
 from archetype.missions.run_contracts import (
     ExecutionProfileIdentity,
     MissionRun,
+    MissionRunCleanupState,
+    MissionRunEvent,
+    MissionRunNotFoundError,
+    MissionRunStatus,
     execution_profile_identity,
+    mission_result_from_json,
+    submission_from_json,
 )
-from archetype.missions.run_lifecycle import MissionRunLifecycle
-from archetype.missions.run_supervisor import MissionRunSupervisor
 from archetype.missions.runtime import Missions, MissionWorld
-from archetype.missions.sandboxes.modal import (
-    ModalCodexAppServerConnector,
-    ModalSandboxBackend,
-    ModalSandboxOperationCapability,
-)
-from archetype.missions.sandboxes.modal_barrier import ModalProviderStartBarrier
+from archetype.missions.sandboxes.modal import ModalSandboxBackend
 from archetype.missions.sandboxes.service import SandboxService
 from archetype.missions.service import MissionService
 from archetype.missions.temporal.activity_runtime import (
@@ -91,8 +60,10 @@ from archetype.missions.temporal.activity_runtime import (
     MissionTemporalAuthorActivityCatalog,
     MissionTemporalCriticActivityCatalog,
 )
-from archetype.missions.temporal.activity_values import MissionModalActivityValueStore
+from archetype.missions.temporal.client import MissionTemporalClient
+from archetype.missions.temporal.contracts import MissionWorkflowEvent, MissionWorkflowState
 from archetype.missions.temporal.modal_job_client import MissionModalJobWorkflowLauncher
+from archetype.missions.temporal.worker import create_mission_worker
 from archetype.missions.trajectories.models import (
     GradeTrajectory,
     IngestClaudeTranscript,
@@ -316,9 +287,13 @@ async def _handle_mission(
     extension_config: MissionsExtensionConfig,
     operation: SubmitMission | RunMission,
 ) -> Any:
-    backend = operation.config.sandbox_backend
-    if not isinstance(backend, ModalSandboxBackend):
+    if not isinstance(operation.config.sandbox_backend, ModalSandboxBackend):
         raise ValueError("Agent Mission admission requires the Modal sandbox backend in v0.6.0")
+    temporal = extension_config.temporal_activities
+    if temporal is None:
+        raise RuntimeError(
+            "Missions requires Temporal activity routing; legacy activity execution is removed"
+        )
 
     reservation = context.resources.owner(operation.owner_id)
     async with context.resources.admit_owner_operation(reservation):
@@ -348,60 +323,12 @@ async def _handle_mission(
                 cold_world_id = intended_world_id
                 cold_constructed = not created_predetermined
 
-            sandbox = SandboxService((backend,))
+            sandbox = SandboxService((operation.config.sandbox_backend,))
             reservation.bind(sandbox, close=sandbox.shutdown)
-            capability = ModalSandboxOperationCapability(backend)
-            backend_config = backend.config
-            assert backend_config.workspace_name is not None
-            assert backend_config.environment_name is not None
-            assert backend_config.operation_protocol_epoch is not None
-            barrier = ModalProviderStartBarrier(
-                workspace_name=backend_config.workspace_name,
-                environment_name=backend_config.environment_name,
-                app_name=backend_config.app_name,
-                protocol_epoch=backend_config.operation_protocol_epoch,
-            )
-            author_driver = operation.config.driver or CodexAppServerDriver(
-                connector=ModalCodexAppServerConnector(),
-                model=operation.config.model,
-                workspace=operation.config.workspace,
-            )
-            author_executor = ModalMissionAuthorExecutor(
-                capability=capability,
-                barrier=barrier,
-                harness=CodingAgentHarness(
-                    author_driver,
-                    CodingAgentHarnessConfig(workspace=operation.config.workspace),
-                ),
-                redactor=context.redaction,
-                config=ModalMissionAuthorExecutorConfig(
-                    sandbox_environment=operation.config.sandbox_environment,
-                    workspace=operation.config.workspace,
-                    checkpoint_after_dispatch=operation.config.checkpoint_after_dispatch,
-                ),
-                observer=operation.config.on_sandbox_event,
-            )
-            critic_driver = operation.config.critic_driver or CodexAppServerCriticDriver(
-                connector=ModalCodexAppServerConnector(),
-                workspace=operation.config.critic_workspace,
-            )
-            critic_executor = ModalMissionCriticExecutor(
-                capability=capability,
-                barrier=barrier,
-                harness=CriticHarness(
-                    critic_driver,
-                    CriticHarnessConfig(workspace=operation.config.critic_workspace),
-                ),
-                redactor=context.redaction,
-                config=ModalMissionCriticExecutorConfig(
-                    sandbox_environment=operation.config.sandbox_environment,
-                    workspace=operation.config.critic_workspace,
-                ),
-            )
 
             async def bind_mission_activity(
                 world_id: str,
-            ) -> MissionActivityBinding | MissionTemporalActivityBinding:
+            ) -> MissionTemporalActivityBinding:
                 storage_record = await context.worlds.storage_record(world_id)
                 if storage_record is None:
                     raise WorldNotFoundError(world_id)
@@ -416,14 +343,6 @@ async def _handle_mission(
                     context.storage,
                     storage_config,
                 )
-                author_values = LocalMissionAuthorValueStore(
-                    catalog_path.with_name(f"{catalog_path.stem}-author-values"),
-                    redactor=context.redaction,
-                )
-                critic_values = LocalMissionCriticValueStore(
-                    catalog_path.with_name(f"{catalog_path.stem}-critic-values"),
-                    codec=CriticActivityCodec(context.redaction),
-                )
                 author_stager = WorldMissionAuthorObservationStager(
                     storage=context.storage,
                     registry=context.worlds,
@@ -432,70 +351,37 @@ async def _handle_mission(
                     storage=context.storage,
                     registry=context.worlds,
                 )
-                binding: MissionActivityBinding | MissionTemporalActivityBinding
+                binding: MissionTemporalActivityBinding
 
                 async def close_binding() -> None:
                     await physical.close()
                     await context.required_projectors.unbind(world_id, binding)
 
-                temporal = extension_config.temporal_activities
-                if temporal is None:
-                    author = MissionAuthorActivityBinding(
-                        world_id=world_id,
-                        owner=f"mission-author:{reservation.owner}",
-                        reader=reader,
-                        catalog=MissionAuthorActivityCoordinator(coordinator),
-                        values=author_values,
-                        executor=author_executor,
-                        stager=author_stager,
-                    )
-                    critic = MissionCriticActivityBinding(
-                        world_id=world_id,
-                        owner=f"mission-critic:{reservation.owner}",
-                        reader=reader,
-                        catalog=MissionCriticActivityCoordinator(coordinator),
-                        values=critic_values,
-                        executor=critic_executor,
-                        stager=critic_stager,
-                    )
-                    binding = MissionActivityBinding(
-                        world_id=world_id,
-                        author=author,
-                        critic=critic,
-                        close=close_binding,
-                    )
-                else:
-                    values = MissionModalActivityValueStore(
-                        author=author_values,
-                        critic=critic_values,
-                    )
-                    workflows = cast(
-                        MissionModalJobWorkflowLauncher,
-                        temporal.workflows,
-                    )
-                    temporal_author = MissionTemporalAuthorActivityCatalog(
-                        index=coordinator,
-                        workflows=workflows,
-                        values=values,
-                        namespace_digest=temporal.namespace_digest,
-                    )
-                    temporal_critic = MissionTemporalCriticActivityCatalog(
-                        index=coordinator,
-                        workflows=workflows,
-                        values=values,
-                        namespace_digest=temporal.namespace_digest,
-                    )
-                    binding = MissionTemporalActivityBinding(
-                        world_id=world_id,
-                        reader=reader,
-                        author=temporal_author,
-                        critic=temporal_critic,
-                        author_values=author_values,
-                        critic_values=critic_values,
-                        author_stager=author_stager,
-                        critic_stager=critic_stager,
-                        close=close_binding,
-                    )
+                values = temporal.values
+                workflows = cast(MissionModalJobWorkflowLauncher, temporal.workflows)
+                temporal_author = MissionTemporalAuthorActivityCatalog(
+                    index=coordinator,
+                    workflows=workflows,
+                    values=values,
+                    namespace_digest=temporal.namespace_digest,
+                )
+                temporal_critic = MissionTemporalCriticActivityCatalog(
+                    index=coordinator,
+                    workflows=workflows,
+                    values=values,
+                    namespace_digest=temporal.namespace_digest,
+                )
+                binding = MissionTemporalActivityBinding(
+                    world_id=world_id,
+                    reader=reader,
+                    author=temporal_author,
+                    critic=temporal_critic,
+                    author_values=values.author,
+                    critic_values=values.critic,
+                    author_stager=author_stager,
+                    critic_stager=critic_stager,
+                    close=close_binding,
+                )
                 reservation.retain_anchor(binding)
                 await context.required_projectors.bind(world_id, binding)
                 try:
@@ -593,165 +479,74 @@ def _require_recovered_submission_matches(
     return recovered
 
 
-class _DispatchedMissionRunExecutor:
-    """Invoke governed SubmitMission/RunMission without a second scheduler."""
+class _TemporalMissionExecutor:
+    """Effect adapter retained by Temporal, with no local lifecycle authority."""
 
-    def __init__(
-        self,
-        context: WorldLibraryContext,
-        *,
-        name: str,
-        config: Any,
-        storage: str | Path | StorageConfig | None,
-    ) -> None:
+    def __init__(self, context: WorldLibraryContext) -> None:
         self._context = context
-        self._name = name
-        self._config = config
-        self._storage = storage
 
     @staticmethod
-    def _execution_owner_id(run: MissionRun) -> str:
-        """Return the stable process owner for one durable MissionRun."""
-
-        return f"mission-run:{run.run_id}"
+    def _owner_id(run: MissionRun) -> str:
+        return f"mission-temporal:{run.run_id}"
 
     def prepare(self, run: MissionRun) -> None:
-        """Reserve one execution lifetime before its supervised task starts."""
-
-        owner_id = self._execution_owner_id(run)
+        owner_id = self._owner_id(run)
         try:
             self._context.resources.owner(owner_id)
         except KeyError:
             self._context.resources.reserve_owner(
                 owner_id,
                 phase="workflow-handles",
-                closed_message=f"mission run {run.run_id!r} execution owner is closed",
+                closed_message=f"Temporal Mission {run.run_id!r} is closed",
             )
 
-    def _mission_config(self, run: MissionRun) -> Any:
-        """Return the process-bound config or materialize the pinned profile.
-
-        REST-accepted runs carry no caller config; the host-owned execution
-        profile bound through ``world_library_configs`` and retained on the
-        installed library composes the live ``AgentMissionConfig`` for the
-        exact pinned identity. An unbound host fails here and supervision
-        records an honest failed run instead of fabricating provider work.
-        """
-
-        if self._config is not None:
-            return self._config
+    def _config(self, run: MissionRun) -> Any:
         installed = self._context.resources.world_library("missions")
-        binding = installed_execution_profiles(installed).resolve(
-            run.profile.profile_id,
-            version=run.profile.version,
-            digest=run.profile.digest,
+        return (
+            installed_execution_profiles(installed)
+            .resolve(
+                run.profile.profile_id,
+                version=run.profile.version,
+                digest=run.profile.digest,
+            )
+            .build_config()
         )
-        return binding.build_config()
 
-    async def submit(self, run: MissionRun) -> Any:
+    async def load_existing(self, run: MissionRun) -> SubmittedMission | None:
+        try:
+            reservation = self._context.resources.owner(self._owner_id(run))
+        except KeyError:
+            return None
+        service = reservation.require_bound()
+        recovered = await service.recover_submitted()
+        return (
+            None
+            if recovered is None
+            else _require_recovered_submission_matches(recovered, run.submission)
+        )
+
+    async def submit(self, run: MissionRun) -> SubmittedMission:
         self.prepare(run)
         return await self._context.resources.dispatcher.apply(
             SubmitMission(
-                owner_id=self._execution_owner_id(run),
-                name=f"mission-run:{run.run_id}",
-                config=self._mission_config(run),
-                storage=self._storage,
+                owner_id=self._owner_id(run),
+                name=f"mission:{run.run_id}",
+                config=self._config(run),
                 submission=run.submission,
                 predetermined_world_id=run.world_id,
             )
         )
 
-    async def load_existing(self, run: MissionRun) -> Any:
-        self.prepare(run)
-        reservation = self._context.resources.owner(self._execution_owner_id(run))
-        try:
-            service = reservation.require_bound()
-        except RuntimeError:
-            return None
-        recover = getattr(service, "recover_submitted", None)
-        if recover is None:
-            return None
-        recovered = await recover()
-        if recovered is None:
-            return None
-        return _require_recovered_submission_matches(recovered, run.submission)
-
-    async def run(self, run: MissionRun, mission: Any) -> Any:
+    async def run(self, run: MissionRun, mission: SubmittedMission) -> Any:
         self.prepare(run)
         return await self._context.resources.dispatcher.apply(
             RunMission(
-                owner_id=self._execution_owner_id(run),
-                name=self._name,
-                config=self._mission_config(run),
-                storage=self._storage,
+                owner_id=self._owner_id(run),
+                name=f"mission:{run.run_id}",
+                config=self._config(run),
                 mission=mission,
             )
         )
-
-
-type _RunControlOperation = (
-    AcceptMissionRun | GetMissionRun | CancelMissionRun | GetMissionRunEvents | ListMissionRuns
-)
-
-
-def _run_owner_reservation(context: WorldLibraryContext, owner_id: str) -> Any:
-    """Resolve or lazily reserve the run-control owner for this process.
-
-    Trusted ``Missions`` handles reserve their owner at construction. The
-    REST control surface dispatches under one stable host owner id with no
-    adapter; reservation happens synchronously on first use so restarts
-    reuse the same durable catalog under the same process owner.
-    """
-
-    try:
-        return context.resources.owner(owner_id)
-    except KeyError:
-        return context.resources.reserve_owner(
-            owner_id,
-            phase="workflow-handles",
-            closed_message="mission-run control owner is closed",
-        )
-
-
-def _run_control(
-    context: WorldLibraryContext,
-    reservation: Any,
-    operation: _RunControlOperation,
-) -> tuple[MissionRunLifecycle, MissionRunSupervisor, SqliteMissionRunCatalog]:
-    existing = getattr(reservation, "_mission_run_control", None)
-    if existing is not None:
-        return existing
-    catalog = SqliteMissionRunCatalog(
-        mission_run_catalog_path_for(
-            _coerce_storage(operation.storage),
-            context.control_catalog_config,
-        )
-    )
-    lifecycle = MissionRunLifecycle(catalog)
-    supervisor = MissionRunSupervisor(
-        lifecycle,
-        _DispatchedMissionRunExecutor(
-            context,
-            name=operation.name,
-            config=operation.config,
-            storage=operation.storage,
-        ),
-        spawn=lambda factory, label: reservation.spawn(factory, label=label),
-        redact=lambda text: (
-            context.redaction.redact_text(
-                text,
-                scope="mission-run-control",
-            ).text
-        ),
-    )
-    control = (lifecycle, supervisor, catalog)
-    reservation.retain_anchor(control)
-    object.__setattr__(reservation, "_mission_run_control", control)
-    # A fresh supervisor means this process has not yet reconstructed
-    # supervision for durable non-terminal runs; recover them now instead of
-    # waiting for a caller to poll each one individually.
-    reservation.spawn(supervisor.recover_open, label="mission-run-recovery")
-    return control
 
 
 def _accepted_profile_identity(operation: AcceptMissionRun) -> Any:
@@ -768,79 +563,129 @@ def _accepted_profile_identity(operation: AcceptMissionRun) -> Any:
 
 async def _handle_accept_mission_run(
     context: WorldLibraryContext,
+    config: MissionsExtensionConfig,
     operation: AcceptMissionRun,
 ) -> Any:
-    reservation = _run_owner_reservation(context, operation.owner_id)
-    async with context.resources.admit_owner_operation(reservation):
-        lifecycle, supervisor, _catalog = _run_control(context, reservation, operation)
-        run = await lifecycle.accept(
-            operation.request,
-            _accepted_profile_identity(operation),
-        )
-        supervisor.ensure(run)
-        return run
+    _ensure_temporal_mission_workers(context, config)
+    client = _require_temporal_run_client(config)
+    handle = await client.start(operation.request, _accepted_profile_identity(operation))
+    return await _temporal_run(handle, operation.request.submission)
 
 
 async def _handle_get_mission_run(
     context: WorldLibraryContext,
+    config: MissionsExtensionConfig,
     operation: GetMissionRun,
 ) -> Any:
-    reservation = _run_owner_reservation(context, operation.owner_id)
-    async with context.resources.admit_owner_operation(reservation):
-        lifecycle, supervisor, _catalog = _run_control(context, reservation, operation)
-        run = await lifecycle.get(operation.run_id)
-        supervisor.ensure(run)
-        return await lifecycle.get(operation.run_id)
+    _ensure_temporal_mission_workers(context, config)
+    client = _require_temporal_run_client(config)
+    handle = client.get(operation.run_id)
+    state = await handle.query("state")
+    if state is None:
+        raise MissionRunNotFoundError(operation.run_id)
+    return await _temporal_run(handle, submission_from_json(state.submission_json))
 
 
 async def _handle_cancel_mission_run(
     context: WorldLibraryContext,
+    config: MissionsExtensionConfig,
     operation: CancelMissionRun,
 ) -> Any:
-    reservation = _run_owner_reservation(context, operation.owner_id)
-    async with context.resources.admit_owner_operation(reservation):
-        lifecycle, supervisor, _catalog = _run_control(context, reservation, operation)
-        run = await lifecycle.get(operation.run_id)
-        # Caller-supplied text is redacted before it becomes a durable fact,
-        # matching every other write site in this family.
-        reason = (
-            context.redaction.redact_text(
-                operation.reason,
-                scope="mission-run-control",
-            ).text
-            if operation.reason
-            else ""
-        )
-        run = await lifecycle.record_cancellation_intent(run, reason=reason)
-        supervisor.ensure(run)
-        return await lifecycle.get(operation.run_id)
+    _ensure_temporal_mission_workers(context, config)
+    client = _require_temporal_run_client(config)
+    handle = client.get(operation.run_id)
+    reason = (
+        context.redaction.redact_text(operation.reason, scope="mission-run-control").text
+        if operation.reason
+        else ""
+    )
+    await handle.signal("request_cancel", reason)
+    state = await handle.query("state")
+    if state is None:
+        raise MissionRunNotFoundError(operation.run_id)
+    return await _temporal_run(handle, submission_from_json(state.submission_json))
 
 
 async def _handle_get_mission_run_events(
     context: WorldLibraryContext,
+    config: MissionsExtensionConfig,
     operation: GetMissionRunEvents,
 ) -> Any:
-    reservation = _run_owner_reservation(context, operation.owner_id)
-    async with context.resources.admit_owner_operation(reservation):
-        lifecycle, _supervisor, _catalog = _run_control(context, reservation, operation)
-        return await lifecycle.events(
-            operation.run_id,
-            after=operation.after,
-            limit=operation.limit,
+    _ensure_temporal_mission_workers(context, config)
+    client = _require_temporal_run_client(config)
+    events = await client.get(operation.run_id).query("events")
+    return tuple(
+        MissionRunEvent(
+            run_id=operation.run_id,
+            cursor=event.cursor,
+            event_type=event.event_type,
+            phase=event.phase,
+            payload_json="{}",
+            created_at_ms=event.created_at_ms,
         )
+        for event in events
+        if event.cursor > operation.after
+    )[: operation.limit]
 
 
 async def _handle_list_mission_runs(
     context: WorldLibraryContext,
+    config: MissionsExtensionConfig,
     operation: ListMissionRuns,
 ) -> Any:
-    reservation = _run_owner_reservation(context, operation.owner_id)
-    async with context.resources.admit_owner_operation(reservation):
-        lifecycle, _supervisor, _catalog = _run_control(context, reservation, operation)
-        return await lifecycle.list_for_principal(
-            operation.owner_principal,
-            limit=operation.limit,
-        )
+    _ensure_temporal_mission_workers(context, config)
+    client = _require_temporal_run_client(config)
+    handles = await client.list_for_principal(
+        operation.owner_principal,
+        limit=operation.limit,
+    )
+    runs: list[MissionRun] = []
+    for handle in handles:
+        state = await handle.query("state")
+        if state is not None:
+            runs.append(await _temporal_run(handle, submission_from_json(state.submission_json)))
+    return tuple(runs)
+
+
+def _require_temporal_run_client(config: MissionsExtensionConfig) -> MissionTemporalClient:
+    client = config.temporal_runs
+    if client is None:
+        raise RuntimeError("Missions requires a Temporal run client; legacy MissionRun is removed")
+    return client
+
+
+async def _temporal_run(handle: Any, submission: MissionSubmission) -> MissionRun:
+    state = cast(MissionWorkflowState | None, await handle.query("state"))
+    if state is None:
+        raise MissionRunNotFoundError(str(getattr(handle, "id", "unknown")))
+    events = cast(tuple[MissionWorkflowEvent, ...], await handle.query("events"))
+    terminal = state.status in {"succeeded", "failed", "cancelled"}
+    timestamps = {event.event_type: event.created_at_ms for event in events}
+    result = mission_result_from_json(state.result_json) if state.result_json else None
+    return MissionRun(
+        run_id=state.run_id,
+        principal=state.principal,
+        idempotency_key=state.idempotency_key,
+        request_digest=state.request_digest,
+        profile=ExecutionProfileIdentity(
+            profile_id=state.profile_id,
+            version=state.profile_version,
+            digest=state.profile_digest,
+        ),
+        status=MissionRunStatus(state.status),
+        submission=submission,
+        world_id=state.world_id,
+        active_operation=state.active_operation,
+        cancellation_intent=state.cancellation_requested,
+        cancellation_reason=state.cancellation_reason,
+        result=result,
+        cleanup_state=MissionRunCleanupState.NONE,
+        accepted_at_ms=timestamps.get("accepted", 0),
+        running_at_ms=timestamps.get("running"),
+        terminal_at_ms=(timestamps.get(state.status) if terminal else None),
+        updated_at_ms=(events[-1].created_at_ms if events else 0),
+        interrupted_reason=state.failure_reason,
+    )
 
 
 async def _handle_restore_mission_sandbox(
@@ -882,12 +727,50 @@ def _operation_handlers(
             Any,
             partial(_handle_restore_mission_sandbox, context),
         ),
-        AcceptMissionRun: cast(Any, partial(_handle_accept_mission_run, context)),
-        GetMissionRun: cast(Any, partial(_handle_get_mission_run, context)),
-        CancelMissionRun: cast(Any, partial(_handle_cancel_mission_run, context)),
-        GetMissionRunEvents: cast(Any, partial(_handle_get_mission_run_events, context)),
-        ListMissionRuns: cast(Any, partial(_handle_list_mission_runs, context)),
+        AcceptMissionRun: cast(Any, partial(_handle_accept_mission_run, context, config)),
+        GetMissionRun: cast(Any, partial(_handle_get_mission_run, context, config)),
+        CancelMissionRun: cast(Any, partial(_handle_cancel_mission_run, context, config)),
+        GetMissionRunEvents: cast(
+            Any,
+            partial(_handle_get_mission_run_events, context, config),
+        ),
+        ListMissionRuns: cast(Any, partial(_handle_list_mission_runs, context, config)),
     }
+
+
+def _ensure_temporal_mission_workers(
+    context: WorldLibraryContext,
+    config: MissionsExtensionConfig,
+) -> None:
+    """Lazily start host-owned Workers from admitted async Mission ingress."""
+
+    client = config.temporal_runs
+    if client is None:
+        return
+    owner_id = "missions-temporal-worker"
+    try:
+        reservation = context.resources.owner(owner_id)
+    except KeyError:
+        reservation = context.resources.reserve_owner(
+            owner_id,
+            phase="workflow-handles",
+            closed_message="Temporal Mission Worker is closed",
+        )
+    if getattr(reservation, "_mission_temporal_worker", None) is not None:
+        return
+    worker = create_mission_worker(
+        client.client,
+        _TemporalMissionExecutor(context),
+        task_queue=client.task_queue,
+    )
+    workers = (worker, *config.temporal_workers)
+    for index, owned_worker in enumerate(workers):
+        reservation.retain_anchor(owned_worker)
+        reservation.spawn(
+            cast(Any, owned_worker).run,
+            label=f"mission-temporal-worker-{index}",
+        )
+    object.__setattr__(reservation, "_mission_temporal_worker", worker)
 
 
 def install(context: WorldLibraryContext) -> InstalledWorldLibrary:
@@ -908,7 +791,6 @@ def install(context: WorldLibraryContext) -> InstalledWorldLibrary:
     )
     trajectories = TrajectoryService(context.storage)
     handlers = _operation_handlers(context, config, transcripts, trajectories)
-
     if set(handlers) != set(MISSION_OPERATION_MODELS):
         raise RuntimeError("Missions operation composition is incomplete")
     for model in MISSION_OPERATION_MODELS:

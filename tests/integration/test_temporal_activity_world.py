@@ -611,8 +611,6 @@ async def test_trivial_temporal_activity_crosses_two_real_world_receipts(
         assert len(pending) == 1
         assert pending[0].result is not None
         assert pending[0].result.ref == "inline://counter/42"
-        assert pending[0].result_attempt is None
-        assert pending[0].result_fence is None
         inventory = inspect_sqlite_activity_catalog(catalog_path)
         assert inventory.attempt_count == 0
         assert inventory.provider_operation_count == 0

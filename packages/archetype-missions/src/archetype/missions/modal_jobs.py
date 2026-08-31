@@ -731,9 +731,10 @@ class ModalMissionJobClient:
         ref: ModalMissionJobRef,
     ) -> Literal["cancel", "cleanup"] | None:
         for phase in ("cancel", "cleanup"):
-            if await self._runtime.get(
-                modal_mission_job_key(ref.family, ref.operation_id, phase)
-            ) is not None:
+            if (
+                await self._runtime.get(modal_mission_job_key(ref.family, ref.operation_id, phase))
+                is not None
+            ):
                 return phase
         return None
 
