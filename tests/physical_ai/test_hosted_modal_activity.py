@@ -129,6 +129,7 @@ class _FakeModalState:
     execution_count: int = 0
     calls: dict[str, tuple[str, bytes, str]] = field(default_factory=dict)
     started_calls: set[str] = field(default_factory=set)
+    cancelled_calls: set[str] = field(default_factory=set)
 
 
 class _FakeModalRuntime:
@@ -176,6 +177,9 @@ class _FakeModalRuntime:
 
     async def reattach(self, call_id: str) -> object:
         return self.state.calls[call_id]
+
+    async def cancel(self, call: object) -> None:
+        self.state.cancelled_calls.add(self.call_id(call))
 
     async def wait(self, call: object) -> object:
         operation_id, request_ipc, namespace_digest = cast(
@@ -391,8 +395,62 @@ async def test_replacement_runtime_reattaches_exact_call_without_respawn(tmp_pat
     assert result.request_ipc == request_ipc
     assert state.spawn_attempts == 1
     assert state.execution_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cancellation_reattaches_only_the_exact_durable_call(tmp_path) -> None:
+    state = _FakeModalState(tmp_path)
+    world_id = "physical-world"
+    activity_id = "cancel-call"
+    operation_id = hosted_episode_provider_operation_id(world_id, activity_id)
+    request_ipc = _request(world_id, activity_id)
+    provider = ModalHostedEpisodeProvider(
+        _config(), runtime=_FakeModalRuntime(state, block_before_result=True)
+    )
+    running = asyncio.create_task(
+        provider.execute(
+            operation_id=operation_id,
+            request_ipc=request_ipc,
+            attempt=1,
+            fence=1,
+            retry_guard=None,
+        )
+    )
+    await state.wait_started.wait()
+
+    await provider.cancel(operation_id=operation_id, request_ipc=request_ipc)
+    assert state.cancelled_calls == {next(iter(state.calls))}
     assert state.spawn_attempts == 1
-    assert state.execution_count == 1
+
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+
+@pytest.mark.asyncio
+async def test_cancellation_without_call_identity_fails_closed(tmp_path) -> None:
+    state = _FakeModalState(tmp_path)
+    world_id = "physical-world"
+    activity_id = "cancel-ambiguous-start"
+    operation_id = hosted_episode_provider_operation_id(world_id, activity_id)
+    request_ipc = _request(world_id, activity_id)
+    provider = ModalHostedEpisodeProvider(
+        _config(), runtime=_FakeModalRuntime(state, fail_spawn=True)
+    )
+    with pytest.raises(ModalHostedEpisodeProviderUnknown):
+        await provider.execute(
+            operation_id=operation_id,
+            request_ipc=request_ipc,
+            attempt=1,
+            fence=1,
+            retry_guard=None,
+        )
+
+    with pytest.raises(ModalHostedEpisodeProviderUnknown, match="without an exact durable"):
+        await provider.cancel(operation_id=operation_id, request_ipc=request_ipc)
+    assert not state.cancelled_calls
+    assert state.spawn_attempts == 1
+    assert state.execution_count == 0
 
 
 @pytest.mark.asyncio

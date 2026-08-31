@@ -239,6 +239,8 @@ class ModalHostedEpisodeRuntime(Protocol):
 
     async def reattach(self, call_id: str) -> object: ...
 
+    async def cancel(self, call: object) -> None: ...
+
     async def read_blob(self, path: str) -> bytes: ...
 
 
@@ -529,6 +531,33 @@ class ModalHostedEpisodeProvider:
             request_ipc=request_ipc,
         )
 
+    async def cancel(self, *, operation_id: str, request_ipc: bytes) -> None:
+        """Cancel only the exact durable Modal call bound to this request."""
+
+        request_digest = self._validate_request(operation_id, request_ipc)
+        raw_start = await self._runtime.get(_start_key(operation_id))
+        if raw_start is None:
+            return
+        if not self._start_matches(
+            raw_start,
+            operation_id=operation_id,
+            request_digest=request_digest,
+        ):
+            raise ModalHostedEpisodeProviderUnknown(operation_id, "start marker conflicts")
+        raw_call = await self._runtime.get(_call_key(operation_id))
+        call_id = self._parse_call_record(
+            raw_call,
+            operation_id=operation_id,
+            request_digest=request_digest,
+        )
+        if call_id is None:
+            raise ModalHostedEpisodeProviderUnknown(
+                operation_id,
+                "cannot cancel a started operation without an exact durable call identity",
+            )
+        call = await self._runtime.reattach(call_id)
+        await self._runtime.cancel(call)
+
     async def _recover_if_complete(
         self,
         *,
@@ -770,6 +799,12 @@ class ModalNamedHostedEpisodeRuntime:
         await self._objects()
         modal = _load_modal()
         return modal.FunctionCall.from_id(call_id, client=self._client)
+
+    async def cancel(self, call: object) -> None:
+        cancel = getattr(call, "cancel", None)
+        if cancel is None or not hasattr(cancel, "aio"):
+            raise TypeError("Modal hosted function call has no async cancellation boundary")
+        await cancel.aio()
 
     async def read_blob(self, path: str) -> bytes:
         if not self._valid_blob_path(path):
