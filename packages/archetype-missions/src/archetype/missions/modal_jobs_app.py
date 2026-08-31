@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -84,6 +85,8 @@ from archetype.missions.temporal.modal_job_activities import MissionModalJobValu
 from archetype.missions.temporal.modal_job_client import MissionModalJobTemporalClient
 from archetype.missions.temporal.modal_job_worker import create_mission_modal_job_worker
 from archetype.redaction import RedactionService
+
+logger = logging.getLogger(__name__)
 
 MODAL_MISSION_CONTROLLER_MAX_REQUEST_BYTES = 1 << 20
 MODAL_MISSION_CONTROLLER_MAX_RECEIPT_BYTES = 4 << 10
@@ -981,6 +984,10 @@ async def _run_controller(
     except asyncio.CancelledError:
         raise
     except Exception as exc:
+        logger.exception(
+            "Modal Mission built-in job failed",
+            extra={"family": family, "operation_id": operation_id},
+        )
         raise ModalMissionControllerExecutionFailed(type(exc).__name__[:128]) from None
     receipt = modal_mission_call_record(outcome)
     encoded = json.dumps(
