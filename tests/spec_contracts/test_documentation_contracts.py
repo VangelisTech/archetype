@@ -270,6 +270,14 @@ def test_mkdocs_resolves_all_distribution_source_roots() -> None:
     assert "- Install World Libraries: guide/world-libraries.md" in config
 
 
+def test_mermaid_fences_use_the_material_renderer_contract() -> None:
+    """Mermaid fences must emit Material's ``pre.mermaid`` mount point."""
+    config = Path("mkdocs.yml").read_text()
+
+    assert "format: !!python/name:mermaid2.fence_mermaid_custom" in config
+    assert "  - mermaid2" in config
+
+
 def test_package_navigation_has_one_explicit_owner_per_page() -> None:
     """The reader-facing information architecture mirrors distribution ownership."""
 
