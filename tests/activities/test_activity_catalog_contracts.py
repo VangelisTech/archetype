@@ -20,6 +20,7 @@ from archetype.activities import (
     ActivityClaimError,
     ActivityConflictError,
     ActivityCoordinator,
+    ActivityExecutionIdentity,
     ActivityNotFoundError,
     ActivityResultRef,
     ActivityRetryGuard,
@@ -31,6 +32,7 @@ from archetype.storage.activity_catalog import (
     ActivityAdmissionRecord,
     ActivityCatalog,
     SqliteActivityCatalog,
+    inspect_sqlite_activity_catalog,
 )
 
 pytestmark = [
@@ -840,6 +842,64 @@ async def test_result_recording_requires_prebound_provider_and_is_idempotent(
 
         with pytest.raises(ActivityConflictError, match="different durable result"):
             await coordinator.record_result(bound, _result("different-result"))
+    finally:
+        await catalog.close()
+
+
+async def test_orchestrated_result_uses_no_local_attempt_and_is_idempotent(
+    tmp_path,
+) -> None:
+    path = tmp_path / "activities.db"
+    catalog = SqliteActivityCatalog(path)
+    coordinator = ActivityCoordinator(catalog)
+    execution = ActivityExecutionIdentity("temporal", "workflow/world-a/dispatch-1")
+    try:
+        await coordinator.admit(_admission())
+        first = await coordinator.record_orchestrated_result(
+            "world-a", _KIND, "dispatch-1", execution, _result()
+        )
+        repeated = await coordinator.record_orchestrated_result(
+            "world-a", _KIND, "dispatch-1", execution, _result()
+        )
+
+        assert repeated == first
+        assert first.result_attempt is None
+        assert first.result_fence is None
+        inventory = inspect_sqlite_activity_catalog(path)
+        assert inventory.attempt_count == 0
+        assert inventory.provider_operation_count == 1
+
+        with pytest.raises(ActivityConflictError, match="different durable result"):
+            await coordinator.record_orchestrated_result(
+                "world-a", _KIND, "dispatch-1", execution, _result("different-result")
+            )
+        with pytest.raises(ActivityConflictError, match="different orchestration"):
+            await coordinator.record_orchestrated_result(
+                "world-a",
+                _KIND,
+                "dispatch-1",
+                ActivityExecutionIdentity("temporal", "another-workflow"),
+                _result(),
+            )
+    finally:
+        await catalog.close()
+
+
+async def test_orchestrated_result_rejects_legacy_claim_authority(tmp_path) -> None:
+    catalog = SqliteActivityCatalog(tmp_path / "activities.db")
+    coordinator = ActivityCoordinator(catalog)
+    try:
+        await coordinator.admit(_admission())
+        await coordinator.claim("world-a", _KIND, "dispatch-1", "legacy-worker")
+
+        with pytest.raises(ActivityConflictError, match="legacy claim-based execution"):
+            await coordinator.record_orchestrated_result(
+                "world-a",
+                _KIND,
+                "dispatch-1",
+                ActivityExecutionIdentity("temporal", "workflow/world-a/dispatch-1"),
+                _result(),
+            )
     finally:
         await catalog.close()
 

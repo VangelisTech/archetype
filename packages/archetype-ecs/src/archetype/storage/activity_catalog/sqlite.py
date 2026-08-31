@@ -938,6 +938,115 @@ class SqliteActivityCatalog(HardenedSqliteCatalog):
 
         return await self._run(_record)
 
+    async def record_orchestrated_activity_result(
+        self,
+        world_id: str,
+        kind: str,
+        activity_id: str,
+        *,
+        provider: str,
+        provider_operation_id: str,
+        result_ref: str,
+        result_digest: str,
+        result_media_type: str,
+        result_size_bytes: int,
+    ) -> ActivityRecord:
+        """Record an orchestrator-owned result without minting a local attempt."""
+
+        _require_bounded_text(provider, "activity provider", 255)
+        _require_bounded_text(provider_operation_id, "provider operation_id", 1024)
+        _require_bounded_text(result_ref, "activity result ref", 4096)
+        _require_bounded_text(result_digest, "activity result digest", 255)
+        _require_bounded_text(result_media_type, "activity result media_type", 255)
+        if isinstance(result_size_bytes, bool) or not isinstance(result_size_bytes, int):
+            raise TypeError("activity result size_bytes must be an integer")
+        if result_size_bytes < 0:
+            raise ValueError("activity result size_bytes must be non-negative")
+        requested = (result_ref, result_digest, result_media_type, result_size_bytes)
+        identity = (world_id, kind, activity_id)
+
+        def _record() -> ActivityRecord:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                stored = _require_activity(conn, *identity)
+                attempt_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) AS count FROM activity_attempts "
+                        "WHERE source_world_id=? AND kind=? AND activity_id=?",
+                        identity,
+                    ).fetchone()["count"]
+                )
+                if attempt_count:
+                    raise ActivityCatalogConflictError(
+                        "activity already entered legacy claim-based execution"
+                    )
+                bound = conn.execute(
+                    "SELECT provider, provider_operation_id FROM activity_provider_operations "
+                    "WHERE source_world_id=? AND kind=? AND activity_id=?",
+                    identity,
+                ).fetchall()
+                requested_operation = (provider, provider_operation_id)
+                if bound and (
+                    len(bound) != 1
+                    or (str(bound[0]["provider"]), str(bound[0]["provider_operation_id"]))
+                    != requested_operation
+                ):
+                    raise ActivityCatalogConflictError(
+                        "activity already has a different orchestration operation identity"
+                    )
+                if stored.result_ref is not None:
+                    existing = (
+                        stored.result_ref,
+                        stored.result_digest,
+                        stored.result_media_type,
+                        stored.result_size_bytes,
+                    )
+                    if stored.result_attempt is not None or stored.result_fence is not None:
+                        raise ActivityCatalogConflictError(
+                            "activity result is owned by legacy claim-based execution"
+                        )
+                    if existing != requested:
+                        raise ActivityCatalogConflictError(
+                            "activity already has a different durable result"
+                        )
+                    _reserve_provider_identity(
+                        conn,
+                        identity,
+                        provider=provider,
+                        operation_id=provider_operation_id,
+                    )
+                    return stored
+
+                now = _utcnow()
+                _reserve_provider_identity(
+                    conn,
+                    identity,
+                    provider=provider,
+                    operation_id=provider_operation_id,
+                    bound_at=now,
+                )
+                conn.execute(
+                    "UPDATE activities SET result_ref=?, result_digest=?, "
+                    "result_media_type=?, result_size_bytes=?, result_attempt=NULL, "
+                    "result_fence=NULL, result_recorded_at=?, updated_at=? "
+                    "WHERE source_world_id=? AND kind=? AND activity_id=?",
+                    (
+                        result_ref,
+                        result_digest,
+                        result_media_type,
+                        result_size_bytes,
+                        now,
+                        now,
+                        *identity,
+                    ),
+                )
+                updated = _select_activity(conn, *identity)
+                assert updated is not None
+                return _activity_from_row(updated)
+
+        return await self._run(_record)
+
     async def release_activity(self, claim: ActivityClaimRecord) -> None:
         """Release an unbound attempt that performed no external operation."""
 
@@ -1409,6 +1518,25 @@ def _bind_provider_identity(
         claim.activity.kind,
         claim.activity.activity_id,
     )
+    _reserve_provider_identity(
+        conn,
+        identity,
+        provider=provider,
+        operation_id=operation_id,
+        bound_at=bound_at,
+    )
+
+
+def _reserve_provider_identity(
+    conn: sqlite3.Connection,
+    identity: tuple[str, str, str],
+    *,
+    provider: str,
+    operation_id: str,
+    bound_at: str | None = None,
+) -> None:
+    """Reserve one provider operation for one logical Activity identity."""
+
     conn.execute(
         "INSERT OR IGNORE INTO activity_provider_operations "
         "(provider, provider_operation_id, source_world_id, kind, activity_id, bound_at) "

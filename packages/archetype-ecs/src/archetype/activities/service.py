@@ -12,6 +12,7 @@ from archetype.activities.contracts import (
     ActivityClaim,
     ActivityClaimError,
     ActivityConflictError,
+    ActivityExecutionIdentity,
     ActivityNotFoundError,
     ActivityResultRef,
     ActivityRetryGuard,
@@ -121,6 +122,33 @@ class ActivityCoordinator:
         record = await _translate_catalog_errors(
             self._catalog.record_activity_result(
                 _claim_record(claim),
+                result_ref=result.ref,
+                result_digest=result.digest,
+                result_media_type=result.media_type,
+                result_size_bytes=result.size_bytes,
+            )
+        )
+        return _snapshot(record)
+
+    async def record_orchestrated_result(
+        self,
+        world_id: str,
+        kind: str,
+        activity_id: str,
+        execution: ActivityExecutionIdentity,
+        result: ActivityResultRef,
+    ) -> ActivitySnapshot:
+        """Record a Temporal-owned result without creating a lease attempt."""
+
+        if not isinstance(execution, ActivityExecutionIdentity):
+            raise TypeError("execution must be an ActivityExecutionIdentity")
+        record = await _translate_catalog_errors(
+            self._catalog.record_orchestrated_activity_result(
+                world_id,
+                kind,
+                activity_id,
+                provider=execution.provider,
+                provider_operation_id=execution.operation_id,
                 result_ref=result.ref,
                 result_digest=result.digest,
                 result_media_type=result.media_type,

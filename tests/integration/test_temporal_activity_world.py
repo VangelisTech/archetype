@@ -24,6 +24,7 @@ from uuid_utils import UUID
 from archetype.activities import (
     ActivityAdmission,
     ActivityCoordinator,
+    ActivityExecutionIdentity,
     ActivityResultRef,
     ActivitySettlement,
 )
@@ -33,7 +34,10 @@ from archetype.core.hooks import OnDestroy
 from archetype.core.interfaces import CommittedTickReceipt
 from archetype.orchestration.temporal import create_temporal_worker, durable_workflow_id
 from archetype.runtime_resources import RuntimeResources
-from archetype.storage.activity_catalog import SqliteActivityCatalog
+from archetype.storage.activity_catalog import (
+    SqliteActivityCatalog,
+    inspect_sqlite_activity_catalog,
+)
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
 from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
@@ -192,19 +196,6 @@ class _DoubleActivities:
             value = int(existing.result.ref.rsplit("/", maxsplit=1)[-1])
             return _DoubleOutput(value, existing.result.ref, existing.result.digest)
 
-        claim = await self._coordinator.claim(
-            command.world_id,
-            _ACTIVITY_KIND,
-            command.activity_id,
-            owner=f"temporal:{command.workflow_id}",
-        )
-        if not claim.acquired:
-            raise RuntimeError("Temporal Activity result publication is already claimed")
-        bound = await self._coordinator.bind_provider_operation(
-            claim,
-            "temporal",
-            command.workflow_id,
-        )
         value = command.value * 2
         encoded = json.dumps({"value": value}, separators=(",", ":"), sort_keys=True).encode()
         result = ActivityResultRef(
@@ -213,7 +204,16 @@ class _DoubleActivities:
             media_type="application/json",
             size_bytes=len(encoded),
         )
-        await self._coordinator.record_result(bound, result)
+        await self._coordinator.record_orchestrated_result(
+            command.world_id,
+            _ACTIVITY_KIND,
+            command.activity_id,
+            ActivityExecutionIdentity(
+                provider="temporal",
+                operation_id=command.workflow_id,
+            ),
+            result,
+        )
         return _DoubleOutput(value, result.ref, result.digest)
 
 
@@ -507,7 +507,8 @@ async def test_trivial_temporal_activity_crosses_two_real_world_receipts(
 ) -> None:
     """A committed world admits work; a later commit observes its result."""
 
-    catalog = SqliteActivityCatalog(tmp_path / "counter-activities.db")
+    catalog_path = tmp_path / "counter-activities.db"
+    catalog = SqliteActivityCatalog(catalog_path)
     coordinator = ActivityCoordinator(catalog)
     worlds = WorldRegistry()
     projection: dict[str, str | None] = {"activity_id": None, "result_digest": None}
@@ -606,6 +607,11 @@ async def test_trivial_temporal_activity_crosses_two_real_world_receipts(
         assert len(pending) == 1
         assert pending[0].result is not None
         assert pending[0].result.ref == "inline://counter/42"
+        assert pending[0].result_attempt is None
+        assert pending[0].result_fence is None
+        inventory = inspect_sqlite_activity_catalog(catalog_path)
+        assert inventory.attempt_count == 0
+        assert inventory.provider_operation_count == 1
         projection["activity_id"] = activity_id
         projection["result_digest"] = result.result_digest
 

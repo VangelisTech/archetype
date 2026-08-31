@@ -63,6 +63,20 @@ class ActivityCatalog(Protocol):
         result_size_bytes: int,
     ) -> ActivityRecord: ...
 
+    async def record_orchestrated_activity_result(
+        self,
+        world_id: str,
+        kind: str,
+        activity_id: str,
+        *,
+        provider: str,
+        provider_operation_id: str,
+        result_ref: str,
+        result_digest: str,
+        result_media_type: str,
+        result_size_bytes: int,
+    ) -> ActivityRecord: ...
+
     async def release_activity(self, claim: ActivityClaimRecord) -> None: ...
 
     async def has_unsettled_activities(self, world_id: str) -> bool: ...

@@ -8,13 +8,14 @@ from archetype.activities.contracts import (
     ActivityClaim,
     ActivityClaimError,
     ActivityConflictError,
+    ActivityExecutionIdentity,
     ActivityNotFoundError,
     ActivityResultRef,
     ActivityRetryGuard,
     ActivitySettlement,
     ActivitySnapshot,
 )
-from archetype.activities.interfaces import iActivityCoordinator
+from archetype.activities.interfaces import iActivityCoordinator, iActivitySettlementIndex
 from archetype.activities.service import (
     ActivityCoordinator,
     claim_next_pending,
@@ -27,6 +28,7 @@ __all__ = [
     "ActivityClaimError",
     "ActivityConflictError",
     "ActivityCoordinator",
+    "ActivityExecutionIdentity",
     "ActivityNotFoundError",
     "ActivityResultRef",
     "ActivityRetryGuard",
@@ -35,4 +37,5 @@ __all__ = [
     "claim_next_pending",
     "collect_pending_results",
     "iActivityCoordinator",
+    "iActivitySettlementIndex",
 ]

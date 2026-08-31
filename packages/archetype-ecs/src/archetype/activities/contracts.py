@@ -109,6 +109,22 @@ class ActivityResultRef:
 
 
 @dataclass(frozen=True, slots=True)
+class ActivityExecutionIdentity:
+    """Stable external operation identity owned by a durable orchestrator."""
+
+    provider: str
+    operation_id: str
+
+    def __post_init__(self) -> None:
+        _require_bounded_text(self.provider, "activity provider", _MAX_PROVIDER_CHARS)
+        _require_bounded_text(
+            self.operation_id,
+            "activity provider_operation_id",
+            _MAX_PROVIDER_OPERATION_CHARS,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ActivityRetryGuard:
     """Bounded proof that confirmed absence makes a fresh attempt safe.
 
@@ -169,8 +185,8 @@ class ActivitySnapshot:
         result_identity = (self.result_attempt, self.result_fence)
         if self.result is None and any(value is not None for value in result_identity):
             raise ValueError("activity result identity cannot exist without a result")
-        if self.result is not None and any(value is None for value in result_identity):
-            raise ValueError("activity result requires attempt and fence identity")
+        if (self.result_attempt is None) != (self.result_fence is None):
+            raise ValueError("activity result attempt and fence identity must be complete")
         if self.result_attempt is not None and self.result_attempt < 1:
             raise ValueError("activity result_attempt must be positive")
         if self.result_fence is not None and self.result_fence < 1:
