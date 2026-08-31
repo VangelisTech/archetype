@@ -557,11 +557,11 @@ test does not close them implicitly.
 - [x] Verify named Dict access, deployed Function lookup, `spawn`, durable call
   identity, `FunctionCall.from_id`, and zero-time polling against the pinned
   Modal 1.5.2 API surface without external execution.
-- [ ] Eliminate ambiguity between Modal's built-in `TimeoutError` for an
+- [x] Eliminate ambiguity between Modal's built-in `TimeoutError` for an
   unfinished zero-time poll and a remote controller that raises the same Python
   exception.  The deployed controller must canonicalize all remote failures and
   never allow raw built-in `TimeoutError` to escape.
-- [ ] Add a real deployed-Function compatibility test before production
+- [x] Add a real deployed-Function compatibility test before production
   routing; fake-Modal API shape is necessary but not sufficient.
 
 ### Local subprocess crash harness
@@ -576,8 +576,32 @@ test does not close them implicitly.
   family `collect` adapter once routing lands.
 - [ ] Extend settlement recovery from the real SQLite Activity authority to a
   reconstructed live ECS world and required projector.
-- [ ] Do not treat these tests as proof of live Modal behavior; retain the paid
+- [x] Do not treat these tests as proof of live Modal behavior; retain the paid
   deployed-Function process-kill gate.
+
+### Paid Modal compatibility receipt (2026-08-30)
+
+- [x] Build the controller image from the exact local package wheels. The
+  monorepo contains several `archetype` namespace roots, so adding one local
+  `archetype` source directory to a bare image is not a valid deployment build.
+- [x] Deploy a source-bearing production controller and verify its pinned
+  `fu-...` identity. This Modal workspace has no historical Function-version
+  lookup window, so the receipt binds the hydrated active Function object ID
+  and fails closed if a later name lookup resolves to a different ID.
+- [x] Prove the deployed controller canonicalizes a remote exception, then
+  reconstruct that exact call through `FunctionCall.from_id` and persist exact
+  cleanup intent without creating sandbox or Git resources.
+- [x] Hard-kill the process that started a minimal successful compatibility
+  call. A clean process resumed call `fc-01M1B0VH3TDZAGGFPYQXQM28XE`, collected
+  result digest `9c703aa1358079abc52c1438de86e0cd58897a2bb4cfe33b6844a662e88f8a13`,
+  and observed exactly one spawn record, one first-result record, and one exact
+  cleanup record. The repeatable opt-in gate is
+  `tests/infrastructure/test_modal_temporal_mission_recovery_live.py`.
+
+This receipt proves the paid Modal call/reattachment substrate, not Mission
+publication parity. The real Mermaid repair still requires the production
+author/critic route, persistent artifact authority, and valid Git publication
+credentials before legacy Mission orchestration can be deleted.
 
 ### Identity-only controller implementation
 
