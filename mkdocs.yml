@@ -45,6 +45,12 @@ theme:
 extra_css:
   - stylesheets/vangelis.css
 
+# Mermaid must be loaded before this initializer.  The initializer subscribes
+# to Material's document stream so diagrams also render after instant navigation.
+extra_javascript:
+  - https://unpkg.com/mermaid@10.4.0/dist/mermaid.min.js
+  - javascripts/mermaid.js
+
 extra:
   generator: false
 

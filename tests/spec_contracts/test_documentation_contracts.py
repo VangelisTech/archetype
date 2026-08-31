@@ -365,6 +365,18 @@ def test_package_navigation_enables_native_and_content_tabs() -> None:
         assert uv_commands == pip_commands
 
 
+def test_mermaid_diagrams_reinitialize_after_instant_navigation() -> None:
+    """Material instant navigation must not leave Mermaid source as page text."""
+
+    config = Path("mkdocs.yml").read_text()
+    initializer = Path("docs/javascripts/mermaid.js").read_text()
+
+    assert "https://unpkg.com/mermaid@10.4.0/dist/mermaid.min.js" in config
+    assert "- javascripts/mermaid.js" in config
+    assert "document$.subscribe" in initializer
+    assert 'mermaid.run({ querySelector: ".mermaid" })' in initializer
+
+
 def test_package_landings_link_framework_evaluation_to_its_owner() -> None:
     """Research names the framework contract without absorbing its API reference."""
 
