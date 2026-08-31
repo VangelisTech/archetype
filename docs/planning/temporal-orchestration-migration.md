@@ -290,58 +290,108 @@ Each row requires its own authority boundary, migration path, and parity gate.
 
 ### 1. Evaluation orchestration
 
-Status: **scope paused; not migrated**.
+Status: **scope complete; implementation paused; not migrated**. Risk: high.
+This is the first follow-up after Mission/shared Worker wiring.
 
 - Replace evaluator leases, polling loops, heartbeats, retry scheduling, and
   worker-failure recovery with Temporal Workflows and Activities.
 - Retain evaluation definitions, evidence, scores, observations, and result
   acceptance in Archetype.
 - Prerequisites: deterministic evaluation identity, bounded result contract,
-  idempotent provider submission, and an import/drain policy for open leases.
+  idempotent provider submission, an immutable admission-to-Workflow start
+  handoff, and an import/drain policy for open leases. The current operation
+  carries live component classes and an arbitrary grader callback; the durable
+  route requires a registered, versioned grader implementation instead.
+- Preserve the pinned subject and contract digests, `EvalReceipt`, keyed
+  evidence publication, and provider reconciliation. Workflow history carries
+  only JSON identities and receipt references, never callback objects or full
+  evidence.
+- Split provider work into sole-spawn `start`, result-first `poll`, exact
+  `collect`, read-first `publish_receipt`, and exact `cancel`/`cleanup`
+  Activities. A marker without a provider ID is `Unknown`, never replay
+  authority.
 - Gate: kill an evaluator Worker mid-provider run; replacement recovers one
-  evaluation and records one result with unchanged evidence.
+  evaluation and records one result with unchanged evidence. Also kill after
+  provider result and after keyed receipt append and prove exact recovery.
 - Deletion candidate after parity: evaluation lease and recovery machinery.
+  Completed leases may become historical admissions; a running lease has no
+  provider ID and must drain or fail closed. Update the control-snapshot schema
+  when `evaluation_leases` is removed.
 
 ### 2. Rollouts and simulation fan-out
 
-Status: **scope paused; not migrated**.
+Status: **scope complete; implementation paused; not migrated**. Risk: very
+high. This follows Evaluation; lifecycle hardening may proceed in parallel.
 
 - Move durable fork fan-out, waits, cancellation, compensation, ordered
   failure handling, and long-running supervision to Temporal.
 - Retain world state, exact fork lineage, target ticks, writer fencing,
   simulation computation, and committed manifests in Archetype.
-- Prerequisites: caller-chosen fork IDs and absolute-target advancement are
-  complete; define deterministic rollout and child-Workflow identities.
+- Prerequisites: deterministic rollout and child-Workflow identities, a pinned
+  source head, a portable termination-policy registry, and a portable installed
+  behavior recipe for processors/resources/hooks after process loss.
+- Caller-chosen destination world IDs and absolute-target advancement exist,
+  but raw `fork_world` still mints its run ID inside the effect. Add a
+  catalog-first `ensure_exact_fork` contract with caller-chosen world/run IDs
+  and partial-activation reconciliation before treating lost responses as
+  retryable.
+- Use one parent Workflow and deterministic per-index child Workflows. Child
+  phases are exact fork, bounded absolute advancement, compact result, and
+  non-interruptible exact cleanup. Durable failures use a portable precedence
+  envelope rather than Python exception-object identity.
 - Gate: run multiple forks, kill the supervisor, recover the same children,
-  and prove no duplicate forks or ticks and an unchanged parent.
+  and prove no duplicate forks or ticks and an unchanged parent. Kill after
+  partial fan-out, during an episode, and after child result before cleanup;
+  prove cold reconstruction restores the declared behavior recipe.
 - Deletion candidate after parity: process-local rollout supervision only.
 
 ### 3. AutoResearch
 
-Status: **scope paused; not migrated**.
+Status: **scope complete; implementation paused; not migrated**. Risk: very
+high. This follows the Rollout cutover and reuses Evaluation's provider pattern.
 
 - Move the single-flight guard, iteration lifecycle, experiment scheduling,
   waits, retries, cancellation, and recovery to Temporal.
 - Retain research hypotheses, experiment evidence, frontier decisions, and
   ledger facts in Archetype.
-- Prerequisites: stable experiment/policy IDs, explicit budget accounting,
-  idempotent effect launch, and bounded history or Continue-As-New policy.
+- Prerequisites: stable experiment/candidate/rollout/evaluator/frontier policy
+  IDs, explicit iteration/episode/tick/provider-spend budgets, idempotent
+  candidate and child launch, idempotent terminal Run/Result/head settlement,
+  deterministic lab-world identity, and bounded history with Continue-As-New.
+  Current callback-bearing candidate/evaluator/observer APIs are not portable.
+- Use one long-lived coordinator per experiment. A durable Update queues
+  `run_iterations(request_id, count, budget_ref)` calls; unrelated experiments
+  remain concurrent. `on_iteration` becomes a client observer over durable
+  cursors, not part of Workflow correctness.
+- Persist candidate intent and identity before Rollout. A same-Workflow active
+  attempt reattaches; a foreign identity fails closed. The frontier decision
+  remains an Archetype settlement operation against the current ledger head.
 - Gate: kill the Worker between experiment selection and result ingestion;
-  replacement performs no duplicate experiment and advances the same ledger.
+  replacement performs no duplicate candidate, rollout, or evaluation and
+  advances the same ledger once. Also prove budget exhaustion and
+  Continue-As-New preserve the queued request and head.
 - Deletion candidate after parity: local single-flight and iteration loops.
 
 ### 4. Storage migration orchestration
 
-Status: **not yet scoped for implementation**.
+Status: **scope complete; proceed after a phase refactor**. Risk: medium-high.
 
-- Move durable sequencing, waits, retries, progress, cancellation, and
-  compensation around copy/validate/activate/rollback to Temporal.
+- Move durable sequencing, waits, retries, progress, pause/resume, and
+  pre-activation cancellation around copy/validate/activate to Temporal.
 - Retain migration reservations, plan digests, staged data, activation CAS,
   cold evidence, and storage authority in Archetype.
-- Prerequisites: idempotent phase commands, resumable copy handles, and exact
-  reconciliation for ambiguous activation outcomes.
+- Prerequisites: a wiring-owned endpoint resolver, idempotent phase commands,
+  resumable copy handles, bounded table fan-out/history, exact reconciliation
+  for ambiguous activation outcomes, explicit pre-activation quarantine/abort
+  semantics, and migration support for the nonempty slim Activity settlement
+  index. The current unconditional Activity-history rejection blocks real
+  world migration.
+- Activation has no rollback/deactivation primitive. Cancellation after
+  activation is rejected and recovery is forward-only; do not promise
+  compensation that the storage authority cannot perform.
 - Gate: kill the Worker in every phase; resume the same plan without duplicate
-  activation or loss of rollback evidence.
+  activation or loss of evidence. After activation, make the source unreadable
+  and complete cold verification plus one exact receipt from destination state.
 - Deletion candidate after parity: process-local migration sequencing only.
 
 ### 5. Command scheduling
@@ -353,7 +403,13 @@ Status: **separate spike required; migration is not assumed**.
 - Retain authorization, validation, routing, logical `scheduled_tick`, command
   ordering, transactional outbox, and manifest-atomic settlement in Archetype.
 - Prerequisites: prove a Workflow can preserve logical-tick ordering and the
-  exact publication transaction without becoming a second command authority.
+  exact publication transaction without becoming a second command authority;
+  atomically couple reserved Spawn entity IDs to durable command admission;
+  and establish a route epoch that excludes dual legacy/Temporal ownership.
+- The candidate must signal the single per-world lifecycle coordinator rather
+  than create a second per-world Workflow. Do not turn each command into a
+  Temporal Activity. The existing reserved-Spawn map is process-local and can
+  lose an entity ID before admission.
 - Gate: process death around scheduled execution preserves command order and
   produces one manifest-visible settlement.
 - Never delete: transactional outbox or manifest publication authority.
@@ -368,21 +424,35 @@ Status: **blocked on deterministic identities**.
   and publication authority in Archetype.
 - Prerequisites: deterministic ingestion and occurrence IDs; current retry
   behavior may mint a new occurrence and therefore cannot be retried safely.
+  Add a caller `ingestion_id`, strongly consistent reservation, and allocate
+  the public UUIDv7 occurrence IDs exactly once into a frozen discovery
+  manifest. A deterministic UUIDv5 substitute is not compatible. Source/glob
+  membership and source version must also be immutable or pinned.
 - Gate: crash after external fetch and after blob publication; replacement
   converges on one content-addressed artifact and one occurrence.
-- Deletion candidate after parity: local ingestion retry/supervision loops.
+- Deletion candidate after parity: only the outer ingestion sequence. There is
+  little existing retry supervision to remove; this spike is about safe
+  durability, not expected net deletion.
 
 ### 7. Remaining Physical-AI Activities
 
-Status: **durable Modal primitive proven locally; family cutover remains**.
+Status: **durable Modal primitive proven locally; family cutover follows the
+live Mission call-ID gate**. Risk: high but bounded.
 
 - Reuse the Mission durable-job pattern for hosted Physical-AI executions:
   immutable start/call/result records, result-first polling, exact cancellation,
   and exact resource cleanup.
 - Retain episode definitions, trajectories, manifests, result validation,
   provider first-result registers, and ECS settlement in Archetype.
-- Prerequisites: paid live call-ID reattachment proof and family-specific
-  collect/cleanup contracts.
+- Prerequisites: paid live call-ID reattachment proof; remote self-registration
+  before episode/hardware effects to close the current spawn-before-call-record
+  gap; a split `start`/`poll`/`collect`/`cancel`/`cleanup` provider protocol;
+  claim-free family settlement; and idempotent observation staging to an
+  absolute target tick.
+- Projector admission prebinds the deterministic Temporal execution identity.
+  Provider request/result bytes stay outside Workflow history; Physical AI
+  retains its markers, first-result register, trajectory and manifest
+  validation, and exact ECS settlement.
 - Gate: hard-kill a Worker during a real hosted episode; recover one Modal call,
   one result, and one exact observation.
 - Deletion candidate after parity: Physical-AI claim/lease worker machinery.
@@ -396,23 +466,39 @@ Status: **claim-free path exists; legacy removal intentionally deferred**.
   after every Activity family is exclusively Temporal-owned.
 - Retain the slim strongly consistent admission/settlement index unless a
   per-world Workflow replacement proves lifecycle-lock consistency.
-- Prerequisites: schema migration, catalog inventory, freeze/drain/archive or
-  import of all unresolved legacy attempts, and zero legacy admission routes.
+- Prerequisites: fix the slim protocol so admission requires atomic execution
+  prebinding; inventory every catalog and family caller; schema migration;
+  freeze/drain/archive or import all unresolved legacy attempts; zero provider-
+  bound legacy operations; all Mission and Physical-AI external gates; and
+  Storage Migration support for the nonempty slim index.
+- Preserve `activities`, `activity_executions`, bounded result references,
+  pending-result delivery, exact observation receipts, settlement, and
+  `has_unsettled`. Delete incomplete-work claim scans, not result delivery.
 - Gate: catalog inventory proves no open legacy attempt or provider-bound work;
   every family passes process-death and exact-settlement parity.
 - Never substitute Temporal visibility search for `has_unsettled(world_id)`.
 
 ### 9. World lifecycle orchestration
 
-Status: **idempotent fork/advance primitives proven; broader scope remains**.
+Status: **incremental scope complete; fork/resume/absolute advance are nearest,
+create and destroy remain blocked**. Risk: very high for the full lifecycle.
 
-- Temporal may supervise long-running create, fork, advance, pause, resume,
-  destroy, and cleanup processes.
+- Temporal may supervise long-running create, fork, advance, resume, destroy,
+  and cleanup processes. Pause remains out of scope until it has an Archetype
+  domain contract.
 - Archetype retains catalog status, lineage, writer epochs, locks, committed
   ticks, manifests, reconstruction, and `OnDestroy` semantics.
-- Prerequisites: deterministic Workflow IDs for lifecycle operations,
-  reconciliation of ambiguous storage commits, and explicit terminal-state
-  rules.
+- Prerequisites: caller-chosen run IDs for create/fork or exact `ensure_*`
+  reconciliation primitives; deterministic Workflow IDs; idempotent already-
+  live resume; global-name semantics; reconciliation of ambiguous activation;
+  durable closing state; and explicit terminal-state rules. Pause is not a
+  current world operation and must not be claimed as migrated.
+- One Workflow per `(storage fingerprint, world_id)` serializes lifecycle and
+  any future command advancement. Archetype retains locks, writer epochs,
+  manifests, reconstruction, and `has_unsettled`.
+- Destroy remains blocked until process-local `OnDestroy` callbacks gain
+  durable, idempotent/reconcilable hook identities. Temporal cannot make an
+  arbitrary in-memory side effect exactly once.
 - Gate: hard-kill each lifecycle phase and prove the same world/run resumes,
   writer epoch advances, parent remains unchanged, and destroy occurs once.
 - Never move tick computation or storage commit authority into Temporal.
