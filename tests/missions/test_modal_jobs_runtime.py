@@ -126,7 +126,7 @@ def _fake_modal(state: _FakeModalState) -> object:
     )
 
 
-def _config() -> ModalMissionJobRuntimeConfig:
+def _config(*, function_version: int | None = None) -> ModalMissionJobRuntimeConfig:
     return ModalMissionJobRuntimeConfig(
         workspace_name="mission-workspace",
         environment_name="production",
@@ -134,6 +134,7 @@ def _config() -> ModalMissionJobRuntimeConfig:
         job_dict_name="mission-job-state",
         author_function_name="mission-author-controller",
         critic_function_name="mission-critic-controller",
+        function_version=function_version,
         create_if_missing=True,
     )
 
@@ -242,6 +243,38 @@ async def test_runtime_reattaches_by_function_call_id_and_polls_without_waiting(
 
 
 @pytest.mark.asyncio
+async def test_runtime_looks_up_the_server_pinned_function_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _FakeModalState()
+    monkeypatch.setitem(sys.modules, "modal", _fake_modal(state))
+
+    async def result_reader(_ref: ModalMissionJobRef) -> bytes | None:
+        return None
+
+    runtime = ModalNamedMissionJobRuntime(
+        _config(function_version=23),
+        result_reader=result_reader,
+    )
+    await runtime.spawn(
+        family="author",
+        operation_id="mission:author:dispatch-versioned",
+        request_bytes=b"author-request",
+        namespace_digest="a" * 64,
+    )
+
+    assert (
+        "Function.from_name",
+        ("mission-jobs", "mission-author-controller"),
+        {
+            "environment_name": "production",
+            "client": state.client,
+            "version": 23,
+        },
+    ) in state.calls
+
+
+@pytest.mark.asyncio
 async def test_runtime_translates_only_nonblocking_timeout_to_still_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -301,3 +334,5 @@ def test_runtime_config_rejects_invalid_modal_names_and_non_boolean_creation() -
             critic_function_name="mission-critic-controller",
             create_if_missing=1,  # type: ignore[arg-type]
         )
+    with pytest.raises(ValueError, match="function_version"):
+        _config(function_version=0)

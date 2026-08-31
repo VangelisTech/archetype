@@ -43,14 +43,21 @@ from archetype.missions.modal_jobs_app import (
     MODAL_MISSION_CONTROLLER_MAX_RECEIPT_BYTES,
     ModalMissionBuiltinJobService,
     ModalMissionControllerAppConfig,
+    ModalMissionControllerDeploymentReceipt,
+    ModalMissionControllerDeploymentSpec,
     ModalMissionControllerExecutionFailed,
     ModalMissionControllerFailpoint,
     ModalMissionControllerFailpointReached,
     ModalMissionControllerRejected,
     build_modal_mission_controller_app,
+    build_modal_mission_controller_deployment,
+    create_modal_mission_controller_deployment_receipt,
+    prepare_modal_mission_job_worker,
     provision_modal_mission_controller_state,
+    verify_modal_mission_controller_deployment,
 )
 from archetype.missions.modal_jobs_runtime import ModalMissionJobRuntimeConfig
+from archetype.missions.temporal.contracts import MISSION_MODAL_JOB_TASK_QUEUE
 from archetype.redaction import RedactionService
 
 _Controller = Callable[
@@ -67,6 +74,7 @@ class _AioMethod:
 @dataclass
 class _FakeModalState:
     current_call_id: str | None = "fc-controller-1"
+    function_id: str = "fu-mission-controller-v17"
     workspace_name: str = "mission-workspace"
     client: object = field(default_factory=object)
     values: dict[str, object] = field(default_factory=dict)
@@ -132,6 +140,23 @@ def _fake_modal(state: _FakeModalState) -> object:
 
             return decorate
 
+    class Function:
+        @staticmethod
+        def from_name(*args: object, **kwargs: object) -> object:
+            state.events.append(f"Function.from_name:{args[0]}:{args[1]}")
+            assert kwargs == {
+                "version": 17,
+                "environment_name": "proof",
+                "client": state.client,
+            }
+            function = SimpleNamespace(object_id=state.function_id)
+
+            async def hydrate() -> None:
+                state.events.append("function.hydrate")
+
+            function.hydrate = _AioMethod(hydrate)
+            return function
+
     class _Image:
         def uv_pip_install(self, *args: object, **kwargs: object) -> _Image:
             state.image_calls.append(("uv_pip_install", args, kwargs))
@@ -142,6 +167,11 @@ def _fake_modal(state: _FakeModalState) -> object:
             return self
 
     class Image:
+        @staticmethod
+        def from_id(image_id: str) -> object:
+            state.events.append(f"Image.from_id:{image_id}")
+            return SimpleNamespace(object_id=image_id)
+
         @staticmethod
         def debian_slim(*args: object, **kwargs: object) -> _Image:
             state.image_calls.append(("debian_slim", args, kwargs))
@@ -154,6 +184,7 @@ def _fake_modal(state: _FakeModalState) -> object:
     return SimpleNamespace(
         App=App,
         Dict=Dict,
+        Function=Function,
         Image=Image,
         Workspace=Workspace,
         current_function_call_id=current_function_call_id,
@@ -197,6 +228,41 @@ def _config(
     )
 
 
+def _deployment_spec(**changes: object) -> ModalMissionControllerDeploymentSpec:
+    values: dict[str, Any] = {
+        "controller_image_id": "im-controller-production",
+        "sandbox_image_id": "im-sandbox-checkpoint-production",
+        "controller_artifact_digest": "f" * 64,
+        "workspace_name": "mission-workspace",
+        "environment_name": "production",
+        "app_name": "mission-controller-production",
+        "job_dict_name": "mission-job-state-production",
+        "result_dict_name": "mission-results-production",
+        "function_name": "mission-controller",
+        "author_model": "gpt-5.4-author",
+        "critic_model": "gpt-5.4-critic",
+    }
+    values.update(changes)
+    return ModalMissionControllerDeploymentSpec(**values)
+
+
+def _deployment_receipt(
+    spec: ModalMissionControllerDeploymentSpec,
+    **changes: object,
+) -> ModalMissionControllerDeploymentReceipt:
+    values: dict[str, Any] = {
+        "deployment_digest": spec.deployment_digest,
+        "controller_artifact_digest": spec.controller_artifact_digest,
+        "controller_image_id": spec.controller_image_id,
+        "app_name": spec.app_name,
+        "function_name": spec.function_name,
+        "function_version": 17,
+        "function_id": "fu-mission-controller-v17",
+    }
+    values.update(changes)
+    return ModalMissionControllerDeploymentReceipt(**values)
+
+
 def _author_request() -> bytes:
     request = TaskDispatchRequest(
         mission_id=3,
@@ -222,7 +288,7 @@ def _author_request() -> bytes:
     return MissionAuthorValueCodec(redactor=RedactionService()).encode_request(request)
 
 
-def _critic_request() -> bytes:
+def _critic_request(policy: CriticPolicy | None = None) -> bytes:
     content = b"exact diff"
     request = CandidateReviewRequest(
         candidate_entity_id=11,
@@ -242,7 +308,7 @@ def _critic_request() -> bytes:
         head_revision="b" * 40,
         diff_digest=hashlib.sha256(content).hexdigest(),
         validator_bundle_digest=hashlib.sha256(b"validators").hexdigest(),
-        policy=CriticPolicy(max_subject_bytes=1 << 20),
+        policy=policy or CriticPolicy(max_subject_bytes=1 << 20),
         validation=(),
         candidate_published_at_ms=100,
         attempt=1,
@@ -601,6 +667,54 @@ def test_controller_config_is_fixed_to_one_function_and_builtin_redaction() -> N
         replace(_config(), failpoint="after-self-registration")  # type: ignore[arg-type]
 
 
+def test_controller_accepts_only_deployment_pinned_critic_model_and_timeout() -> None:
+    config = replace(
+        _config(),
+        critic_model="gpt-5.4-critic",
+        critic_turn_timeout_seconds=777,
+    )
+    matching = _critic_request(
+        CriticPolicy(
+            model="gpt-5.4-critic",
+            timeout_seconds=777,
+            max_subject_bytes=1 << 20,
+        )
+    )
+
+    assert (
+        modal_jobs_app._canonical_request_digest(
+            config=config,
+            family="critic",
+            request_bytes=matching,
+        )
+        == hashlib.sha256(matching).hexdigest()
+    )
+    with pytest.raises(ValueError, match="model conflicts"):
+        modal_jobs_app._canonical_request_digest(
+            config=config,
+            family="critic",
+            request_bytes=_critic_request(
+                CriticPolicy(
+                    model="gpt-5.5-critic",
+                    timeout_seconds=777,
+                    max_subject_bytes=1 << 20,
+                )
+            ),
+        )
+    with pytest.raises(ValueError, match="timeout conflicts"):
+        modal_jobs_app._canonical_request_digest(
+            config=config,
+            family="critic",
+            request_bytes=_critic_request(
+                CriticPolicy(
+                    model="gpt-5.4-critic",
+                    timeout_seconds=778,
+                    max_subject_bytes=1 << 20,
+                )
+            ),
+        )
+
+
 @pytest.mark.asyncio
 async def test_builtin_host_service_collects_exact_result_without_reexecution(
     monkeypatch: pytest.MonkeyPatch,
@@ -719,3 +833,315 @@ async def test_deployment_provisions_job_and_result_dicts_explicitly(
     assert "Dict.from_name:mission-job-state" in state.events
     assert "Dict.from_name:mission-results" in state.events
     assert state.events.count("dict.hydrate") == 2
+
+
+@pytest.mark.asyncio
+async def test_deployment_receipt_hydrates_exact_version_and_function_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _FakeModalState()
+    monkeypatch.setitem(sys.modules, "modal", _fake_modal(state))
+    config = replace(
+        _config(),
+        runtime=replace(_runtime_config(), function_version=17),
+    )
+    receipt = ModalMissionControllerDeploymentReceipt(
+        deployment_digest="a" * 64,
+        controller_artifact_digest="b" * 64,
+        controller_image_id="im-controller-proof",
+        app_name=config.runtime.app_name,
+        function_name=config.function_name,
+        function_version=17,
+        function_id=state.function_id,
+    )
+
+    observed = await verify_modal_mission_controller_deployment(config, receipt)
+
+    assert observed == state.function_id
+    assert state.events == [
+        "Workspace.from_context",
+        "workspace.hydrate",
+        "Function.from_name:mission-controller-proof:mission-controller",
+        "function.hydrate",
+    ]
+
+    state.function_id = "fu-another-controller"
+    with pytest.raises(RuntimeError, match="another Function"):
+        await verify_modal_mission_controller_deployment(config, receipt)
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_receipt_is_created_after_dict_and_function_hydration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _FakeModalState()
+    monkeypatch.setitem(sys.modules, "modal", _fake_modal(state))
+    spec = _deployment_spec(
+        environment_name="proof",
+        app_name="mission-controller-proof",
+        job_dict_name="mission-job-state",
+        result_dict_name="mission-results",
+    )
+
+    receipt = await create_modal_mission_controller_deployment_receipt(
+        spec,
+        expected_deployment_digest=spec.deployment_digest,
+        function_version=17,
+    )
+
+    assert receipt == _deployment_receipt(spec, function_id=state.function_id)
+    assert state.events == [
+        "Workspace.from_context",
+        "workspace.hydrate",
+        "Dict.from_name:mission-job-state",
+        "dict.hydrate",
+        "Dict.from_name:mission-results",
+        "dict.hydrate",
+        "Workspace.from_context",
+        "workspace.hydrate",
+        "Function.from_name:mission-controller-proof:mission-controller",
+        "function.hydrate",
+    ]
+
+
+def test_production_deployment_digest_binds_every_effectful_coordinate() -> None:
+    spec = _deployment_spec()
+    mutations: dict[str, object] = {
+        "controller_image_id": "im-controller-rebuilt",
+        "sandbox_image_id": "im-sandbox-checkpoint-rebuilt",
+        "controller_artifact_digest": "e" * 64,
+        "workspace_name": "other-workspace",
+        "environment_name": "staging",
+        "app_name": "other-controller-app",
+        "job_dict_name": "other-job-state",
+        "result_dict_name": "other-results",
+        "function_name": "other-controller",
+        "author_model": "gpt-5.5-author",
+        "critic_model": "gpt-5.5-critic",
+        "author_workspace": "/workspace/other-author",
+        "critic_workspace": "/workspace/other-critic",
+        "controller_timeout_seconds": 60,
+        "sandbox_timeout_seconds": 61,
+        "sandbox_idle_timeout_seconds": 62,
+        "author_turn_timeout_seconds": 63,
+        "critic_turn_timeout_seconds": 64,
+        "auth_volume_name": "other-auth-volume",
+        "github_secret_name": "other-github-secret",
+        "task_queue": "archetype-missions-modal-jobs-v2",
+        "checkpoint_after_dispatch": False,
+    }
+
+    assert len(spec.deployment_digest) == 64
+    for field_name, value in mutations.items():
+        changed = replace(spec, **{field_name: value})
+        assert changed.deployment_digest != spec.deployment_digest, field_name
+
+
+def test_production_config_rejects_server_digest_drift_and_pins_runtime() -> None:
+    spec = _deployment_spec()
+
+    with pytest.raises(ValueError, match="server-pinned manifest"):
+        spec.app_config(expected_deployment_digest="0" * 64)
+
+    config = spec.app_config(
+        expected_deployment_digest=spec.deployment_digest,
+        function_version=17,
+    )
+
+    assert config.namespace.deployment_digest == spec.deployment_digest
+    assert config.namespace.image_id == spec.sandbox_image_id
+    assert config.runtime.function_version == 17
+    assert config.runtime.author_function_name == spec.function_name
+    assert config.runtime.critic_function_name == spec.function_name
+    assert not config.runtime.create_if_missing
+    assert config.failpoint is None
+    assert config.author_model == spec.author_model
+    assert config.critic_model == spec.critic_model
+    assert config.author_turn_timeout_seconds == spec.author_turn_timeout_seconds
+    assert config.critic_turn_timeout_seconds == spec.critic_turn_timeout_seconds
+
+
+def test_production_spec_requires_content_addressed_artifact_and_models() -> None:
+    with pytest.raises(ValueError, match="controller image"):
+        _deployment_spec(controller_image_id="mutable-controller")
+    with pytest.raises(ValueError, match="must be distinct"):
+        _deployment_spec(controller_image_id="im-sandbox-checkpoint-production")
+    with pytest.raises(ValueError, match="artifact"):
+        _deployment_spec(controller_artifact_digest="mutable-wheel")
+    with pytest.raises(ValueError, match="author_model"):
+        _deployment_spec(author_model="")
+    with pytest.raises(ValueError, match="critic_model"):
+        _deployment_spec(critic_model=" provider-default ")
+    with pytest.raises(ValueError, match="dedicated task queue"):
+        _deployment_spec(task_queue="archetype-missions")
+    with pytest.raises(ValueError, match="function_version"):
+        _deployment_receipt(_deployment_spec(), function_version=0)
+
+
+def test_production_app_uses_controller_image_not_sandbox_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    spec = _deployment_spec()
+    image = object()
+    app = object()
+    controller = object()
+
+    def pinned_image(image_id: str) -> object:
+        assert image_id == spec.controller_image_id
+        events.append("resolve-image")
+        return image
+
+    def build_app(
+        config: ModalMissionControllerAppConfig,
+        *,
+        image: object | None = None,
+    ) -> tuple[object, object]:
+        assert events == ["resolve-image"]
+        assert config.namespace.image_id == spec.sandbox_image_id
+        assert image is not None
+        events.append("build-app")
+        return app, controller
+
+    monkeypatch.setattr(modal_jobs_app, "_pinned_controller_image", pinned_image)
+    monkeypatch.setattr(modal_jobs_app, "build_modal_mission_controller_app", build_app)
+
+    deployment = build_modal_mission_controller_deployment(
+        spec,
+        expected_deployment_digest=spec.deployment_digest,
+    )
+
+    assert events == ["resolve-image", "build-app"]
+    assert deployment.app is app
+    assert deployment.controller is controller
+    assert deployment.config.runtime.function_version is None
+
+
+@pytest.mark.asyncio
+async def test_prepared_worker_provisions_and_verifies_before_composition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    spec = _deployment_spec()
+    receipt = _deployment_receipt(spec)
+    worker = object()
+    values = cast(Any, object())
+    temporal_client = cast(Any, object())
+
+    async def provision(config: ModalMissionControllerAppConfig) -> tuple[str, ...]:
+        assert config.namespace.deployment_digest == spec.deployment_digest
+        events.append("provision-dicts")
+        return (spec.job_dict_name, spec.result_dict_name)
+
+    async def verify(
+        config: ModalMissionControllerAppConfig,
+        received: ModalMissionControllerDeploymentReceipt,
+    ) -> str:
+        assert events == ["provision-dicts"]
+        assert config.runtime.function_version == receipt.function_version
+        assert received is receipt
+        events.append("verify-function")
+        return receipt.function_id
+
+    class Service:
+        def __init__(self, config: ModalMissionControllerAppConfig) -> None:
+            assert config.runtime.function_version == receipt.function_version
+            events.append("build-service")
+
+    def build_worker(
+        client: object,
+        service: object,
+        received_values: object,
+        *,
+        task_queue: str,
+    ) -> object:
+        assert client is temporal_client
+        assert isinstance(service, Service)
+        assert received_values is values
+        assert task_queue == MISSION_MODAL_JOB_TASK_QUEUE
+        events.append("build-worker")
+        return worker
+
+    monkeypatch.setattr(
+        modal_jobs_app,
+        "provision_modal_mission_controller_state",
+        provision,
+    )
+    monkeypatch.setattr(
+        modal_jobs_app,
+        "verify_modal_mission_controller_deployment",
+        verify,
+    )
+    monkeypatch.setattr(modal_jobs_app, "ModalMissionBuiltinJobService", Service)
+    monkeypatch.setattr(modal_jobs_app, "create_mission_modal_job_worker", build_worker)
+
+    prepared = await prepare_modal_mission_job_worker(
+        temporal_client,
+        values,
+        spec=spec,
+        receipt=receipt,
+        expected_deployment_digest=spec.deployment_digest,
+    )
+
+    assert events == [
+        "provision-dicts",
+        "verify-function",
+        "build-service",
+        "build-worker",
+    ]
+    assert prepared.worker is worker
+    assert prepared.receipt is receipt
+    assert prepared.provisioned_dict_names == (
+        spec.job_dict_name,
+        spec.result_dict_name,
+    )
+
+
+@pytest.mark.asyncio
+async def test_production_factory_rejects_digest_before_touching_modal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _deployment_spec()
+
+    async def touched_modal(_config: ModalMissionControllerAppConfig) -> tuple[str, ...]:
+        raise AssertionError("digest drift must fail before a Modal lookup")
+
+    monkeypatch.setattr(
+        modal_jobs_app,
+        "provision_modal_mission_controller_state",
+        touched_modal,
+    )
+
+    with pytest.raises(ValueError, match="server deployment digest"):
+        await prepare_modal_mission_job_worker(
+            cast(Any, object()),
+            cast(Any, object()),
+            spec=spec,
+            receipt=_deployment_receipt(spec),
+            expected_deployment_digest="0" * 64,
+        )
+
+
+@pytest.mark.asyncio
+async def test_prepared_worker_rejects_artifact_receipt_before_provisioning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _deployment_spec()
+
+    async def touched_state(_config: ModalMissionControllerAppConfig) -> tuple[str, ...]:
+        raise AssertionError("receipt drift must fail before Modal state is opened")
+
+    monkeypatch.setattr(
+        modal_jobs_app,
+        "provision_modal_mission_controller_state",
+        touched_state,
+    )
+
+    with pytest.raises(ValueError, match="deployment manifest"):
+        await prepare_modal_mission_job_worker(
+            cast(Any, object()),
+            cast(Any, object()),
+            spec=spec,
+            receipt=_deployment_receipt(spec, controller_artifact_digest="e" * 64),
+            expected_deployment_digest=spec.deployment_digest,
+        )

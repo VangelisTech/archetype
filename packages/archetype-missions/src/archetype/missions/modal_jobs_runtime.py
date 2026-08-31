@@ -47,6 +47,7 @@ class ModalMissionJobRuntimeConfig:
     job_dict_name: str
     author_function_name: str
     critic_function_name: str
+    function_version: int | None = None
     create_if_missing: bool = False
 
     def __post_init__(self) -> None:
@@ -61,6 +62,12 @@ class ModalMissionJobRuntimeConfig:
             _require_modal_name(getattr(self, field), f"Modal Mission {field}")
         if not isinstance(self.create_if_missing, bool):
             raise ValueError("Modal Mission create_if_missing must be a boolean")
+        if self.function_version is not None and (
+            isinstance(self.function_version, bool)
+            or not isinstance(self.function_version, int)
+            or self.function_version < 1
+        ):
+            raise ValueError("Modal Mission function_version must be a positive integer")
 
     def function_name(self, family: ModalMissionFamily) -> str:
         if family == "author":
@@ -185,11 +192,16 @@ class ModalNamedMissionJobRuntime:
         modal, client = await self._get_context()
         async with self._lock:
             if family not in self._functions:
+                kwargs: dict[str, Any] = {
+                    "environment_name": self._config.environment_name,
+                    "client": client,
+                }
+                if self._config.function_version is not None:
+                    kwargs["version"] = self._config.function_version
                 function = modal.Function.from_name(
                     self._config.app_name,
                     function_name,
-                    environment_name=self._config.environment_name,
-                    client=client,
+                    **kwargs,
                 )
                 await function.hydrate.aio()
                 self._functions[family] = function

@@ -20,6 +20,7 @@ MISSION_WORKFLOW_NAME = "archetype.missions.MissionWorkflow"
 MISSION_SUBMIT_ACTIVITY = "archetype.missions.submit"
 MISSION_EXECUTE_ACTIVITY = "archetype.missions.execute"
 MISSION_TASK_QUEUE = "archetype-missions"
+MISSION_MODAL_JOB_TASK_QUEUE = "archetype-missions-modal-jobs-v1"
 MISSION_MODAL_JOB_WORKFLOW_NAME = "archetype.missions.ModalJobWorkflow"
 MISSION_MODAL_JOB_START_ACTIVITY = "archetype.missions.modal-job.start"
 MISSION_MODAL_JOB_POLL_ACTIVITY = "archetype.missions.modal-job.poll"
@@ -253,6 +254,7 @@ __all__ = [
     "MISSION_MODAL_JOB_COLLECT_ACTIVITY",
     "MISSION_MODAL_JOB_POLL_ACTIVITY",
     "MISSION_MODAL_JOB_START_ACTIVITY",
+    "MISSION_MODAL_JOB_TASK_QUEUE",
     "MISSION_MODAL_JOB_WORKFLOW_NAME",
     "MISSION_SUBMIT_ACTIVITY",
     "MISSION_TASK_QUEUE",

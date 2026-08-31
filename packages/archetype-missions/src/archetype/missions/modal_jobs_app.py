@@ -14,11 +14,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Any
+
+from temporalio.client import Client
+from temporalio.worker import Worker
 
 from archetype.missions.activity_values import MissionAuthorValueCodec
 from archetype.missions.coding_agents.app_server import CodexAppServerDriver
@@ -68,10 +72,18 @@ from archetype.missions.sandboxes.modal import (
     ModalSandboxOperationResourceCleanup,
 )
 from archetype.missions.sandboxes.modal_barrier import ModalProviderStartBarrier
+from archetype.missions.temporal.contracts import (
+    MISSION_MODAL_JOB_TASK_QUEUE,
+    MISSION_TASK_QUEUE,
+)
+from archetype.missions.temporal.modal_job_activities import MissionModalJobValueStore
+from archetype.missions.temporal.modal_job_worker import create_mission_modal_job_worker
 from archetype.redaction import RedactionService
 
 MODAL_MISSION_CONTROLLER_MAX_REQUEST_BYTES = 1 << 20
 MODAL_MISSION_CONTROLLER_MAX_RECEIPT_BYTES = 4 << 10
+_DEPLOYMENT_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_DEPLOYMENT_SCHEMA_VERSION = 1
 
 
 class ModalMissionControllerFailpoint(StrEnum):
@@ -119,8 +131,11 @@ class ModalMissionControllerAppConfig:
     sandbox_timeout_seconds: int = 4 * 60 * 60
     sandbox_idle_timeout_seconds: int = 20 * 60
     author_model: str = ""
+    critic_model: str = ""
     author_workspace: str = "/workspace/repo"
     critic_workspace: str = "/workspace/review"
+    author_turn_timeout_seconds: int = 45 * 60
+    critic_turn_timeout_seconds: int = 45 * 60
     auth_volume_name: str = "archetype-codex-auth"
     github_secret_name: str = "archetype-github"
     checkpoint_after_dispatch: bool = True
@@ -132,9 +147,7 @@ class ModalMissionControllerAppConfig:
                 "Modal Mission controller requires one shared author/critic function name"
             )
         if self.runtime.create_if_missing:
-            raise ValueError(
-                "Modal Mission controller requires preprovisioned durable Dicts"
-            )
+            raise ValueError("Modal Mission controller requires preprovisioned durable Dicts")
         if self.namespace.redaction_policy_id != RedactionService().policy_id:
             raise ValueError(
                 "Modal Mission controller redaction capability conflicts with its namespace"
@@ -150,6 +163,8 @@ class ModalMissionControllerAppConfig:
         for label, value in (
             ("sandbox_timeout_seconds", self.sandbox_timeout_seconds),
             ("sandbox_idle_timeout_seconds", self.sandbox_idle_timeout_seconds),
+            ("author_turn_timeout_seconds", self.author_turn_timeout_seconds),
+            ("critic_turn_timeout_seconds", self.critic_turn_timeout_seconds),
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"Modal Mission controller {label} must be positive")
@@ -175,6 +190,213 @@ class ModalMissionControllerAppConfig:
         return self.runtime.author_function_name
 
 
+@dataclass(frozen=True, slots=True)
+class ModalMissionControllerDeploymentSpec:
+    """Immutable inputs whose canonical digest identifies one deployment."""
+
+    controller_image_id: str
+    sandbox_image_id: str
+    controller_artifact_digest: str
+    workspace_name: str
+    environment_name: str
+    app_name: str
+    job_dict_name: str
+    result_dict_name: str
+    function_name: str
+    author_model: str
+    critic_model: str
+    author_workspace: str = "/workspace/repo"
+    critic_workspace: str = "/workspace/review"
+    controller_timeout_seconds: int = 24 * 60 * 60
+    sandbox_timeout_seconds: int = 4 * 60 * 60
+    sandbox_idle_timeout_seconds: int = 20 * 60
+    author_turn_timeout_seconds: int = 45 * 60
+    critic_turn_timeout_seconds: int = 45 * 60
+    auth_volume_name: str = "archetype-codex-auth"
+    github_secret_name: str = "archetype-github"
+    task_queue: str = MISSION_MODAL_JOB_TASK_QUEUE
+    checkpoint_after_dispatch: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.controller_image_id.startswith("im-"):
+            raise ValueError("Modal Mission controller image must be a pinned im-... image")
+        if self.controller_image_id == self.sandbox_image_id:
+            raise ValueError("Modal Mission controller and sandbox images must be distinct")
+        if not self.task_queue.strip() or self.task_queue == MISSION_TASK_QUEUE:
+            raise ValueError("Modal Mission deployment requires a dedicated task queue")
+        if _DEPLOYMENT_DIGEST.fullmatch(self.controller_artifact_digest) is None:
+            raise ValueError("Modal Mission controller artifact must be a lowercase sha256 digest")
+        for label, value in (
+            ("author_model", self.author_model),
+            ("critic_model", self.critic_model),
+        ):
+            if not value or value != value.strip() or len(value) > 256:
+                raise ValueError(f"Modal Mission deployment {label} must be pinned")
+        # Reuse the exact production app/runtime validators during parsing, so
+        # a manifest cannot hash successfully and fail only at Worker startup.
+        self.app_config(expected_deployment_digest=self.deployment_digest)
+
+    @property
+    def manifest(self) -> dict[str, object]:
+        """Return the canonical, secret-value-free deployment manifest."""
+
+        return {
+            "checkpoint_after_dispatch": self.checkpoint_after_dispatch,
+            "controller_artifact_digest": self.controller_artifact_digest,
+            "durable_references": {
+                "app_name": self.app_name,
+                "auth_volume_name": self.auth_volume_name,
+                "environment_name": self.environment_name,
+                "function_name": self.function_name,
+                "github_secret_name": self.github_secret_name,
+                "job_dict_name": self.job_dict_name,
+                "result_dict_name": self.result_dict_name,
+                "task_queue": self.task_queue,
+                "workspace_name": self.workspace_name,
+            },
+            "images": {
+                "controller": self.controller_image_id,
+                "sandbox": self.sandbox_image_id,
+            },
+            "kind": "archetype.missions.modal-controller-deployment",
+            "models": {
+                "author": self.author_model,
+                "critic": self.critic_model,
+            },
+            "protocols": {
+                "modal_activity": MODAL_ACTIVITY_PROTOCOL_EPOCH,
+                "modal_job": 1,
+            },
+            "redaction_policy_id": RedactionService().policy_id,
+            "schema_version": _DEPLOYMENT_SCHEMA_VERSION,
+            "timeouts_seconds": {
+                "author_turn": self.author_turn_timeout_seconds,
+                "controller": self.controller_timeout_seconds,
+                "critic_turn": self.critic_turn_timeout_seconds,
+                "sandbox": self.sandbox_timeout_seconds,
+                "sandbox_idle": self.sandbox_idle_timeout_seconds,
+            },
+            "workspaces": {
+                "author": self.author_workspace,
+                "critic": self.critic_workspace,
+            },
+        }
+
+    @property
+    def deployment_digest(self) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                self.manifest,
+                ensure_ascii=True,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+
+    def app_config(
+        self,
+        *,
+        expected_deployment_digest: str,
+        function_version: int | None = None,
+    ) -> ModalMissionControllerAppConfig:
+        """Build fixed controller config after server-owned digest validation."""
+
+        if _DEPLOYMENT_DIGEST.fullmatch(expected_deployment_digest) is None:
+            raise ValueError("Modal Mission expected deployment digest must be lowercase sha256")
+        derived = self.deployment_digest
+        if expected_deployment_digest != derived:
+            raise ValueError(
+                "Modal Mission deployment digest conflicts with the server-pinned manifest"
+            )
+        runtime = ModalMissionJobRuntimeConfig(
+            workspace_name=self.workspace_name,
+            environment_name=self.environment_name,
+            app_name=self.app_name,
+            job_dict_name=self.job_dict_name,
+            author_function_name=self.function_name,
+            critic_function_name=self.function_name,
+            function_version=function_version,
+            create_if_missing=False,
+        )
+        namespace = ModalMissionJobNamespace(
+            deployment_digest=derived,
+            image_id=self.sandbox_image_id,
+            result_dict_name=self.result_dict_name,
+            redaction_policy_id=RedactionService().policy_id,
+        )
+        return ModalMissionControllerAppConfig(
+            namespace=namespace,
+            runtime=runtime,
+            timeout_seconds=self.controller_timeout_seconds,
+            sandbox_timeout_seconds=self.sandbox_timeout_seconds,
+            sandbox_idle_timeout_seconds=self.sandbox_idle_timeout_seconds,
+            author_model=self.author_model,
+            critic_model=self.critic_model,
+            author_workspace=self.author_workspace,
+            critic_workspace=self.critic_workspace,
+            author_turn_timeout_seconds=self.author_turn_timeout_seconds,
+            critic_turn_timeout_seconds=self.critic_turn_timeout_seconds,
+            auth_volume_name=self.auth_volume_name,
+            github_secret_name=self.github_secret_name,
+            checkpoint_after_dispatch=self.checkpoint_after_dispatch,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ModalMissionControllerDeploymentReceipt:
+    """Server-owned binding from a manifest to one deployed Modal Function."""
+
+    deployment_digest: str
+    controller_artifact_digest: str
+    controller_image_id: str
+    app_name: str
+    function_name: str
+    function_version: int
+    function_id: str
+
+    def __post_init__(self) -> None:
+        for label, value in (
+            ("deployment_digest", self.deployment_digest),
+            ("controller_artifact_digest", self.controller_artifact_digest),
+        ):
+            if _DEPLOYMENT_DIGEST.fullmatch(value) is None:
+                raise ValueError(f"Modal Mission receipt {label} must be lowercase sha256")
+        if (
+            isinstance(self.function_version, bool)
+            or not isinstance(self.function_version, int)
+            or self.function_version < 1
+        ):
+            raise ValueError("Modal Mission receipt function_version must be positive")
+        if not self.function_id.startswith("fu-") or len(self.function_id) > 1024:
+            raise ValueError("Modal Mission receipt function_id is invalid")
+
+    def require(
+        self,
+        spec: ModalMissionControllerDeploymentSpec,
+        *,
+        expected_deployment_digest: str,
+    ) -> None:
+        if self.deployment_digest != expected_deployment_digest:
+            raise ValueError("Modal Mission receipt conflicts with the server deployment digest")
+        expected = (
+            spec.deployment_digest,
+            spec.controller_artifact_digest,
+            spec.controller_image_id,
+            spec.app_name,
+            spec.function_name,
+        )
+        observed = (
+            self.deployment_digest,
+            self.controller_artifact_digest,
+            self.controller_image_id,
+            self.app_name,
+            self.function_name,
+        )
+        if observed != expected:
+            raise ValueError("Modal Mission receipt does not describe the deployment manifest")
+
+
 def _load_modal() -> Any:
     try:
         import modal
@@ -187,6 +409,7 @@ def _load_modal() -> Any:
 
 def _canonical_request_digest(
     *,
+    config: ModalMissionControllerAppConfig,
     family: ModalMissionFamily,
     request_bytes: bytes,
 ) -> str:
@@ -203,6 +426,10 @@ def _canonical_request_digest(
         request = CriticActivityCodec(redactor).decode_request(request_bytes)
         if request.policy.driver != CodexAppServerCriticDriver.driver_id:
             raise ValueError("Modal Mission critic request requires the built-in Codex driver")
+        if request.policy.model != config.critic_model:
+            raise ValueError("Modal Mission critic request model conflicts with deployment")
+        if request.policy.timeout_seconds != config.critic_turn_timeout_seconds:
+            raise ValueError("Modal Mission critic timeout conflicts with deployment")
     else:  # pragma: no cover - closed Literal defense
         raise ValueError("Modal Mission controller family is invalid")
     return hashlib.sha256(request_bytes).hexdigest()
@@ -270,8 +497,8 @@ def _builtin_mission_job(
     )
     barrier = _provider_barrier(config)
     if family == "author":
-        request = MissionAuthorValueCodec(redactor=redactor).decode_request(request_bytes)
-        executor = ModalMissionAuthorExecutor(
+        author_request = MissionAuthorValueCodec(redactor=redactor).decode_request(request_bytes)
+        author_executor = ModalMissionAuthorExecutor(
             capability=capability,
             barrier=barrier,
             harness=CodingAgentHarness(
@@ -279,6 +506,7 @@ def _builtin_mission_job(
                     connector=ModalCodexAppServerConnector(),
                     model=config.author_model,
                     workspace=config.author_workspace,
+                    timeout_seconds=config.author_turn_timeout_seconds,
                 ),
                 CodingAgentHarnessConfig(workspace=config.author_workspace),
             ),
@@ -295,32 +523,32 @@ def _builtin_mission_job(
         )
 
         async def execute(operation_id: str) -> None:
-            await executor.execute(
+            await author_executor.execute(
                 operation_id=operation_id,
-                request=request,
+                request=author_request,
                 attempt=1,
                 fence=1,
                 retry_guard=None,
             )
 
         async def read_result(operation_id: str) -> bytes | None:
-            return await executor.result_payload_for(
+            return await author_executor.result_payload_for(
                 operation_id=operation_id,
-                request=request,
+                request=author_request,
             )
 
         return _BuiltinMissionJob(
             capability=capability,
-            spec=executor.sandbox_spec(request),
+            spec=author_executor.sandbox_spec(author_request),
             execute=execute,
             read_result=read_result,
         )
 
     if family == "critic":
-        request = CriticActivityCodec(redactor).decode_request(request_bytes)
-        if request.policy.driver != CodexAppServerCriticDriver.driver_id:
+        critic_request = CriticActivityCodec(redactor).decode_request(request_bytes)
+        if critic_request.policy.driver != CodexAppServerCriticDriver.driver_id:
             raise ValueError("Modal Mission critic request requires the built-in Codex driver")
-        executor = ModalMissionCriticExecutor(
+        critic_executor = ModalMissionCriticExecutor(
             capability=capability,
             barrier=barrier,
             harness=CriticHarness(
@@ -342,23 +570,23 @@ def _builtin_mission_job(
         )
 
         async def execute(operation_id: str) -> None:
-            await executor.execute(
+            await critic_executor.execute(
                 operation_id=operation_id,
-                request=request,
+                request=critic_request,
                 attempt=1,
                 fence=1,
                 retry_guard=None,
             )
 
         async def read_result(operation_id: str) -> bytes | None:
-            return await executor.result_payload_for(
+            return await critic_executor.result_payload_for(
                 operation_id=operation_id,
-                request=request,
+                request=critic_request,
             )
 
         return _BuiltinMissionJob(
             capability=capability,
-            spec=executor.sandbox_spec(request),
+            spec=critic_executor.sandbox_spec(critic_request),
             execute=execute,
             read_result=read_result,
         )
@@ -531,12 +759,38 @@ class ModalMissionBuiltinJobService:
         if self._request_digest(ref.family, request_bytes) != ref.request_digest:
             raise ValueError("Modal Mission request bytes do not match the durable job")
 
-    @staticmethod
-    def _request_digest(family: ModalMissionFamily, request_bytes: bytes) -> str:
+    def _request_digest(
+        self,
+        family: ModalMissionFamily,
+        request_bytes: bytes,
+    ) -> str:
         return _canonical_request_digest(
+            config=self._config,
             family=family,
             request_bytes=request_bytes,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ModalMissionControllerDeployment:
+    """Pinned controller app definition ready for the deployment transaction."""
+
+    spec: ModalMissionControllerDeploymentSpec
+    config: ModalMissionControllerAppConfig
+    app: object
+    controller: object
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedModalMissionJobWorker:
+    """Split Worker composed only after deployment and state verification."""
+
+    spec: ModalMissionControllerDeploymentSpec
+    receipt: ModalMissionControllerDeploymentReceipt
+    config: ModalMissionControllerAppConfig
+    service: ModalMissionBuiltinJobService
+    worker: Worker
+    provisioned_dict_names: tuple[str, ...]
 
 
 async def provision_modal_mission_controller_state(
@@ -568,6 +822,75 @@ async def provision_modal_mission_controller_state(
     return names
 
 
+async def verify_modal_mission_controller_deployment(
+    config: ModalMissionControllerAppConfig,
+    receipt: ModalMissionControllerDeploymentReceipt,
+) -> str:
+    """Hydrate the exact version-pinned Function and verify its object ID."""
+
+    observed = await _hydrated_modal_mission_controller_function_id(
+        config,
+        function_version=receipt.function_version,
+    )
+    if observed != receipt.function_id:
+        raise RuntimeError("Modal Mission deployment receipt names another Function object")
+    return receipt.function_id
+
+
+async def _hydrated_modal_mission_controller_function_id(
+    config: ModalMissionControllerAppConfig,
+    *,
+    function_version: int,
+) -> str:
+    """Return the exact hydrated Function identity for one deployed version."""
+
+    modal = _load_modal()
+    workspace = modal.Workspace.from_context()
+    await workspace.hydrate.aio()
+    if str(workspace.name or "") != config.runtime.workspace_name:
+        raise RuntimeError("Modal workspace does not match the Mission controller namespace")
+    function = modal.Function.from_name(
+        config.runtime.app_name,
+        config.function_name,
+        version=function_version,
+        environment_name=config.runtime.environment_name,
+        client=workspace.client,
+    )
+    await function.hydrate.aio()
+    observed = getattr(function, "object_id", None)
+    if not isinstance(observed, str) or not observed.startswith("fu-"):
+        raise RuntimeError("Modal Mission deployed Function has no durable object identity")
+    return observed
+
+
+async def create_modal_mission_controller_deployment_receipt(
+    spec: ModalMissionControllerDeploymentSpec,
+    *,
+    expected_deployment_digest: str,
+    function_version: int,
+) -> ModalMissionControllerDeploymentReceipt:
+    """Finalize one post-deploy receipt after state and Function hydration."""
+
+    config = spec.app_config(
+        expected_deployment_digest=expected_deployment_digest,
+        function_version=function_version,
+    )
+    await provision_modal_mission_controller_state(config)
+    function_id = await _hydrated_modal_mission_controller_function_id(
+        config,
+        function_version=function_version,
+    )
+    return ModalMissionControllerDeploymentReceipt(
+        deployment_digest=spec.deployment_digest,
+        controller_artifact_digest=spec.controller_artifact_digest,
+        controller_image_id=spec.controller_image_id,
+        app_name=spec.app_name,
+        function_name=spec.function_name,
+        function_version=function_version,
+        function_id=function_id,
+    )
+
+
 async def _run_controller(
     *,
     config: ModalMissionControllerAppConfig,
@@ -580,6 +903,7 @@ async def _run_controller(
     if requested_namespace_digest != config.namespace.digest:
         raise ValueError("Modal Mission controller namespace does not match deployment")
     request_digest = _canonical_request_digest(
+        config=config,
         family=family,
         request_bytes=request_bytes,
     )
@@ -698,15 +1022,88 @@ def build_modal_mission_controller_app(
     return app, mission_controller
 
 
+def _pinned_controller_image(image_id: str) -> object:
+    modal = _load_modal()
+    image = modal.Image.from_id(image_id)
+    if getattr(image, "object_id", None) != image_id:
+        raise RuntimeError("Modal returned another image for the pinned Mission image ID")
+    return image
+
+
+def build_modal_mission_controller_deployment(
+    spec: ModalMissionControllerDeploymentSpec,
+    *,
+    expected_deployment_digest: str,
+) -> ModalMissionControllerDeployment:
+    """Build the production app from the separately pinned controller image."""
+
+    config = spec.app_config(expected_deployment_digest=expected_deployment_digest)
+    image = _pinned_controller_image(spec.controller_image_id)
+    app, controller = build_modal_mission_controller_app(config, image=image)
+    return ModalMissionControllerDeployment(
+        spec=spec,
+        config=config,
+        app=app,
+        controller=controller,
+    )
+
+
+async def prepare_modal_mission_job_worker(
+    client: Client,
+    values: MissionModalJobValueStore,
+    *,
+    spec: ModalMissionControllerDeploymentSpec,
+    receipt: ModalMissionControllerDeploymentReceipt,
+    expected_deployment_digest: str,
+) -> PreparedModalMissionJobWorker:
+    """Validate, preprovision, verify, and compose the production job route.
+
+    The Worker is deliberately constructed last. Consequently no returned
+    Worker can accept a task before both Dicts and the exact deployed Function
+    have hydrated successfully.
+    """
+
+    receipt.require(spec, expected_deployment_digest=expected_deployment_digest)
+    config = spec.app_config(
+        expected_deployment_digest=expected_deployment_digest,
+        function_version=receipt.function_version,
+    )
+    provisioned = await provision_modal_mission_controller_state(config)
+    await verify_modal_mission_controller_deployment(config, receipt)
+    service = ModalMissionBuiltinJobService(config)
+    worker = create_mission_modal_job_worker(
+        client,
+        service,
+        values,
+        task_queue=spec.task_queue,
+    )
+    return PreparedModalMissionJobWorker(
+        spec=spec,
+        receipt=receipt,
+        config=config,
+        service=service,
+        worker=worker,
+        provisioned_dict_names=provisioned,
+    )
+
+
 __all__ = [
     "MODAL_MISSION_CONTROLLER_MAX_RECEIPT_BYTES",
     "MODAL_MISSION_CONTROLLER_MAX_REQUEST_BYTES",
     "ModalMissionControllerAppConfig",
     "ModalMissionBuiltinJobService",
     "ModalMissionControllerExecutionFailed",
+    "ModalMissionControllerDeployment",
+    "ModalMissionControllerDeploymentReceipt",
+    "ModalMissionControllerDeploymentSpec",
     "ModalMissionControllerFailpoint",
     "ModalMissionControllerFailpointReached",
     "ModalMissionControllerRejected",
+    "PreparedModalMissionJobWorker",
+    "build_modal_mission_controller_deployment",
     "build_modal_mission_controller_app",
+    "create_modal_mission_controller_deployment_receipt",
+    "prepare_modal_mission_job_worker",
     "provision_modal_mission_controller_state",
+    "verify_modal_mission_controller_deployment",
 ]

@@ -3,8 +3,11 @@
 
 """Temporal-backed durable orchestration for Agent Missions."""
 
+from typing import TYPE_CHECKING
+
 from .client import MissionTemporalClient
 from .contracts import (
+    MISSION_MODAL_JOB_TASK_QUEUE,
     MISSION_TASK_QUEUE,
     MissionJobValueRef,
     MissionModalJobRefPayload,
@@ -16,12 +19,27 @@ from .contracts import (
     mission_modal_job_workflow_id,
     mission_workflow_id,
 )
+from .modal_job_worker import create_mission_modal_job_worker
 from .modal_job_workflow import MissionModalJobWorkflow
-from .worker import create_mission_modal_job_worker, create_mission_worker
 from .workflow import MissionWorkflow
+
+if TYPE_CHECKING:
+    from .worker import create_mission_worker
+
+
+def __getattr__(name: str) -> object:
+    """Keep the legacy Worker available without importing it on split-worker startup."""
+
+    if name == "create_mission_worker":
+        from .worker import create_mission_worker
+
+        return create_mission_worker
+    raise AttributeError(name)
+
 
 __all__ = [
     "MISSION_TASK_QUEUE",
+    "MISSION_MODAL_JOB_TASK_QUEUE",
     "MissionTemporalClient",
     "MissionJobValueRef",
     "MissionModalJobRefPayload",
