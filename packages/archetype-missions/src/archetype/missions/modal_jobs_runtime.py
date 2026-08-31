@@ -141,7 +141,14 @@ class ModalNamedMissionJobRuntime:
 
     async def reattach(self, call_id: str) -> object:
         modal, client = await self._get_context()
-        return modal.FunctionCall.from_id(call_id, client=client)
+        call = modal.FunctionCall.from_id(call_id, client=client)
+        hydrate = getattr(call, "hydrate", None)
+        if hydrate is None or not hasattr(hydrate, "aio"):
+            raise TypeError("Modal Mission FunctionCall has no async hydration boundary")
+        await hydrate.aio()
+        if self.call_id(call) != call_id:
+            raise RuntimeError("Modal Mission reattached a different provider call")
+        return call
 
     async def cancel(self, call: object) -> None:
         cancel = getattr(call, "cancel", None)

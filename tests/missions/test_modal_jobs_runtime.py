@@ -42,10 +42,18 @@ class _FakeModalState:
 
 class _FakeCall:
     def __init__(self, state: _FakeModalState, object_id: str) -> None:
-        self.object_id = object_id
+        self._object_id = object_id
         self.get = _AioMethod(self._get)
         self.cancel = _AioMethod(self._cancel)
+        self.hydrate = _AioMethod(self._hydrate)
         self._state = state
+
+    @property
+    def object_id(self) -> str:
+        return self._object_id
+
+    async def _hydrate(self) -> None:
+        self._state.calls.append(("call.hydrate", (), {}))
 
     async def _get(self, **kwargs: object) -> object:
         self._state.calls.append(("call.get", (), kwargs))
@@ -244,6 +252,7 @@ async def test_runtime_reattaches_by_function_call_id_and_polls_without_waiting(
         ("fc-existing",),
         {"client": state.client},
     ) in state.calls
+    assert ("call.hydrate", (), {}) in state.calls
     assert ("call.get", (), {"timeout": 0}) in state.calls
     assert ("call.cancel", (), {}) in state.calls
 
