@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from temporalio.client import Client
+
 from archetype.activities import (
     ActivityAdmission,
     ActivityCoordinator,
@@ -35,9 +37,15 @@ from archetype.missions.modal_jobs import (
     ModalMissionJobNamespace,
     ModalMissionJobReady,
     ModalMissionJobRef,
+    ModalMissionJobResources,
+    ModalMissionJobResult,
     ModalMissionJobRunning,
     ModalMissionJobStillRunning,
     ModalMissionJobUnknown,
+)
+from archetype.missions.temporal import (
+    MissionJobValueRef,
+    create_mission_modal_job_worker,
 )
 from archetype.storage.activity_catalog import (
     SqliteActivityCatalog,
@@ -85,6 +93,12 @@ CREATE TABLE IF NOT EXISTS provider_events (
     event TEXT NOT NULL,
     call_id TEXT,
     detail TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_values (
+    ref TEXT PRIMARY KEY,
+    digest TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    payload BLOB NOT NULL
 );
 """
 
@@ -225,7 +239,7 @@ class _SqliteMissionJobRuntime:
         operation_id: str,
         request_bytes: bytes,
         namespace_digest: str,
-    ) -> object:
+    ) -> ModalMissionJobResult | ModalMissionJobUnknown:
         request_digest = hashlib.sha256(request_bytes).hexdigest()
         connection = self._connect()
         try:
@@ -498,10 +512,21 @@ class _SqliteMissionJobRuntime:
                 ORDER BY sequence
                 """
             ).fetchall()
+            records = connection.execute(
+                "SELECT key, value_json FROM job_records ORDER BY key"
+            ).fetchall()
             record_count = int(connection.execute("SELECT COUNT(*) FROM job_records").fetchone()[0])
+            values = connection.execute(
+                """
+                SELECT ref, digest, size_bytes
+                FROM workflow_values
+                ORDER BY ref
+                """
+            ).fetchall()
         finally:
             connection.close()
         event_values = [dict(row) for row in events]
+        record_values = [json.loads(str(row["value_json"])) for row in records]
         return {
             "call_identity_insertions": sum(
                 event["event"] == "call_identity_inserted" for event in event_values
@@ -510,6 +535,10 @@ class _SqliteMissionJobRuntime:
             "event_count": len(event_values),
             "events": event_values,
             "job_record_count": record_count,
+            "job_record_phases": [str(row["key"]).split(":", 2)[1] for row in records],
+            "cleanup_record_count": sum(
+                record.get("phase") == "cleanup" for record in record_values
+            ),
             "reattach_call_ids": [
                 str(event["call_id"]) for event in event_values if event["event"] == "reattach"
             ],
@@ -517,7 +546,160 @@ class _SqliteMissionJobRuntime:
                 event["event"] == "result_published" for event in event_values
             ),
             "spawn_count": sum(event["event"] == "spawn" for event in event_values),
+            "workflow_values": [dict(row) for row in values],
         }
+
+
+class _ProcessMissionJobService:
+    """Production-shaped fixed service over the persistent provider double."""
+
+    def __init__(self, runtime: _SqliteMissionJobRuntime) -> None:
+        self._runtime = runtime
+        self._client = ModalMissionJobClient(_namespace(), runtime)
+
+    async def start(
+        self,
+        *,
+        family: Literal["author", "critic"],
+        operation_id: str,
+        request_bytes: bytes,
+    ) -> ModalMissionJobRef | ModalMissionJobUnknown:
+        return await self._client.start(
+            family=family,
+            operation_id=operation_id,
+            request_bytes=request_bytes,
+            request_digest=hashlib.sha256(request_bytes).hexdigest(),
+        )
+
+    async def poll(
+        self,
+        ref: ModalMissionJobRef,
+        *,
+        request_bytes: bytes,
+    ) -> ModalMissionJobRunning | ModalMissionJobReady | ModalMissionJobUnknown:
+        if hashlib.sha256(request_bytes).hexdigest() != ref.request_digest:
+            return ModalMissionJobUnknown(ref, "process request bytes conflict")
+        return await self._client.poll(ref)
+
+    async def collect(
+        self,
+        ref: ModalMissionJobRef,
+        *,
+        request_bytes: bytes,
+    ) -> object:
+        if hashlib.sha256(request_bytes).hexdigest() != ref.request_digest:
+            return ModalMissionJobUnknown(ref, "process request bytes conflict")
+        return await self._client.collect(ref)
+
+    async def cancel(
+        self,
+        ref: ModalMissionJobRef,
+        *,
+        request_bytes: bytes,
+    ) -> ModalMissionJobRef:
+        if hashlib.sha256(request_bytes).hexdigest() != ref.request_digest:
+            raise ValueError("process request bytes conflict")
+        return await self._client.cancel(ref)
+
+    async def cleanup(
+        self,
+        ref: ModalMissionJobRef,
+        *,
+        request_bytes: bytes,
+    ) -> ModalMissionJobRef:
+        if hashlib.sha256(request_bytes).hexdigest() != ref.request_digest:
+            raise ValueError("process request bytes conflict")
+
+        async def no_resources(_resources: ModalMissionJobResources) -> None:
+            return None
+
+        return await self._client.cleanup(ref, cleaner=no_resources)
+
+
+class _SqliteMissionJobValues:
+    """External request/result values that survive replacement Worker death."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self._path, timeout=5)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=5000")
+        return connection
+
+    async def get_request(self, ref: MissionJobValueRef) -> bytes:
+        if (
+            ref.digest != _REQUEST_DIGEST
+            or ref.size_bytes != len(_REQUEST_BYTES)
+            or ref.ref != f"sqlite-value://mission-requests/{_REQUEST_DIGEST}"
+        ):
+            raise ValueError("process request value reference conflicts")
+        return _REQUEST_BYTES
+
+    async def put_result(
+        self,
+        *,
+        family: Literal["author", "critic"],
+        operation_id: str,
+        payload: bytes,
+        payload_digest: str,
+    ) -> MissionJobValueRef:
+        if family != _FAMILY or operation_id != _OPERATION_ID:
+            raise ValueError("process result authority conflicts")
+        if hashlib.sha256(payload).hexdigest() != payload_digest:
+            raise ValueError("process result digest conflicts")
+        ref = f"sqlite-value://mission-results/{payload_digest}"
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO workflow_values (ref, digest, size_bytes, payload)
+                VALUES (?, ?, ?, ?)
+                """,
+                (ref, payload_digest, len(payload), sqlite3.Binary(payload)),
+            )
+            row = connection.execute(
+                """
+                SELECT digest, size_bytes, payload
+                FROM workflow_values
+                WHERE ref = ?
+                """,
+                (ref,),
+            ).fetchone()
+            if row is None or (
+                str(row["digest"]) != payload_digest
+                or int(row["size_bytes"]) != len(payload)
+                or bytes(row["payload"]) != payload
+            ):
+                raise ValueError("process result value conflicts")
+            connection.commit()
+        finally:
+            connection.close()
+        return MissionJobValueRef(
+            ref=ref,
+            digest=payload_digest,
+            size_bytes=len(payload),
+        )
+
+
+async def _run_temporal_worker(
+    args: argparse.Namespace,
+    runtime: _SqliteMissionJobRuntime,
+    *,
+    values_path: Path,
+) -> None:
+    if not args.temporal_target or not args.task_queue:
+        raise ValueError("Temporal worker requires target and task queue")
+    client = await Client.connect(str(args.temporal_target))
+    worker = create_mission_modal_job_worker(
+        client,
+        _ProcessMissionJobService(runtime),
+        _SqliteMissionJobValues(values_path),
+        task_queue=str(args.task_queue),
+    )
+    await worker.run()
 
 
 async def _admit_activity(path: Path) -> None:
@@ -661,6 +843,14 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     )
     action = str(args.action)
 
+    if action == "temporal-worker":
+        await _run_temporal_worker(
+            args,
+            runtime,
+            values_path=root / "provider.sqlite3",
+        )
+        raise AssertionError("Temporal worker exited unexpectedly")
+
     if action == "start":
         await _admit_activity(activity_path)
         ref = await _recover_ref(runtime)
@@ -745,13 +935,23 @@ def main() -> None:
     parser.add_argument("state_dir")
     parser.add_argument(
         "action",
-        choices=("start", "poll", "publish", "collect", "settle", "inspect"),
+        choices=(
+            "start",
+            "poll",
+            "publish",
+            "collect",
+            "settle",
+            "inspect",
+            "temporal-worker",
+        ),
     )
     parser.add_argument(
         "--failpoint",
         choices=("none", "after-call-identity", "after-result-record"),
         default="none",
     )
+    parser.add_argument("--temporal-target", default="")
+    parser.add_argument("--task-queue", default="")
     args = parser.parse_args()
     payload = asyncio.run(_run(args))
     print(_canonical_json(payload))
