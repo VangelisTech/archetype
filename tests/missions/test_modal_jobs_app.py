@@ -48,6 +48,7 @@ from archetype.missions.modal_jobs_app import (
     ModalMissionControllerFailpointReached,
     ModalMissionControllerRejected,
     build_modal_mission_controller_app,
+    provision_modal_mission_controller_state,
 )
 from archetype.missions.modal_jobs_runtime import ModalMissionJobRuntimeConfig
 from archetype.redaction import RedactionService
@@ -94,11 +95,9 @@ def _fake_modal(state: _FakeModalState) -> object:
         @staticmethod
         def from_name(name: str, **kwargs: object) -> object:
             state.events.append(f"Dict.from_name:{name}")
-            assert kwargs == {
-                "environment_name": "proof",
-                "create_if_missing": False,
-                "client": state.client,
-            }
+            assert kwargs["environment_name"] == "proof"
+            assert isinstance(kwargs["create_if_missing"], bool)
+            assert kwargs["client"] is state.client
             dictionary = SimpleNamespace()
 
             async def hydrate() -> None:
@@ -343,6 +342,7 @@ async def test_builtin_controller_binds_resource_recorder_and_pinned_image_befor
 
     executor_config = cast(Any, captured["config"])
     assert executor_config.sandbox_environment == (f"modal-image://{config.namespace.image_id}")
+    assert not executor_config.create_result_dict_if_missing
     assert modal_mission_job_key("author", operation_id, "resource-intent") in state.values
     assert modal_mission_job_key("author", operation_id, "resource-auth") in state.values
     assert modal_mission_job_key("author", operation_id, "resource-mission") in state.values
@@ -610,7 +610,6 @@ async def test_builtin_host_service_collects_exact_result_without_reexecution(
     spawn_count = 0
     reattach_count = 0
     cancel_count = 0
-    read_only_modes: list[bool] = []
 
     class HostRuntime:
         def __init__(
@@ -659,9 +658,7 @@ async def test_builtin_host_service_collects_exact_result_without_reexecution(
         async def result_ready(self, ref: ModalMissionJobRef) -> bool:
             return await self.result_payload(ref) is not None
 
-    def builtin_job(**kwargs: object) -> object:
-        read_only_modes.append(bool(kwargs.get("read_only")))
-
+    def builtin_job(**_kwargs: object) -> object:
         async def no_execute(_operation_id: str) -> None:
             raise AssertionError("host observation must not execute provider work")
 
@@ -704,7 +701,21 @@ async def test_builtin_host_service_collects_exact_result_without_reexecution(
     assert spawn_count == 1
     assert reattach_count == 1
     assert cancel_count == 0
-    assert read_only_modes == [True, True, True, True]
 
     mismatch = await service.collect(started, request_bytes=_critic_request())
     assert isinstance(mismatch, ModalMissionJobUnknown)
+
+
+@pytest.mark.asyncio
+async def test_deployment_provisions_job_and_result_dicts_explicitly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _FakeModalState()
+    monkeypatch.setitem(sys.modules, "modal", _fake_modal(state))
+
+    names = await provision_modal_mission_controller_state(_config())
+
+    assert names == ("mission-job-state", "mission-results")
+    assert "Dict.from_name:mission-job-state" in state.events
+    assert "Dict.from_name:mission-results" in state.events
+    assert state.events.count("dict.hydrate") == 2

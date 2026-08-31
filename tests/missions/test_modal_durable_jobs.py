@@ -513,6 +513,41 @@ async def test_cleanup_before_resource_intent_stays_exact_and_blocks_late_creati
 
 
 @pytest.mark.asyncio
+async def test_cleanup_after_intent_blocks_late_role_registration() -> None:
+    runtime = _Runtime()
+    client = ModalMissionJobClient(_namespace(), runtime)
+    request = b"canonical-request"
+    started = await client.start(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_bytes=request,
+        request_digest=hashlib.sha256(request).hexdigest(),
+    )
+    assert isinstance(started, ModalMissionJobRef)
+    intent = await client.register_resource_intent(
+        started,
+        operation_digest="sha256:" + "c" * 64,
+        cohort_id="cohort-v1:" + "d" * 32,
+    )
+    assert isinstance(intent, ModalMissionResourceIntent)
+
+    async def clean(_resources: ModalMissionJobResources) -> None:
+        return None
+
+    assert await client.cleanup(started, cleaner=clean) == started
+
+    late = await client.register_resource(
+        intent,
+        role="auth",
+        sandbox_id="sb-auth-too-late",
+    )
+
+    assert isinstance(late, ModalMissionJobUnknown)
+    assert "cleanup intent" in late.reason
+    assert await client.resources(started) == ModalMissionJobResources(intent=intent)
+
+
+@pytest.mark.asyncio
 async def test_resource_observer_rejects_mismatched_operation_before_recording() -> None:
     runtime = _Runtime()
     client = ModalMissionJobClient(_namespace(), runtime)

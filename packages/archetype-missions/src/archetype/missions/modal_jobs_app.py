@@ -261,7 +261,6 @@ def _builtin_mission_job(
     family: ModalMissionFamily,
     request_bytes: bytes,
     recorder: ModalMissionJobResourceRecorder | None = None,
-    read_only: bool = False,
 ) -> _BuiltinMissionJob:
     redactor = RedactionService()
     backend = _sandbox_backend(config)
@@ -291,7 +290,7 @@ def _builtin_mission_job(
                 idle_timeout_seconds=config.sandbox_idle_timeout_seconds,
                 result_dict_name=config.namespace.result_dict_name,
                 checkpoint_after_dispatch=config.checkpoint_after_dispatch,
-                create_result_dict_if_missing=not read_only,
+                create_result_dict_if_missing=False,
             ),
         )
 
@@ -338,7 +337,7 @@ def _builtin_mission_job(
                 timeout_seconds=config.sandbox_timeout_seconds,
                 idle_timeout_seconds=config.sandbox_idle_timeout_seconds,
                 result_dict_name=config.namespace.result_dict_name,
-                create_result_dict_if_missing=not read_only,
+                create_result_dict_if_missing=False,
             ),
         )
 
@@ -489,7 +488,6 @@ class ModalMissionBuiltinJobService:
             config=self._config,
             family=ref.family,
             request_bytes=request_bytes,
-            read_only=True,
         )
         return await self._client(ref.family, request_bytes).cleanup(
             ref,
@@ -518,7 +516,6 @@ class ModalMissionBuiltinJobService:
                 config=self._config,
                 family=family,
                 request_bytes=request_bytes,
-                read_only=True,
             )
             return await job.read_result(ref.operation_id)
 
@@ -540,6 +537,35 @@ class ModalMissionBuiltinJobService:
             family=family,
             request_bytes=request_bytes,
         )
+
+
+async def provision_modal_mission_controller_state(
+    config: ModalMissionControllerAppConfig,
+) -> tuple[str, ...]:
+    """Provision both named Dicts as an explicit deployment-only operation."""
+
+    modal = _load_modal()
+    workspace = modal.Workspace.from_context()
+    await workspace.hydrate.aio()
+    if str(workspace.name or "") != config.runtime.workspace_name:
+        raise RuntimeError("Modal workspace does not match the Mission controller namespace")
+    names = tuple(
+        dict.fromkeys(
+            (
+                config.runtime.job_dict_name,
+                config.namespace.result_dict_name,
+            )
+        )
+    )
+    for name in names:
+        dictionary = modal.Dict.from_name(
+            name,
+            environment_name=config.runtime.environment_name,
+            create_if_missing=True,
+            client=workspace.client,
+        )
+        await dictionary.hydrate.aio()
+    return names
 
 
 async def _run_controller(
@@ -682,4 +708,5 @@ __all__ = [
     "ModalMissionControllerFailpointReached",
     "ModalMissionControllerRejected",
     "build_modal_mission_controller_app",
+    "provision_modal_mission_controller_state",
 ]

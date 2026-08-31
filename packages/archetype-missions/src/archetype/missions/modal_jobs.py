@@ -624,14 +624,12 @@ class ModalMissionJobClient:
                 request_digest=ref.request_digest,
             )
             await self._require_records(ref)
-            for phase in ("cancel", "cleanup"):
-                if await self._runtime.get(
-                    modal_mission_job_key(ref.family, ref.operation_id, phase)
-                ) is not None:
-                    return ModalMissionJobUnknown(
-                        ref,
-                        f"durable {phase} intent prevents new sandbox resources",
-                    )
+            stopping = await self._stopping_phase(ref)
+            if stopping is not None:
+                return ModalMissionJobUnknown(
+                    ref,
+                    f"durable {stopping} intent prevents new sandbox resources",
+                )
             intent = ModalMissionResourceIntent(
                 ref=ref,
                 operation_digest=operation_digest,
@@ -657,6 +655,12 @@ class ModalMissionJobClient:
         """Persist one exact role ID before execution may cross the boundary."""
 
         try:
+            stopping = await self._stopping_phase(intent.ref)
+            if stopping is not None:
+                return ModalMissionJobUnknown(
+                    intent.ref,
+                    f"durable {stopping} intent prevents new sandbox resources",
+                )
             await self._require_resource_intent(intent)
             resource = ModalMissionResourceRef(
                 intent=intent,
@@ -721,6 +725,17 @@ class ModalMissionJobClient:
         )
         if stored != modal_mission_resource_intent_record(intent):
             raise ValueError("durable sandbox resource intent conflicts")
+
+    async def _stopping_phase(
+        self,
+        ref: ModalMissionJobRef,
+    ) -> Literal["cancel", "cleanup"] | None:
+        for phase in ("cancel", "cleanup"):
+            if await self._runtime.get(
+                modal_mission_job_key(ref.family, ref.operation_id, phase)
+            ) is not None:
+                return phase
+        return None
 
     async def _require_records(self, ref: ModalMissionJobRef) -> None:
         marker = self._namespace.start_record(
