@@ -18,6 +18,7 @@ from archetype.missions.modal_jobs import (
     ModalMissionJobRef,
     ModalMissionJobResourceRecorder,
     ModalMissionJobResources,
+    ModalMissionJobResult,
     ModalMissionJobRunning,
     ModalMissionJobStillRunning,
     ModalMissionJobUnknown,
@@ -39,6 +40,7 @@ class _Runtime:
         self.values: dict[str, object] = {}
         self.spawn_count = 0
         self.ready = False
+        self.result_error: Exception | None = None
         self.terminal: BaseException | None = None
         self.running = True
         self.cancelled: list[str] = []
@@ -76,7 +78,15 @@ class _Runtime:
 
     async def result_ready(self, ref: ModalMissionJobRef) -> bool:
         assert ref.call_id == "fc-123"
+        if self.result_error is not None:
+            raise self.result_error
         return self.ready
+
+    async def result_payload(self, ref: ModalMissionJobRef) -> bytes | None:
+        assert ref.call_id == "fc-123"
+        if self.result_error is not None:
+            raise self.result_error
+        return b'{"result":"exact"}' if self.ready else None
 
 
 def _namespace() -> ModalMissionJobNamespace:
@@ -219,6 +229,56 @@ async def test_poll_is_result_first_and_terminal_without_result_is_unknown() -> 
 
     runtime.ready = True
     assert isinstance(await client.poll(started), ModalMissionJobReady)
+
+
+@pytest.mark.asyncio
+async def test_collect_is_read_only_exact_and_idempotent() -> None:
+    runtime = _Runtime()
+    client = ModalMissionJobClient(_namespace(), runtime)
+    request = b"canonical-request"
+    started = await client.start(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_bytes=request,
+        request_digest=hashlib.sha256(request).hexdigest(),
+    )
+    assert isinstance(started, ModalMissionJobRef)
+
+    missing = await client.collect(started)
+    assert isinstance(missing, ModalMissionJobUnknown)
+    runtime.ready = True
+    first = await client.collect(started)
+    replay = await client.collect(started)
+
+    assert isinstance(first, ModalMissionJobResult)
+    assert replay == first
+    assert first.payload == b'{"result":"exact"}'
+    assert first.payload_digest == hashlib.sha256(first.payload).hexdigest()
+    assert runtime.spawn_count == 1
+    assert runtime.cancelled == []
+
+
+@pytest.mark.asyncio
+async def test_poll_and_collect_fail_closed_on_result_catalog_failure() -> None:
+    runtime = _Runtime()
+    client = ModalMissionJobClient(_namespace(), runtime)
+    request = b"canonical-request"
+    started = await client.start(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_bytes=request,
+        request_digest=hashlib.sha256(request).hexdigest(),
+    )
+    assert isinstance(started, ModalMissionJobRef)
+    runtime.result_error = RuntimeError("provider detail must not escape")
+
+    polled = await client.poll(started)
+    collected = await client.collect(started)
+
+    assert isinstance(polled, ModalMissionJobUnknown)
+    assert polled.reason == "durable result observation failed (RuntimeError)"
+    assert isinstance(collected, ModalMissionJobUnknown)
+    assert collected.reason == "durable result lookup failed (RuntimeError)"
 
 
 @pytest.mark.asyncio
@@ -419,7 +479,37 @@ async def test_resource_observer_and_cleanup_replay_preserve_exact_partial_evide
     assert observed == [resources, resources]
     assert runtime.values[
         modal_mission_job_key(started.family, started.operation_id, "cleanup")
-    ] == {**modal_mission_resource_intent_record(resources.intent), "phase": "cleanup"}
+    ] == {**modal_mission_call_record(started), "phase": "cleanup"}
+
+
+@pytest.mark.asyncio
+async def test_cleanup_before_resource_intent_stays_exact_and_blocks_late_creation() -> None:
+    runtime = _Runtime()
+    client = ModalMissionJobClient(_namespace(), runtime)
+    request = b"canonical-request"
+    started = await client.start(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_bytes=request,
+        request_digest=hashlib.sha256(request).hexdigest(),
+    )
+    assert isinstance(started, ModalMissionJobRef)
+
+    cleaned: list[ModalMissionJobResources] = []
+    assert await client.cleanup(started, cleaner=cleaned.append) == started
+    late = await client.register_resource_intent(
+        started,
+        operation_digest="sha256:" + "c" * 64,
+        cohort_id="cohort-v1:" + "d" * 32,
+    )
+    assert isinstance(late, ModalMissionJobUnknown)
+    assert "cleanup intent" in late.reason
+    assert await client.cleanup(started, cleaner=cleaned.append) == started
+
+    assert cleaned == []
+    assert runtime.values[
+        modal_mission_job_key(started.family, started.operation_id, "cleanup")
+    ] == {**modal_mission_call_record(started), "phase": "cleanup"}
 
 
 @pytest.mark.asyncio

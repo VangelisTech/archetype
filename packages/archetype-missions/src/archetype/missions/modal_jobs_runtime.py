@@ -19,7 +19,7 @@ from archetype.missions.modal_jobs import (
 
 _MODAL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
 
-ModalMissionResultReady = Callable[[ModalMissionJobRef], Awaitable[bool]]
+ModalMissionResultReader = Callable[[ModalMissionJobRef], Awaitable[bytes | None]]
 
 
 def _require_modal_name(value: str, field: str) -> None:
@@ -82,10 +82,10 @@ class ModalNamedMissionJobRuntime:
         self,
         config: ModalMissionJobRuntimeConfig,
         *,
-        result_ready: ModalMissionResultReady,
+        result_reader: ModalMissionResultReader,
     ) -> None:
         self._config = config
-        self._result_ready = result_ready
+        self._result_reader = result_reader
         self._lock = asyncio.Lock()
         self._modal: Any | None = None
         self._client: Any | None = None
@@ -139,10 +139,13 @@ class ModalNamedMissionJobRuntime:
             raise ModalMissionJobStillRunning from None
 
     async def result_ready(self, ref: ModalMissionJobRef) -> bool:
-        ready = await self._result_ready(ref)
-        if not isinstance(ready, bool):
-            raise TypeError("Modal Mission result-ready predicate must return a boolean")
-        return ready
+        return await self.result_payload(ref) is not None
+
+    async def result_payload(self, ref: ModalMissionJobRef) -> bytes | None:
+        payload = await self._result_reader(ref)
+        if payload is not None and type(payload) is not bytes:
+            raise TypeError("Modal Mission result reader must return bytes or None")
+        return payload
 
     async def _get_context(self) -> tuple[Any, Any]:
         if self._modal is not None and self._client is not None:
@@ -195,6 +198,6 @@ class ModalNamedMissionJobRuntime:
 
 __all__ = [
     "ModalMissionJobRuntimeConfig",
-    "ModalMissionResultReady",
+    "ModalMissionResultReader",
     "ModalNamedMissionJobRuntime",
 ]

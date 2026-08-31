@@ -66,6 +66,7 @@ class ModalMissionCriticExecutorConfig:
     idle_timeout_seconds: int = 20 * 60
     result_dict_name: str = ""
     max_result_bytes: int = _MAX_RESULT_BYTES
+    create_result_dict_if_missing: bool = True
 
     def __post_init__(self) -> None:
         if not self.sandbox_environment.strip():
@@ -79,6 +80,8 @@ class ModalMissionCriticExecutorConfig:
             raise ValueError("Modal critic result Dict name is invalid")
         if self.max_result_bytes < 1:
             raise ValueError("Modal critic result byte limit must be positive")
+        if not isinstance(self.create_result_dict_if_missing, bool):
+            raise ValueError("Modal critic result Dict creation policy must be a boolean")
 
 
 class ModalCriticExecutionUnknown(AvailabilityError):
@@ -116,6 +119,7 @@ class _ModalCriticResultCatalog:
         codec: CriticActivityCodec,
         name: str,
         max_result_bytes: int,
+        create_if_missing: bool,
     ) -> None:
         if not _DICT_NAME.fullmatch(name):
             raise ValueError("Modal critic result Dict name is invalid")
@@ -123,6 +127,7 @@ class _ModalCriticResultCatalog:
         self._codec = codec
         self._name = name
         self._max_result_bytes = max_result_bytes
+        self._create_if_missing = create_if_missing
 
     @property
     def name(self) -> str:
@@ -399,7 +404,7 @@ class _ModalCriticResultCatalog:
         try:
             dictionary = modal.Dict.from_name(
                 self._name,
-                create_if_missing=True,
+                create_if_missing=self._create_if_missing,
                 environment_name=self._barrier.environment_name,
                 client=client,
             )
@@ -473,6 +478,7 @@ class ModalMissionCriticExecutor:
             codec=self._codec,
             name=result_name,
             max_result_bytes=config.max_result_bytes,
+            create_if_missing=config.create_result_dict_if_missing,
         )
 
     @property
@@ -644,6 +650,22 @@ class ModalMissionCriticExecutor:
     ) -> CriticExecutionResult | None:
         """Read and validate the first result without execution or cleanup."""
 
+        payload = await self.result_payload_for(
+            operation_id=operation_id,
+            request=request,
+        )
+        if payload is None:
+            return None
+        return self._execution_result(request, self._codec.decode_result(payload))
+
+    async def result_payload_for(
+        self,
+        *,
+        operation_id: str,
+        request: CriticActivityRequest,
+    ) -> bytes | None:
+        """Read one canonical durable result without execution or cleanup."""
+
         identity = self._capability.identity(operation_id)
         self._barrier.operation_marker_name(identity)
         stored = await self._results.get(
@@ -652,7 +674,8 @@ class ModalMissionCriticExecutor:
         )
         if stored is None:
             return None
-        return self._execution_result(request, stored.result)
+        self._execution_result(request, stored.result)
+        return self._codec.encode_result(stored.result).payload
 
     async def _require_cleanup_before_recovered_result(
         self,

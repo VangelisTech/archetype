@@ -361,6 +361,9 @@ class _SqliteMissionJobRuntime:
         return json.loads(bytes(raw))
 
     async def result_ready(self, ref: ModalMissionJobRef) -> bool:
+        return await self.result_payload(ref) is not None
+
+    async def result_payload(self, ref: ModalMissionJobRef) -> bytes | None:
         connection = self._connect()
         try:
             row = connection.execute(
@@ -383,7 +386,9 @@ class _SqliteMissionJobRuntime:
             ).fetchone()
         finally:
             connection.close()
-        return row is not None and row["result_bytes"] is not None
+        if row is None or row["result_bytes"] is None:
+            return None
+        return bytes(row["result_bytes"])
 
     def publish_first_result(self) -> tuple[str, str, int]:
         connection = self._connect()

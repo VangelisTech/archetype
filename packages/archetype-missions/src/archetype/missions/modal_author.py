@@ -80,6 +80,7 @@ class ModalMissionAuthorExecutorConfig:
     result_dict_name: str = ""
     max_result_bytes: int = AUTHOR_RESULT_MAX_BYTES
     checkpoint_after_dispatch: bool = True
+    create_result_dict_if_missing: bool = True
 
     def __post_init__(self) -> None:
         if not self.sandbox_environment.strip():
@@ -95,6 +96,8 @@ class ModalMissionAuthorExecutorConfig:
             raise ValueError(
                 "Modal author result byte limit must exceed its bounded provider envelope"
             )
+        if not isinstance(self.create_result_dict_if_missing, bool):
+            raise ValueError("Modal author result Dict creation policy must be a boolean")
 
 
 class ModalAuthorExecutionUnknown(AvailabilityError):
@@ -132,6 +135,7 @@ class _ModalAuthorResultCatalog:
         codec: MissionAuthorValueCodec,
         name: str,
         max_result_bytes: int,
+        create_if_missing: bool,
     ) -> None:
         if not _DICT_NAME.fullmatch(name):
             raise ValueError("Modal author result Dict name is invalid")
@@ -139,6 +143,7 @@ class _ModalAuthorResultCatalog:
         self._codec = codec
         self._name = name
         self._max_result_bytes = max_result_bytes
+        self._create_if_missing = create_if_missing
 
     @property
     def name(self) -> str:
@@ -451,7 +456,7 @@ class _ModalAuthorResultCatalog:
         try:
             dictionary = modal.Dict.from_name(
                 self._name,
-                create_if_missing=True,
+                create_if_missing=self._create_if_missing,
                 environment_name=self._barrier.environment_name,
                 client=client,
             )
@@ -540,6 +545,7 @@ class ModalMissionAuthorExecutor:
             codec=self._codec,
             name=result_name,
             max_result_bytes=config.max_result_bytes,
+            create_if_missing=config.create_result_dict_if_missing,
         )
 
     @property
@@ -785,6 +791,22 @@ class ModalMissionAuthorExecutor:
     ) -> AuthorExecutionObservation | None:
         """Read and validate the first result without execution or cleanup."""
 
+        payload = await self.result_payload_for(
+            operation_id=operation_id,
+            request=request,
+        )
+        if payload is None:
+            return None
+        return self._codec.execution_observation(self._codec.decode_observation(payload))
+
+    async def result_payload_for(
+        self,
+        *,
+        operation_id: str,
+        request: TaskDispatchRequest,
+    ) -> bytes | None:
+        """Read one canonical durable result without execution or cleanup."""
+
         sanitized_request = self._codec.sanitize_request(request)
         identity = self._capability.identity(operation_id)
         self._barrier.operation_marker_name(identity)
@@ -795,7 +817,7 @@ class ModalMissionAuthorExecutor:
         if stored is None:
             return None
         self._validate_result(sanitized_request, stored.observation.result)
-        return self._codec.execution_observation(stored.observation)
+        return self._codec.encode_observation(stored.observation)
 
     async def _require_cleanup_before_recovered_result(
         self,

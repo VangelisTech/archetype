@@ -14,12 +14,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import Any, cast
+from typing import Any
 
-from archetype.missions.activity_values import AuthorValueRedactor, MissionAuthorValueCodec
+from archetype.missions.activity_values import MissionAuthorValueCodec
 from archetype.missions.coding_agents.app_server import CodexAppServerDriver
 from archetype.missions.coding_agents.harness import (
     CodingAgentHarness,
@@ -27,7 +28,6 @@ from archetype.missions.coding_agents.harness import (
 )
 from archetype.missions.critics.activities import (
     CriticActivityCodec,
-    CriticActivityRedactor,
 )
 from archetype.missions.critics.harness import (
     CodexAppServerCriticDriver,
@@ -46,9 +46,11 @@ from archetype.missions.modal_jobs import (
     ModalMissionFamily,
     ModalMissionJobClient,
     ModalMissionJobNamespace,
+    ModalMissionJobPoll,
     ModalMissionJobRef,
     ModalMissionJobResourceRecorder,
     ModalMissionJobResources,
+    ModalMissionJobResult,
     ModalMissionJobUnknown,
     modal_mission_call_record,
 )
@@ -113,7 +115,6 @@ class ModalMissionControllerAppConfig:
 
     namespace: ModalMissionJobNamespace
     runtime: ModalMissionJobRuntimeConfig
-    redactor: object
     timeout_seconds: int = 24 * 60 * 60
     sandbox_timeout_seconds: int = 4 * 60 * 60
     sandbox_idle_timeout_seconds: int = 20 * 60
@@ -130,10 +131,11 @@ class ModalMissionControllerAppConfig:
             raise ValueError(
                 "Modal Mission controller requires one shared author/critic function name"
             )
-        if type(self.redactor) is not RedactionService:
-            raise ValueError("Modal Mission controller requires the built-in redaction service")
-        redactor = cast(RedactionService, self.redactor)
-        if self.namespace.redaction_policy_id != redactor.policy_id:
+        if self.runtime.create_if_missing:
+            raise ValueError(
+                "Modal Mission controller requires preprovisioned durable Dicts"
+            )
+        if self.namespace.redaction_policy_id != RedactionService().policy_id:
             raise ValueError(
                 "Modal Mission controller redaction capability conflicts with its namespace"
             )
@@ -187,7 +189,6 @@ def _canonical_request_digest(
     *,
     family: ModalMissionFamily,
     request_bytes: bytes,
-    redactor: AuthorValueRedactor,
 ) -> str:
     if type(request_bytes) is not bytes:
         raise TypeError("Modal Mission controller request must be bytes")
@@ -195,10 +196,13 @@ def _canonical_request_digest(
         raise ValueError("Modal Mission controller request must not be empty")
     if len(request_bytes) > MODAL_MISSION_CONTROLLER_MAX_REQUEST_BYTES:
         raise ValueError("Modal Mission controller request exceeds its 1 MiB bound")
+    redactor = RedactionService()
     if family == "author":
         MissionAuthorValueCodec(redactor=redactor).decode_request(request_bytes)
     elif family == "critic":
-        CriticActivityCodec(cast(CriticActivityRedactor, redactor)).decode_request(request_bytes)
+        request = CriticActivityCodec(redactor).decode_request(request_bytes)
+        if request.policy.driver != CodexAppServerCriticDriver.driver_id:
+            raise ValueError("Modal Mission critic request requires the built-in Codex driver")
     else:  # pragma: no cover - closed Literal defense
         raise ValueError("Modal Mission controller family is invalid")
     return hashlib.sha256(request_bytes).hexdigest()
@@ -212,10 +216,10 @@ def _trip_failpoint(
         raise ModalMissionControllerFailpointReached(boundary)
 
 
-async def _result_not_routed(_ref: ModalMissionJobRef) -> bool:
+async def _result_not_routed(_ref: ModalMissionJobRef) -> bytes | None:
     """The remote controller does not poll its own family result."""
 
-    return False
+    return None
 
 
 def _sandbox_backend(config: ModalMissionControllerAppConfig) -> ModalSandboxBackend:
@@ -239,6 +243,128 @@ def _provider_barrier(config: ModalMissionControllerAppConfig) -> ModalProviderS
         app_name=config.runtime.app_name,
         protocol_epoch=MODAL_ACTIVITY_PROTOCOL_EPOCH,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _BuiltinMissionJob:
+    """Deployment-fixed family implementation shared by remote and host paths."""
+
+    capability: ModalSandboxOperationCapability
+    spec: SandboxSpec
+    execute: Callable[[str], Awaitable[None]]
+    read_result: Callable[[str], Awaitable[bytes | None]]
+
+
+def _builtin_mission_job(
+    *,
+    config: ModalMissionControllerAppConfig,
+    family: ModalMissionFamily,
+    request_bytes: bytes,
+    recorder: ModalMissionJobResourceRecorder | None = None,
+    read_only: bool = False,
+) -> _BuiltinMissionJob:
+    redactor = RedactionService()
+    backend = _sandbox_backend(config)
+    capability = ModalSandboxOperationCapability(
+        backend,
+        resource_observer=None if recorder is None else recorder.observe,
+    )
+    barrier = _provider_barrier(config)
+    if family == "author":
+        request = MissionAuthorValueCodec(redactor=redactor).decode_request(request_bytes)
+        executor = ModalMissionAuthorExecutor(
+            capability=capability,
+            barrier=barrier,
+            harness=CodingAgentHarness(
+                CodexAppServerDriver(
+                    connector=ModalCodexAppServerConnector(),
+                    model=config.author_model,
+                    workspace=config.author_workspace,
+                ),
+                CodingAgentHarnessConfig(workspace=config.author_workspace),
+            ),
+            redactor=redactor,
+            config=ModalMissionAuthorExecutorConfig(
+                sandbox_environment=backend.environment,
+                workspace=config.author_workspace,
+                timeout_seconds=config.sandbox_timeout_seconds,
+                idle_timeout_seconds=config.sandbox_idle_timeout_seconds,
+                result_dict_name=config.namespace.result_dict_name,
+                checkpoint_after_dispatch=config.checkpoint_after_dispatch,
+                create_result_dict_if_missing=not read_only,
+            ),
+        )
+
+        async def execute(operation_id: str) -> None:
+            await executor.execute(
+                operation_id=operation_id,
+                request=request,
+                attempt=1,
+                fence=1,
+                retry_guard=None,
+            )
+
+        async def read_result(operation_id: str) -> bytes | None:
+            return await executor.result_payload_for(
+                operation_id=operation_id,
+                request=request,
+            )
+
+        return _BuiltinMissionJob(
+            capability=capability,
+            spec=executor.sandbox_spec(request),
+            execute=execute,
+            read_result=read_result,
+        )
+
+    if family == "critic":
+        request = CriticActivityCodec(redactor).decode_request(request_bytes)
+        if request.policy.driver != CodexAppServerCriticDriver.driver_id:
+            raise ValueError("Modal Mission critic request requires the built-in Codex driver")
+        executor = ModalMissionCriticExecutor(
+            capability=capability,
+            barrier=barrier,
+            harness=CriticHarness(
+                CodexAppServerCriticDriver(
+                    connector=ModalCodexAppServerConnector(),
+                    workspace=config.critic_workspace,
+                ),
+                CriticHarnessConfig(workspace=config.critic_workspace),
+            ),
+            redactor=redactor,
+            config=ModalMissionCriticExecutorConfig(
+                sandbox_environment=backend.environment,
+                workspace=config.critic_workspace,
+                timeout_seconds=config.sandbox_timeout_seconds,
+                idle_timeout_seconds=config.sandbox_idle_timeout_seconds,
+                result_dict_name=config.namespace.result_dict_name,
+                create_result_dict_if_missing=not read_only,
+            ),
+        )
+
+        async def execute(operation_id: str) -> None:
+            await executor.execute(
+                operation_id=operation_id,
+                request=request,
+                attempt=1,
+                fence=1,
+                retry_guard=None,
+            )
+
+        async def read_result(operation_id: str) -> bytes | None:
+            return await executor.result_payload_for(
+                operation_id=operation_id,
+                request=request,
+            )
+
+        return _BuiltinMissionJob(
+            capability=capability,
+            spec=executor.sandbox_spec(request),
+            execute=execute,
+            read_result=read_result,
+        )
+
+    raise ValueError("Modal Mission controller family is invalid")
 
 
 async def _cleanup_job_resources(
@@ -272,93 +398,147 @@ async def _execute_builtin_job(
 ) -> None:
     """Run one deployment-fixed family implementation and persist its result."""
 
-    redactor = cast(RedactionService, config.redactor)
     recorder = ModalMissionJobResourceRecorder(client, ref)
-    backend = _sandbox_backend(config)
-    capability = ModalSandboxOperationCapability(
-        backend,
-        resource_observer=recorder.observe,
+    job = _builtin_mission_job(
+        config=config,
+        family=ref.family,
+        request_bytes=request_bytes,
+        recorder=recorder,
     )
-    barrier = _provider_barrier(config)
-    if ref.family == "author":
-        request = MissionAuthorValueCodec(redactor=redactor).decode_request(request_bytes)
-        executor = ModalMissionAuthorExecutor(
-            capability=capability,
-            barrier=barrier,
-            harness=CodingAgentHarness(
-                CodexAppServerDriver(
-                    connector=ModalCodexAppServerConnector(),
-                    model=config.author_model,
-                    workspace=config.author_workspace,
-                ),
-                CodingAgentHarnessConfig(workspace=config.author_workspace),
-            ),
-            redactor=redactor,
-            config=ModalMissionAuthorExecutorConfig(
-                sandbox_environment=backend.environment,
-                workspace=config.author_workspace,
-                timeout_seconds=config.sandbox_timeout_seconds,
-                idle_timeout_seconds=config.sandbox_idle_timeout_seconds,
-                result_dict_name=config.namespace.result_dict_name,
-                checkpoint_after_dispatch=config.checkpoint_after_dispatch,
-            ),
-        )
-        spec = executor.sandbox_spec(request)
-
-        async def execute() -> None:
-            await executor.execute(
-                operation_id=ref.operation_id,
-                request=request,
-                attempt=1,
-                fence=1,
-                retry_guard=None,
-            )
-
-    elif ref.family == "critic":
-        request = CriticActivityCodec(redactor).decode_request(request_bytes)
-        executor = ModalMissionCriticExecutor(
-            capability=capability,
-            barrier=barrier,
-            harness=CriticHarness(
-                CodexAppServerCriticDriver(
-                    connector=ModalCodexAppServerConnector(),
-                    workspace=config.critic_workspace,
-                ),
-                CriticHarnessConfig(workspace=config.critic_workspace),
-            ),
-            redactor=redactor,
-            config=ModalMissionCriticExecutorConfig(
-                sandbox_environment=backend.environment,
-                workspace=config.critic_workspace,
-                timeout_seconds=config.sandbox_timeout_seconds,
-                idle_timeout_seconds=config.sandbox_idle_timeout_seconds,
-                result_dict_name=config.namespace.result_dict_name,
-            ),
-        )
-        spec = executor.sandbox_spec(request)
-
-        async def execute() -> None:
-            await executor.execute(
-                operation_id=ref.operation_id,
-                request=request,
-                attempt=1,
-                fence=1,
-                retry_guard=None,
-            )
-
-    else:  # pragma: no cover - closed Literal defense
-        raise ValueError("Modal Mission controller family is invalid")
 
     try:
-        await execute()
+        await job.execute(ref.operation_id)
     finally:
         await client.cleanup(
             ref,
             cleaner=lambda resources: _cleanup_job_resources(
-                capability=capability,
+                capability=job.capability,
                 resources=resources,
-                spec=spec,
+                spec=job.spec,
             ),
+        )
+
+
+class ModalMissionBuiltinJobService:
+    """Exact host-side adapter for the deployed built-in Mission controller.
+
+    Only ``start`` may spawn. Poll and collect read the family-owned first-result
+    register, while cancellation and cleanup target identities already recorded
+    by the controller.
+    """
+
+    def __init__(self, config: ModalMissionControllerAppConfig) -> None:
+        self._config = config
+
+    async def start(
+        self,
+        *,
+        family: ModalMissionFamily,
+        operation_id: str,
+        request_bytes: bytes,
+    ) -> ModalMissionJobRef | ModalMissionJobUnknown:
+        request_digest = self._request_digest(family, request_bytes)
+        return await self._client(family, request_bytes).start(
+            family=family,
+            operation_id=operation_id,
+            request_bytes=request_bytes,
+            request_digest=request_digest,
+        )
+
+    async def poll(
+        self,
+        ref: ModalMissionJobRef,
+        *,
+        request_bytes: bytes,
+    ) -> ModalMissionJobPoll:
+        try:
+            self._require_request(ref, request_bytes)
+        except ValueError as exc:
+            return ModalMissionJobUnknown(ref, str(exc))
+        return await self._client(ref.family, request_bytes).poll(ref)
+
+    async def collect(
+        self,
+        ref: ModalMissionJobRef,
+        *,
+        request_bytes: bytes,
+    ) -> ModalMissionJobResult | ModalMissionJobUnknown:
+        try:
+            self._require_request(ref, request_bytes)
+        except ValueError as exc:
+            return ModalMissionJobUnknown(ref, str(exc))
+        return await self._client(ref.family, request_bytes).collect(ref)
+
+    async def cancel(
+        self,
+        ref: ModalMissionJobRef,
+        *,
+        request_bytes: bytes,
+    ) -> ModalMissionJobRef:
+        self._require_request(ref, request_bytes)
+        return await self._client(ref.family, request_bytes).cancel(ref)
+
+    async def cleanup(
+        self,
+        ref: ModalMissionJobRef,
+        *,
+        request_bytes: bytes,
+    ) -> ModalMissionJobRef:
+        self._require_request(ref, request_bytes)
+        job = _builtin_mission_job(
+            config=self._config,
+            family=ref.family,
+            request_bytes=request_bytes,
+            read_only=True,
+        )
+        return await self._client(ref.family, request_bytes).cleanup(
+            ref,
+            cleaner=lambda resources: _cleanup_job_resources(
+                capability=job.capability,
+                resources=resources,
+                spec=job.spec,
+            ),
+        )
+
+    def _client(
+        self,
+        family: ModalMissionFamily,
+        request_bytes: bytes,
+    ) -> ModalMissionJobClient:
+        request_digest = self._request_digest(family, request_bytes)
+
+        async def read_result(ref: ModalMissionJobRef) -> bytes | None:
+            if (
+                ref.family != family
+                or ref.request_digest != request_digest
+                or ref.namespace_digest != self._config.namespace.digest
+            ):
+                raise ValueError("Modal Mission result read belongs to another request")
+            job = _builtin_mission_job(
+                config=self._config,
+                family=family,
+                request_bytes=request_bytes,
+                read_only=True,
+            )
+            return await job.read_result(ref.operation_id)
+
+        runtime = ModalNamedMissionJobRuntime(
+            self._config.runtime,
+            result_reader=read_result,
+        )
+        return ModalMissionJobClient(self._config.namespace, runtime)
+
+    def _require_request(self, ref: ModalMissionJobRef, request_bytes: bytes) -> None:
+        if ref.namespace_digest != self._config.namespace.digest:
+            raise ValueError("Modal Mission job belongs to another deployment namespace")
+        if self._request_digest(ref.family, request_bytes) != ref.request_digest:
+            raise ValueError("Modal Mission request bytes do not match the durable job")
+
+    @staticmethod
+    def _request_digest(family: ModalMissionFamily, request_bytes: bytes) -> str:
+        return _canonical_request_digest(
+            family=family,
+            request_bytes=request_bytes,
         )
 
 
@@ -376,7 +556,6 @@ async def _run_controller(
     request_digest = _canonical_request_digest(
         family=family,
         request_bytes=request_bytes,
-        redactor=cast(AuthorValueRedactor, config.redactor),
     )
     # Validate the complete family/operation/request identity before named Modal
     # state is opened.  register_remote_call repeats this construction at the
@@ -392,7 +571,7 @@ async def _run_controller(
     )
     runtime = ModalNamedMissionJobRuntime(
         config.runtime,
-        result_ready=_result_not_routed,
+        result_reader=_result_not_routed,
     )
     client = ModalMissionJobClient(config.namespace, runtime)
     outcome = await client.register_remote_call(
@@ -417,7 +596,7 @@ async def _run_controller(
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        raise ModalMissionControllerExecutionFailed(type(exc).__name__[:128]) from exc
+        raise ModalMissionControllerExecutionFailed(type(exc).__name__[:128]) from None
     receipt = modal_mission_call_record(outcome)
     encoded = json.dumps(
         receipt,
@@ -488,7 +667,7 @@ def build_modal_mission_controller_app(
         ):
             raise
         except Exception as exc:
-            raise ModalMissionControllerExecutionFailed(type(exc).__name__[:128]) from exc
+            raise ModalMissionControllerExecutionFailed(type(exc).__name__[:128]) from None
 
     return app, mission_controller
 
@@ -497,6 +676,7 @@ __all__ = [
     "MODAL_MISSION_CONTROLLER_MAX_RECEIPT_BYTES",
     "MODAL_MISSION_CONTROLLER_MAX_REQUEST_BYTES",
     "ModalMissionControllerAppConfig",
+    "ModalMissionBuiltinJobService",
     "ModalMissionControllerExecutionFailed",
     "ModalMissionControllerFailpoint",
     "ModalMissionControllerFailpointReached",

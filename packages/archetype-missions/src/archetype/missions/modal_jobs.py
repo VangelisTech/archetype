@@ -18,6 +18,7 @@ _CALL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,1023}$")
 _OPERATION_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COHORT_ID = re.compile(r"^cohort-v1:[0-9a-f]{32}$")
 _SCHEMA_VERSION = 1
+MODAL_MISSION_JOB_MAX_RESULT_BYTES = 1 << 20
 
 ModalMissionFamily = Literal["author", "critic"]
 
@@ -69,6 +70,24 @@ class ModalMissionJobRunning:
 @dataclass(frozen=True, slots=True)
 class ModalMissionJobReady:
     ref: ModalMissionJobRef
+
+
+@dataclass(frozen=True, slots=True)
+class ModalMissionJobResult:
+    """One exact bounded canonical family result read without side effects."""
+
+    ref: ModalMissionJobRef
+    payload: bytes
+    payload_digest: str
+
+    def __post_init__(self) -> None:
+        if type(self.payload) is not bytes or not self.payload:
+            raise ValueError("Modal Mission result payload must be non-empty bytes")
+        if len(self.payload) > MODAL_MISSION_JOB_MAX_RESULT_BYTES:
+            raise ValueError("Modal Mission result payload exceeds its 1 MiB bound")
+        _require_digest(self.payload_digest, "Modal Mission result payload_digest")
+        if hashlib.sha256(self.payload).hexdigest() != self.payload_digest:
+            raise ValueError("Modal Mission result payload does not match payload_digest")
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +177,8 @@ class ModalMissionJobRuntime(Protocol):
     async def call_result(self, call: object, *, timeout_seconds: float) -> object: ...
 
     async def result_ready(self, ref: ModalMissionJobRef) -> bool: ...
+
+    async def result_payload(self, ref: ModalMissionJobRef) -> bytes | None: ...
 
 
 class ModalMissionJobStillRunning(Exception):
@@ -463,6 +484,41 @@ class ModalMissionJobClient:
             return ModalMissionJobUnknown(ref, "provider call completed without a durable result")
         except ValueError as exc:
             return ModalMissionJobUnknown(ref, str(exc))
+        except Exception as exc:
+            return ModalMissionJobUnknown(
+                ref,
+                f"durable result observation failed ({type(exc).__name__[:128]})",
+            )
+
+    async def collect(
+        self,
+        ref: ModalMissionJobRef,
+    ) -> ModalMissionJobResult | ModalMissionJobUnknown:
+        """Read the exact first result without execution, cancellation, or cleanup."""
+
+        try:
+            self._require_ref(
+                ref,
+                family=ref.family,
+                operation_id=ref.operation_id,
+                request_digest=ref.request_digest,
+            )
+            await self._require_records(ref)
+            payload = await self._runtime.result_payload(ref)
+            if payload is None:
+                return ModalMissionJobUnknown(ref, "durable result is not ready")
+            return ModalMissionJobResult(
+                ref=ref,
+                payload=payload,
+                payload_digest=hashlib.sha256(payload).hexdigest(),
+            )
+        except (TypeError, ValueError) as exc:
+            return ModalMissionJobUnknown(ref, str(exc))
+        except Exception as exc:
+            return ModalMissionJobUnknown(
+                ref,
+                f"durable result lookup failed ({type(exc).__name__[:128]})",
+            )
 
     async def cancel(self, ref: ModalMissionJobRef) -> ModalMissionJobRef:
         """Persist cancellation intent, then cancel only the exact durable call."""
@@ -501,13 +557,8 @@ class ModalMissionJobClient:
             request_digest=ref.request_digest,
         )
         await self._require_records(ref)
-        resources = await self.resources(ref)
         record: dict[str, str | int] = {
-            **(
-                modal_mission_call_record(ref)
-                if resources is None
-                else modal_mission_resource_intent_record(resources.intent)
-            ),
+            **modal_mission_call_record(ref),
             "phase": "cleanup",
         }
         key = modal_mission_job_key(ref.family, ref.operation_id, "cleanup")
@@ -515,6 +566,7 @@ class ModalMissionJobClient:
         stored = await self._runtime.get(key)
         if not ((inserted and stored == record) or (not inserted and stored == record)):
             raise ValueError("durable cleanup intent conflicts")
+        resources = await self.resources(ref)
         if resources is not None:
             await cleaner(resources)
         return ref
@@ -572,6 +624,14 @@ class ModalMissionJobClient:
                 request_digest=ref.request_digest,
             )
             await self._require_records(ref)
+            for phase in ("cancel", "cleanup"):
+                if await self._runtime.get(
+                    modal_mission_job_key(ref.family, ref.operation_id, phase)
+                ) is not None:
+                    return ModalMissionJobUnknown(
+                        ref,
+                        f"durable {phase} intent prevents new sandbox resources",
+                    )
             intent = ModalMissionResourceIntent(
                 ref=ref,
                 operation_digest=operation_digest,
@@ -742,12 +802,14 @@ class ModalMissionJobResourceRecorder:
 
 
 __all__ = [
+    "MODAL_MISSION_JOB_MAX_RESULT_BYTES",
     "ModalMissionFamily",
     "ModalMissionJobNamespace",
     "ModalMissionJobClient",
     "ModalMissionJobPoll",
     "ModalMissionJobReady",
     "ModalMissionJobRef",
+    "ModalMissionJobResult",
     "ModalMissionJobResourceRecorder",
     "ModalMissionJobResources",
     "ModalMissionJobRunning",

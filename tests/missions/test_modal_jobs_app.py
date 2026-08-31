@@ -31,12 +31,17 @@ from archetype.missions.critics import CandidateReviewRequest, CriticActivityCod
 from archetype.missions.modal_jobs import (
     ModalMissionFamily,
     ModalMissionJobNamespace,
+    ModalMissionJobReady,
     ModalMissionJobRef,
+    ModalMissionJobResult,
+    ModalMissionJobStillRunning,
+    ModalMissionJobUnknown,
     modal_mission_call_record,
     modal_mission_job_key,
 )
 from archetype.missions.modal_jobs_app import (
     MODAL_MISSION_CONTROLLER_MAX_RECEIPT_BYTES,
+    ModalMissionBuiltinJobService,
     ModalMissionControllerAppConfig,
     ModalMissionControllerExecutionFailed,
     ModalMissionControllerFailpoint,
@@ -188,7 +193,6 @@ def _config(
     return ModalMissionControllerAppConfig(
         namespace=_namespace(),
         runtime=_runtime_config(),
-        redactor=RedactionService(),
         timeout_seconds=90,
         failpoint=failpoint,
     )
@@ -575,27 +579,132 @@ def test_controller_config_is_fixed_to_one_function_and_builtin_redaction() -> N
         ModalMissionControllerAppConfig(
             namespace=_namespace(),
             runtime=_runtime_config(critic_function_name="other-controller"),
-            redactor=RedactionService(),
         )
     with pytest.raises(ValueError, match="redaction capability conflicts"):
         ModalMissionControllerAppConfig(
             namespace=_namespace(redaction_policy_id="custom-redaction-v1"),
             runtime=_runtime_config(),
-            redactor=RedactionService(),
         )
-    with pytest.raises(ValueError, match="built-in redaction service"):
+    with pytest.raises(ValueError, match="preprovisioned"):
         ModalMissionControllerAppConfig(
             namespace=_namespace(),
-            runtime=_runtime_config(),
-            redactor=object(),
+            runtime=_runtime_config(create_if_missing=True),
         )
     with pytest.raises(ValueError, match="pinned im-"):
         ModalMissionControllerAppConfig(
             namespace=_namespace(image_id="mutable-image-tag"),
             runtime=_runtime_config(),
-            redactor=RedactionService(),
         )
     with pytest.raises(ValueError, match="positive integer"):
         replace(_config(), timeout_seconds=0)
     with pytest.raises(ValueError, match="failpoint is invalid"):
         replace(_config(), failpoint="after-self-registration")  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_builtin_host_service_collects_exact_result_without_reexecution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values: dict[str, object] = {}
+    payload: bytes | None = None
+    spawn_count = 0
+    reattach_count = 0
+    cancel_count = 0
+    read_only_modes: list[bool] = []
+
+    class HostRuntime:
+        def __init__(
+            self,
+            config: ModalMissionJobRuntimeConfig,
+            *,
+            result_reader: Callable[[ModalMissionJobRef], Awaitable[bytes | None]],
+        ) -> None:
+            assert not config.create_if_missing
+            self._result_reader = result_reader
+
+        async def get(self, key: str) -> object:
+            return values.get(key)
+
+        async def put_if_absent(self, key: str, value: object) -> bool:
+            if key in values:
+                return False
+            values[key] = value
+            return True
+
+        async def spawn(self, **_kwargs: object) -> object:
+            nonlocal spawn_count
+            spawn_count += 1
+            return "fc-host-service"
+
+        @staticmethod
+        def call_id(call: object) -> str:
+            return str(call)
+
+        async def reattach(self, call_id: str) -> object:
+            nonlocal reattach_count
+            reattach_count += 1
+            return call_id
+
+        async def cancel(self, _call: object) -> None:
+            nonlocal cancel_count
+            cancel_count += 1
+
+        async def call_result(self, _call: object, *, timeout_seconds: float) -> object:
+            assert timeout_seconds == 0
+            raise ModalMissionJobStillRunning
+
+        async def result_payload(self, ref: ModalMissionJobRef) -> bytes | None:
+            return await self._result_reader(ref)
+
+        async def result_ready(self, ref: ModalMissionJobRef) -> bool:
+            return await self.result_payload(ref) is not None
+
+    def builtin_job(**kwargs: object) -> object:
+        read_only_modes.append(bool(kwargs.get("read_only")))
+
+        async def no_execute(_operation_id: str) -> None:
+            raise AssertionError("host observation must not execute provider work")
+
+        async def read_result(_operation_id: str) -> bytes | None:
+            return payload
+
+        return modal_jobs_app._BuiltinMissionJob(
+            capability=cast(Any, object()),
+            spec=cast(Any, object()),
+            execute=no_execute,
+            read_result=read_result,
+        )
+
+    monkeypatch.setattr(modal_jobs_app, "ModalNamedMissionJobRuntime", HostRuntime)
+    monkeypatch.setattr(modal_jobs_app, "_builtin_mission_job", builtin_job)
+    service = ModalMissionBuiltinJobService(_config())
+    request_bytes = _author_request()
+    started = await service.start(
+        family="author",
+        operation_id=_operation("author"),
+        request_bytes=request_bytes,
+    )
+    assert isinstance(started, ModalMissionJobRef)
+
+    assert not isinstance(
+        await service.poll(started, request_bytes=request_bytes),
+        ModalMissionJobReady,
+    )
+    payload = b'{"kind":"author-result","schema_version":1}'
+    assert isinstance(
+        await service.poll(started, request_bytes=request_bytes),
+        ModalMissionJobReady,
+    )
+    first = await service.collect(started, request_bytes=request_bytes)
+    replay = await service.collect(started, request_bytes=request_bytes)
+
+    assert isinstance(first, ModalMissionJobResult)
+    assert replay == first
+    assert first.payload == payload
+    assert spawn_count == 1
+    assert reattach_count == 1
+    assert cancel_count == 0
+    assert read_only_modes == [True, True, True, True]
+
+    mismatch = await service.collect(started, request_bytes=_critic_request())
+    assert isinstance(mismatch, ModalMissionJobUnknown)

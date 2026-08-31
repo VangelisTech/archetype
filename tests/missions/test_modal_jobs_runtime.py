@@ -156,11 +156,11 @@ async def test_named_runtime_uses_one_dict_and_deployed_family_functions(
     monkeypatch.setitem(sys.modules, "modal", _fake_modal(state))
     seen_refs: list[ModalMissionJobRef] = []
 
-    async def result_ready(ref: ModalMissionJobRef) -> bool:
+    async def result_reader(ref: ModalMissionJobRef) -> bytes | None:
         seen_refs.append(ref)
-        return True
+        return b"result"
 
-    runtime = ModalNamedMissionJobRuntime(_config(), result_ready=result_ready)
+    runtime = ModalNamedMissionJobRuntime(_config(), result_reader=result_reader)
 
     assert isinstance(runtime, ModalMissionJobRuntime)
     assert await runtime.put_if_absent("start", {"schema_version": 1})
@@ -182,7 +182,8 @@ async def test_named_runtime_uses_one_dict_and_deployed_family_functions(
     assert runtime.call_id(author) == "fc-1"
     assert runtime.call_id(critic) == "fc-2"
     assert await runtime.result_ready(_ref())
-    assert seen_refs == [_ref()]
+    assert await runtime.result_payload(_ref()) == b"result"
+    assert seen_refs == [_ref(), _ref()]
     assert state.calls.count(("Workspace.from_context", (), {})) == 1
     assert (
         "Dict.from_name",
@@ -222,10 +223,10 @@ async def test_runtime_reattaches_by_function_call_id_and_polls_without_waiting(
     state = _FakeModalState(result={"finished": True})
     monkeypatch.setitem(sys.modules, "modal", _fake_modal(state))
 
-    async def result_ready(_ref: ModalMissionJobRef) -> bool:
-        return False
+    async def result_reader(_ref: ModalMissionJobRef) -> bytes | None:
+        return None
 
-    runtime = ModalNamedMissionJobRuntime(_config(), result_ready=result_ready)
+    runtime = ModalNamedMissionJobRuntime(_config(), result_reader=result_reader)
     call = await runtime.reattach("fc-existing")
 
     assert runtime.call_id(call) == "fc-existing"
@@ -247,10 +248,10 @@ async def test_runtime_translates_only_nonblocking_timeout_to_still_running(
     state = _FakeModalState(result_error=TimeoutError())
     monkeypatch.setitem(sys.modules, "modal", _fake_modal(state))
 
-    async def result_ready(_ref: ModalMissionJobRef) -> bool:
-        return False
+    async def result_reader(_ref: ModalMissionJobRef) -> bytes | None:
+        return None
 
-    runtime = ModalNamedMissionJobRuntime(_config(), result_ready=result_ready)
+    runtime = ModalNamedMissionJobRuntime(_config(), result_reader=result_reader)
     call = await runtime.reattach("fc-running")
 
     with pytest.raises(ModalMissionJobStillRunning):
@@ -270,10 +271,10 @@ async def test_runtime_fails_before_named_lookups_in_the_wrong_workspace(
     state = _FakeModalState(workspace_name="other-workspace")
     monkeypatch.setitem(sys.modules, "modal", _fake_modal(state))
 
-    async def result_ready(_ref: ModalMissionJobRef) -> bool:
-        return False
+    async def result_reader(_ref: ModalMissionJobRef) -> bytes | None:
+        return None
 
-    runtime = ModalNamedMissionJobRuntime(_config(), result_ready=result_ready)
+    runtime = ModalNamedMissionJobRuntime(_config(), result_reader=result_reader)
 
     with pytest.raises(RuntimeError, match="workspace"):
         await runtime.get("start")
