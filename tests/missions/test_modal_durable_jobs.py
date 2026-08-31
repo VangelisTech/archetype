@@ -206,3 +206,49 @@ async def test_poll_is_result_first_and_terminal_without_result_is_unknown() -> 
 
     runtime.ready = True
     assert isinstance(await client.poll(started), ModalMissionJobReady)
+
+
+@pytest.mark.asyncio
+async def test_remote_self_registration_fences_duplicate_calls_before_effects() -> None:
+    runtime = _Runtime()
+    client = ModalMissionJobClient(_namespace(), runtime)
+    request = b"canonical-request"
+    digest = hashlib.sha256(request).hexdigest()
+    marker = _namespace().start_record(
+        family="author", operation_id=_ref().operation_id, request_digest=digest
+    )
+    runtime.values[modal_mission_job_key("author", _ref().operation_id, "start")] = marker
+
+    winner = await client.register_remote_call(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_digest=digest,
+        call_id="fc-winner",
+    )
+    duplicate = await client.register_remote_call(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_digest=digest,
+        call_id="fc-duplicate",
+    )
+
+    assert isinstance(winner, ModalMissionJobRef)
+    assert winner.call_id == "fc-winner"
+    assert isinstance(duplicate, ModalMissionJobUnknown)
+    assert "already owns" in duplicate.reason
+
+
+@pytest.mark.asyncio
+async def test_remote_self_registration_requires_exact_start_marker() -> None:
+    runtime = _Runtime()
+    client = ModalMissionJobClient(_namespace(), runtime)
+    outcome = await client.register_remote_call(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_digest=_ref().request_digest,
+        call_id="fc-unstarted",
+    )
+
+    assert isinstance(outcome, ModalMissionJobUnknown)
+    assert "no exact durable start" in outcome.reason
+    assert not runtime.values

@@ -331,6 +331,42 @@ class ModalMissionJobClient:
         except ValueError as exc:
             return ModalMissionJobUnknown(ref, str(exc))
 
+    async def register_remote_call(
+        self,
+        *,
+        family: ModalMissionFamily,
+        operation_id: str,
+        request_digest: str,
+        call_id: str,
+    ) -> ModalMissionJobRef | ModalMissionJobUnknown:
+        """Let the remote Function fence itself before any provider effect."""
+
+        ref = ModalMissionJobRef(
+            family=family,
+            operation_id=operation_id,
+            request_digest=request_digest,
+            namespace_digest=self._namespace.digest,
+            call_id=call_id,
+        )
+        marker = self._namespace.start_record(
+            family=family,
+            operation_id=operation_id,
+            request_digest=request_digest,
+        )
+        start_key = modal_mission_job_key(family, operation_id, "start")
+        if await self._runtime.get(start_key) != marker:
+            return ModalMissionJobUnknown(ref, "remote call has no exact durable start")
+        call_key = modal_mission_job_key(family, operation_id, "call")
+        record = modal_mission_call_record(ref)
+        inserted = await self._runtime.put_if_absent(call_key, record)
+        stored = await self._runtime.get(call_key)
+        if (inserted and stored == record) or (not inserted and stored == record):
+            return ref
+        return ModalMissionJobUnknown(
+            ref,
+            "another provider call already owns this Mission operation",
+        )
+
     async def _require_records(self, ref: ModalMissionJobRef) -> None:
         marker = self._namespace.start_record(
             family=ref.family,
