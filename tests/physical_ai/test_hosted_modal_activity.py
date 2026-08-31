@@ -127,6 +127,8 @@ class _FakeModalState:
     release_wait: asyncio.Event = field(default_factory=asyncio.Event)
     spawn_attempts: int = 0
     execution_count: int = 0
+    calls: dict[str, tuple[str, bytes, str]] = field(default_factory=dict)
+    started_calls: set[str] = field(default_factory=set)
 
 
 class _FakeModalRuntime:
@@ -164,14 +166,26 @@ class _FakeModalRuntime:
         self.state.spawn_attempts += 1
         if self.fail_spawn:
             raise RuntimeError("spawn response disappeared")
-        return operation_id, request_ipc, namespace_digest
+        call = (operation_id, request_ipc, namespace_digest)
+        self.state.calls[self.call_id(call)] = call
+        return call
+
+    def call_id(self, call: object) -> str:
+        operation_id, _, _ = cast(tuple[str, bytes, str], call)
+        return f"fc-{hashlib.sha256(operation_id.encode()).hexdigest()}"
+
+    async def reattach(self, call_id: str) -> object:
+        return self.state.calls[call_id]
 
     async def wait(self, call: object) -> object:
         operation_id, request_ipc, namespace_digest = cast(
             tuple[str, bytes, str],
             call,
         )
-        self.state.execution_count += 1
+        call_id = self.call_id(call)
+        if call_id not in self.state.started_calls:
+            self.state.started_calls.add(call_id)
+            self.state.execution_count += 1
         self.state.wait_started.set()
         if self.block_before_result:
             await self.state.release_wait.wait()
@@ -333,6 +347,50 @@ async def test_lost_modal_completion_response_recovers_provider_first_result(
     )
     assert isinstance(recovery, HostedEpisodeRecovered)
     assert recovery.result == result
+
+
+@pytest.mark.asyncio
+async def test_replacement_runtime_reattaches_exact_call_without_respawn(tmp_path) -> None:
+    state = _FakeModalState(tmp_path)
+    world_id = "physical-world"
+    activity_id = "reattach-call"
+    operation_id = hosted_episode_provider_operation_id(world_id, activity_id)
+    request_ipc = _request(world_id, activity_id)
+    first = ModalHostedEpisodeProvider(
+        _config(), runtime=_FakeModalRuntime(state, block_before_result=True)
+    )
+    running = asyncio.create_task(
+        first.execute(
+            operation_id=operation_id,
+            request_ipc=request_ipc,
+            attempt=1,
+            fence=1,
+            retry_guard=None,
+        )
+    )
+    await state.wait_started.wait()
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    replacement = ModalHostedEpisodeProvider(
+        _config(), runtime=_FakeModalRuntime(state, block_before_result=True)
+    )
+    resumed = asyncio.create_task(
+        replacement.execute(
+            operation_id=operation_id,
+            request_ipc=request_ipc,
+            attempt=2,
+            fence=2,
+            retry_guard=None,
+        )
+    )
+    state.release_wait.set()
+    result = await resumed
+
+    assert result.request_ipc == request_ipc
+    assert state.spawn_attempts == 1
+    assert state.execution_count == 1
     assert state.spawn_attempts == 1
     assert state.execution_count == 1
 
@@ -453,17 +511,17 @@ async def test_concurrent_modal_claimants_admit_only_one_remote_execution(
         )
     )
     await state.wait_started.wait()
-    with pytest.raises(ModalHostedEpisodeProviderUnknown, match="permanent start"):
-        await second.execute(
-            operation_id=operation_id,
-            request_ipc=request_ipc,
-            attempt=2,
-            fence=2,
-            retry_guard=None,
-        )
+    second_result = await second.execute(
+        operation_id=operation_id,
+        request_ipc=request_ipc,
+        attempt=2,
+        fence=2,
+        retry_guard=None,
+    )
     state.release_wait.set()
-    await first_task
+    first_result = await first_task
 
+    assert second_result == first_result
     assert state.spawn_attempts == 1
     assert state.execution_count == 1
     recovered = await second.reconcile(
