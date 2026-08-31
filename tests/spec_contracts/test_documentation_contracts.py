@@ -365,6 +365,13 @@ def test_package_navigation_enables_native_and_content_tabs() -> None:
         assert uv_commands == pip_commands
 
 
+def test_mermaid_uses_the_material_theme_loader() -> None:
+    """Mermaid fences must use Material's loader, including instant navigation."""
+    config = Path("mkdocs.yml").read_text()
+
+    assert "format: !!python/name:mermaid2.fence_mermaid_custom" in config
+
+
 def test_package_landings_link_framework_evaluation_to_its_owner() -> None:
     """Research names the framework contract without absorbing its API reference."""
 
