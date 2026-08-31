@@ -429,3 +429,86 @@ Status: **idempotent fork/advance primitives proven; broader scope remains**.
 6. Remove generic Activity legacy machinery only after all families are clean.
 7. Expand World lifecycle orchestration incrementally while preserving ECS and
    storage authority.
+
+## Completed-agent follow-up audit
+
+This section reconciles findings from completed implementation and review
+agents.  Items remain open until explicitly marked resolved; passing an adjacent
+test does not close them implicitly.
+
+### Temporal cutover review
+
+- [x] Bind Temporal execution ownership atomically at Activity admission; do
+  not wait until result recording.
+- [x] Store orchestration execution identity separately from family provider
+  operation identities, expose it in snapshots, and reject legacy claims.
+- [x] Add caller-chosen fork IDs and absolute-target world advancement.
+- [x] Add canonical bounded author request encoding and recovered-result
+  redaction-policy revalidation.
+- [x] Persist and reattach exact Modal `FunctionCall.object_id` values.
+- [x] Add remote call-ID self-registration and reject duplicate controller
+  calls before the sandbox/Git effect boundary.
+- [ ] Persist immutable sandbox resource intent and each exact role ID/cohort
+  as resources are created.  Current author/critic cleanup identity is still
+  published only with a terminal result, leaving partial creation unsafe.
+- [ ] Require a deployment-pinned sandbox `image_id` on the provider-native
+  production route; do not use the fallback image construction path.
+- [ ] Reject custom process-local author/critic drivers, arbitrary callbacks,
+  and runtime redactors on the first provider-native route.  Only deployment-
+  pinned built-in drivers and policy may cross the Function boundary.
+- [ ] Keep Mission poll history bounded or use Continue-As-New; the current
+  transitional Workflow event tuple grows without a bound.
+- [ ] Make Workflow cancellation stop the exact durable provider call and run
+  exact compensation/cleanup; merely recording cancellation is insufficient.
+- [ ] Add required-projector recovery for a crash between committed admission
+  and Workflow-start acknowledgement using deterministic Workflow start with
+  an exact request digest.
+- [ ] Define and test legacy MissionRun freeze/drain/archive/import before
+  disabling SQLite admission; do not operate two lifecycle authorities.
+
+### Named Modal runtime adapter
+
+- [x] Verify named Dict access, deployed Function lookup, `spawn`, durable call
+  identity, `FunctionCall.from_id`, and zero-time polling against the pinned
+  Modal 1.5.2 API surface without external execution.
+- [ ] Eliminate ambiguity between Modal's built-in `TimeoutError` for an
+  unfinished zero-time poll and a remote controller that raises the same Python
+  exception.  The deployed controller must canonicalize all remote failures and
+  never allow raw built-in `TimeoutError` to escape.
+- [ ] Add a real deployed-Function compatibility test before production
+  routing; fake-Modal API shape is necessary but not sufficient.
+
+### Local subprocess crash harness
+
+- [x] Hard-exit after remote self-registration and prove replacement polling
+  reuses one durable call with one spawn.
+- [x] Hard-exit after claim-free result recording but before settlement and
+  prove exact idempotent settlement with zero attempts/fences.
+- [ ] Add cancellation resumption after the public durable-job cancel contract
+  exists; the current client/runtime has no complete cancel-and-resume port.
+- [ ] Replace the persistent provider-double collection seam with the production
+  family `collect` adapter once routing lands.
+- [ ] Extend settlement recovery from the real SQLite Activity authority to a
+  reconstructed live ECS world and required projector.
+- [ ] Do not treat these tests as proof of live Modal behavior; retain the paid
+  deployed-Function process-kill gate.
+
+### Identity-only controller implementation
+
+- [x] Accept exactly family, operation ID, canonical request bytes, and
+  namespace digest as remote inputs.
+- [x] Validate canonical author/critic requests under the deployment policy,
+  self-register before effects, and return only a bounded identity receipt.
+- [x] Provide deterministic before/after-registration failpoints with no
+  production Mission routing.
+- [ ] Replace the identity-only boundary with the built-in author/critic
+  controller job only after sandbox resource intent and exact cleanup are
+  durable.
+- [ ] Keep deterministic failpoints deployment-fixed and off by default in any
+  production deployment.
+
+### Repository hygiene noted during agent validation
+
+- [ ] `tests/missions/test_mission_run_lifecycle.py` has an unrelated existing
+  Ruff format-check failure.  It was not modified during these slices; address
+  it separately rather than mixing it into the Temporal changes.
