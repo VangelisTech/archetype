@@ -201,7 +201,12 @@ async def test_named_runtime_uses_one_dict_and_deployed_family_functions(
     ) in state.calls
     assert (
         "function.spawn",
-        ("mission:author:dispatch-1", b"author-request", "a" * 64),
+        ("author", "mission:author:dispatch-1", b"author-request", "a" * 64),
+        {},
+    ) in state.calls
+    assert (
+        "function.spawn",
+        ("critic", "mission:critic:review-1", b"critic-request", "b" * 64),
         {},
     ) in state.calls
 

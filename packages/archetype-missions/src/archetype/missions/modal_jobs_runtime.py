@@ -109,7 +109,7 @@ class ModalNamedMissionJobRuntime:
         namespace_digest: str,
     ) -> object:
         function = await self._get_function(family)
-        return await function.spawn.aio(operation_id, request_bytes, namespace_digest)
+        return await function.spawn.aio(family, operation_id, request_bytes, namespace_digest)
 
     def call_id(self, call: object) -> str:
         value = getattr(call, "object_id", None)
