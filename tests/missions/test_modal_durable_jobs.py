@@ -5,18 +5,65 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
 from archetype.missions.modal_jobs import (
+    ModalMissionJobClient,
     ModalMissionJobNamespace,
+    ModalMissionJobReady,
     ModalMissionJobRef,
+    ModalMissionJobRunning,
+    ModalMissionJobStillRunning,
     ModalMissionJobUnknown,
     modal_mission_call_record,
     modal_mission_job_key,
     parse_modal_mission_call_record,
 )
+
+
+class _Runtime:
+    def __init__(self) -> None:
+        self.values: dict[str, object] = {}
+        self.spawn_count = 0
+        self.ready = False
+        self.terminal: BaseException | None = None
+        self.running = True
+
+    async def get(self, key: str) -> object:
+        return self.values.get(key)
+
+    async def put_if_absent(self, key: str, value: dict[str, Any]) -> bool:
+        if key in self.values:
+            return False
+        self.values[key] = dict(value)
+        return True
+
+    async def spawn(self, **_kwargs: object) -> object:
+        self.spawn_count += 1
+        return "fc-123"
+
+    def call_id(self, call: object) -> str:
+        return str(call)
+
+    async def reattach(self, call_id: str) -> object:
+        return call_id
+
+    async def call_result(self, call: object, *, timeout_seconds: float) -> object:
+        assert call == "fc-123"
+        assert timeout_seconds == 0
+        if self.terminal is not None:
+            raise self.terminal
+        if self.running:
+            raise ModalMissionJobStillRunning
+        return {"status": "complete"}
+
+    async def result_ready(self, ref: ModalMissionJobRef) -> bool:
+        assert ref.call_id == "fc-123"
+        return self.ready
 
 
 def _namespace() -> ModalMissionJobNamespace:
@@ -88,3 +135,74 @@ def test_unknown_is_bounded_and_requires_a_reason() -> None:
         ModalMissionJobUnknown(_ref(), "")
     with pytest.raises(ValueError, match="4096"):
         ModalMissionJobUnknown(_ref(), "x" * 4097)
+
+
+@pytest.mark.asyncio
+async def test_start_is_the_only_spawning_operation_and_replay_reuses_call() -> None:
+    runtime = _Runtime()
+    client = ModalMissionJobClient(_namespace(), runtime)
+    request = b"canonical-request"
+    digest = hashlib.sha256(request).hexdigest()
+
+    first = await client.start(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_bytes=request,
+        request_digest=digest,
+    )
+    assert isinstance(first, ModalMissionJobRef)
+    replay = await client.start(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_bytes=request,
+        request_digest=digest,
+    )
+
+    assert replay == first
+    assert runtime.spawn_count == 1
+
+
+@pytest.mark.asyncio
+async def test_start_marker_without_call_is_unknown_and_never_respawns() -> None:
+    runtime = _Runtime()
+    client = ModalMissionJobClient(_namespace(), runtime)
+    request = b"canonical-request"
+    digest = hashlib.sha256(request).hexdigest()
+    marker = _namespace().start_record(
+        family="author", operation_id=_ref().operation_id, request_digest=digest
+    )
+    runtime.values[modal_mission_job_key("author", _ref().operation_id, "start")] = marker
+
+    outcome = await client.start(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_bytes=request,
+        request_digest=digest,
+    )
+
+    assert isinstance(outcome, ModalMissionJobUnknown)
+    assert runtime.spawn_count == 0
+
+
+@pytest.mark.asyncio
+async def test_poll_is_result_first_and_terminal_without_result_is_unknown() -> None:
+    runtime = _Runtime()
+    client = ModalMissionJobClient(_namespace(), runtime)
+    request = b"canonical-request"
+    digest = hashlib.sha256(request).hexdigest()
+    started = await client.start(
+        family="author",
+        operation_id=_ref().operation_id,
+        request_bytes=request,
+        request_digest=digest,
+    )
+    assert isinstance(started, ModalMissionJobRef)
+
+    assert isinstance(await client.poll(started), ModalMissionJobRunning)
+    runtime.terminal = RuntimeError("remote failure")
+    outcome = await client.poll(started)
+    assert isinstance(outcome, ModalMissionJobUnknown)
+    assert "terminated without a durable result" in outcome.reason
+
+    runtime.ready = True
+    assert isinstance(await client.poll(started), ModalMissionJobReady)
