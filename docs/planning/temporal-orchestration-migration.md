@@ -268,3 +268,164 @@ and `external` scenarios use paid Modal/Git/R2 infrastructure.
   Mission, when one worker is replaced during execution, then it produces one
   branch, one authorized pull request, one first result, exact cleanup, and an
   exactly settled ECS observation.
+
+## Follow-up subsystem ledger
+
+This ledger records work that remains after the first Mission cutover.  A
+subsystem is not ready for deletion merely because the Mission path passes.
+Each row requires its own authority boundary, migration path, and parity gate.
+
+### Shared prerequisites
+
+- Temporal remains the only durable orchestration authority for a migrated
+  path; no dual admission, retry, cancellation, or lifecycle state machine.
+- Archetype retains committed ECS receipts, exact observation settlement,
+  writer epochs, lineage, storage visibility, and provider reconciliation.
+- Every effectful operation has a stable, deterministic identity and a
+  provider-side first-result or reconciliation record.
+- Existing work is frozen, drained, archived, or imported before legacy
+  admission is disabled.
+- Legacy code is removed only after local contract, process-death, and parity
+  tests pass.
+
+### 1. Evaluation orchestration
+
+Status: **scope paused; not migrated**.
+
+- Replace evaluator leases, polling loops, heartbeats, retry scheduling, and
+  worker-failure recovery with Temporal Workflows and Activities.
+- Retain evaluation definitions, evidence, scores, observations, and result
+  acceptance in Archetype.
+- Prerequisites: deterministic evaluation identity, bounded result contract,
+  idempotent provider submission, and an import/drain policy for open leases.
+- Gate: kill an evaluator Worker mid-provider run; replacement recovers one
+  evaluation and records one result with unchanged evidence.
+- Deletion candidate after parity: evaluation lease and recovery machinery.
+
+### 2. Rollouts and simulation fan-out
+
+Status: **scope paused; not migrated**.
+
+- Move durable fork fan-out, waits, cancellation, compensation, ordered
+  failure handling, and long-running supervision to Temporal.
+- Retain world state, exact fork lineage, target ticks, writer fencing,
+  simulation computation, and committed manifests in Archetype.
+- Prerequisites: caller-chosen fork IDs and absolute-target advancement are
+  complete; define deterministic rollout and child-Workflow identities.
+- Gate: run multiple forks, kill the supervisor, recover the same children,
+  and prove no duplicate forks or ticks and an unchanged parent.
+- Deletion candidate after parity: process-local rollout supervision only.
+
+### 3. AutoResearch
+
+Status: **scope paused; not migrated**.
+
+- Move the single-flight guard, iteration lifecycle, experiment scheduling,
+  waits, retries, cancellation, and recovery to Temporal.
+- Retain research hypotheses, experiment evidence, frontier decisions, and
+  ledger facts in Archetype.
+- Prerequisites: stable experiment/policy IDs, explicit budget accounting,
+  idempotent effect launch, and bounded history or Continue-As-New policy.
+- Gate: kill the Worker between experiment selection and result ingestion;
+  replacement performs no duplicate experiment and advances the same ledger.
+- Deletion candidate after parity: local single-flight and iteration loops.
+
+### 4. Storage migration orchestration
+
+Status: **not yet scoped for implementation**.
+
+- Move durable sequencing, waits, retries, progress, cancellation, and
+  compensation around copy/validate/activate/rollback to Temporal.
+- Retain migration reservations, plan digests, staged data, activation CAS,
+  cold evidence, and storage authority in Archetype.
+- Prerequisites: idempotent phase commands, resumable copy handles, and exact
+  reconciliation for ambiguous activation outcomes.
+- Gate: kill the Worker in every phase; resume the same plan without duplicate
+  activation or loss of rollback evidence.
+- Deletion candidate after parity: process-local migration sequencing only.
+
+### 5. Command scheduling
+
+Status: **separate spike required; migration is not assumed**.
+
+- Candidate Temporal responsibility: delayed execution, durable waits, retry
+  supervision, cancellation, and long-running command processes.
+- Retain authorization, validation, routing, logical `scheduled_tick`, command
+  ordering, transactional outbox, and manifest-atomic settlement in Archetype.
+- Prerequisites: prove a Workflow can preserve logical-tick ordering and the
+  exact publication transaction without becoming a second command authority.
+- Gate: process death around scheduled execution preserves command order and
+  produces one manifest-visible settlement.
+- Never delete: transactional outbox or manifest publication authority.
+
+### 6. Artifact ingestion
+
+Status: **blocked on deterministic identities**.
+
+- Candidate Temporal responsibility: long-running fetch/transform/validate
+  sequencing, waits, retries, and cancellation.
+- Retain content addressing, artifact metadata, provenance, validation facts,
+  and publication authority in Archetype.
+- Prerequisites: deterministic ingestion and occurrence IDs; current retry
+  behavior may mint a new occurrence and therefore cannot be retried safely.
+- Gate: crash after external fetch and after blob publication; replacement
+  converges on one content-addressed artifact and one occurrence.
+- Deletion candidate after parity: local ingestion retry/supervision loops.
+
+### 7. Remaining Physical-AI Activities
+
+Status: **durable Modal primitive proven locally; family cutover remains**.
+
+- Reuse the Mission durable-job pattern for hosted Physical-AI executions:
+  immutable start/call/result records, result-first polling, exact cancellation,
+  and exact resource cleanup.
+- Retain episode definitions, trajectories, manifests, result validation,
+  provider first-result registers, and ECS settlement in Archetype.
+- Prerequisites: paid live call-ID reattachment proof and family-specific
+  collect/cleanup contracts.
+- Gate: hard-kill a Worker during a real hosted episode; recover one Modal call,
+  one result, and one exact observation.
+- Deletion candidate after parity: Physical-AI claim/lease worker machinery.
+
+### 8. Generic Activity legacy removal
+
+Status: **claim-free path exists; legacy removal intentionally deferred**.
+
+- Remove claims, attempts, leases, fences, confirmed-absence retry guards,
+  expiry scans, incomplete-activity scans, and generic recovery workers only
+  after every Activity family is exclusively Temporal-owned.
+- Retain the slim strongly consistent admission/settlement index unless a
+  per-world Workflow replacement proves lifecycle-lock consistency.
+- Prerequisites: schema migration, catalog inventory, freeze/drain/archive or
+  import of all unresolved legacy attempts, and zero legacy admission routes.
+- Gate: catalog inventory proves no open legacy attempt or provider-bound work;
+  every family passes process-death and exact-settlement parity.
+- Never substitute Temporal visibility search for `has_unsettled(world_id)`.
+
+### 9. World lifecycle orchestration
+
+Status: **idempotent fork/advance primitives proven; broader scope remains**.
+
+- Temporal may supervise long-running create, fork, advance, pause, resume,
+  destroy, and cleanup processes.
+- Archetype retains catalog status, lineage, writer epochs, locks, committed
+  ticks, manifests, reconstruction, and `OnDestroy` semantics.
+- Prerequisites: deterministic Workflow IDs for lifecycle operations,
+  reconciliation of ambiguous storage commits, and explicit terminal-state
+  rules.
+- Gate: hard-kill each lifecycle phase and prove the same world/run resumes,
+  writer epoch advances, parent remains unchanged, and destroy occurs once.
+- Never move tick computation or storage commit authority into Temporal.
+
+### Sequencing after Mission release
+
+1. Finish and delete the migrated Mission-specific legacy path.
+2. Resume detailed scopes for Evaluation, Rollouts, and AutoResearch.
+3. Migrate remaining Physical-AI Activities using the already-proven Modal
+   primitive.
+4. Scope and migrate Storage Migration orchestration.
+5. Run separate feasibility spikes for Command Scheduling and Artifact
+   Ingestion; do not assume either cutover.
+6. Remove generic Activity legacy machinery only after all families are clean.
+7. Expand World lifecycle orchestration incrementally while preserving ECS and
+   storage authority.
