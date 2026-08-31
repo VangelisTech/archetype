@@ -1464,8 +1464,24 @@ def test_family_codec_rejects_unbounded_and_noncanonical_results() -> None:
     encoded = codec.encode_observation(durable)
 
     assert codec.redaction_policy_id == redactor.policy_id
+    assert codec.max_request_bytes == 1 << 20
     assert codec.max_result_bytes == 512 * 1024
+    request = codec.sanitize_request(_request("dispatch-canonical-request"))
+    encoded_request = codec.encode_request(request)
+    assert codec.decode_request(encoded_request) == request
+    with pytest.raises(ValueError, match="canonically encoded"):
+        codec.decode_request(encoded_request + b" ")
     assert codec.decode_observation(encoded) == durable
+    wrong_policy = json.loads(encoded)
+    wrong_policy["value"]["redaction_policy_id"] = "another-policy"
+    wrong_policy_encoded = json.dumps(
+        wrong_policy,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    with pytest.raises(ValueError, match="another redaction policy"):
+        codec.decode_observation(wrong_policy_encoded)
     with pytest.raises(ValueError, match="canonical JSON"):
         codec.decode_observation(b"not-json")
     with pytest.raises(ValueError, match="incompatible envelope"):
@@ -1487,6 +1503,8 @@ def test_family_codec_rejects_invalid_redaction_and_metadata_bounds() -> None:
         MissionAuthorValueCodec(redactor=_EmptyPolicyRedactor())  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="byte limit"):
         MissionAuthorValueCodec(redactor=RedactionService(), max_result_bytes=0)
+    with pytest.raises(ValueError, match="byte limit"):
+        MissionAuthorValueCodec(redactor=RedactionService(), max_request_bytes=0)
 
     codec = MissionAuthorValueCodec(redactor=RedactionService())
     with pytest.raises(ValueError, match="4096"):
