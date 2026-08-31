@@ -44,6 +44,7 @@ from archetype.missions.critic_activity_world import (
 )
 from archetype.missions.critics import (
     CRITIC_ACTIVITY_KIND,
+    CRITIC_ACTIVITY_MEDIA_TYPE,
     CriticActivityRequestRef,
     CriticActivityResultRef,
     critic_provider_operation_id,
@@ -68,7 +69,7 @@ from .modal_job_client import (
 )
 
 _TEMPORAL_PROVIDER = "temporal"
-_RESULT_MEDIA_TYPE = "application/json"
+_AUTHOR_RESULT_MEDIA_TYPE = "application/json"
 _RESULT_SCAN_PAGE = 1_000
 
 
@@ -102,6 +103,7 @@ class _MissionTemporalFamilyCatalog:
         *,
         family: MissionModalJobFamily,
         kind: str,
+        result_media_type: str,
         index: iActivitySettlementIndex,
         workflows: MissionModalJobWorkflowLauncher,
         namespace_digest: str,
@@ -116,6 +118,7 @@ class _MissionTemporalFamilyCatalog:
             raise ValueError("Mission Temporal activity namespace digest is invalid")
         self.family = family
         self.kind = kind
+        self._result_media_type = result_media_type
         self._index = index
         self._workflows = workflows
         self._namespace_digest = namespace_digest
@@ -188,7 +191,7 @@ class _MissionTemporalFamilyCatalog:
                 ActivityResultRef(
                     ref=result.ref,
                     digest=result.digest,
-                    media_type=_RESULT_MEDIA_TYPE,
+                    media_type=self._result_media_type,
                     size_bytes=result.size_bytes,
                 ),
             )
@@ -280,6 +283,7 @@ class MissionTemporalAuthorActivityCatalog:
         self._family = _MissionTemporalFamilyCatalog(
             family="author",
             kind=AUTHOR_ACTIVITY_KIND,
+            result_media_type=_AUTHOR_RESULT_MEDIA_TYPE,
             index=index,
             workflows=workflows,
             namespace_digest=namespace_digest,
@@ -366,6 +370,7 @@ class MissionTemporalCriticActivityCatalog:
         self._family = _MissionTemporalFamilyCatalog(
             family="critic",
             kind=CRITIC_ACTIVITY_KIND,
+            result_media_type=CRITIC_ACTIVITY_MEDIA_TYPE,
             index=index,
             workflows=workflows,
             namespace_digest=namespace_digest,

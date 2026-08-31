@@ -23,6 +23,7 @@ from archetype.missions.activities import (
 from archetype.missions.critics import CriticActivityRequestRef, CriticActivityResultRef
 from archetype.missions.temporal.activity_runtime import (
     MissionTemporalAuthorActivityCatalog,
+    MissionTemporalCriticActivityCatalog,
 )
 from archetype.missions.temporal.activity_values import MissionModalActivityValueStore
 from archetype.missions.temporal.contracts import (
@@ -55,6 +56,16 @@ _RESULT_REF = MissionJobValueRef(
     ref=f"sqlite-value://author/{_RESULT_DIGEST}",
     digest=_RESULT_DIGEST,
     size_bytes=len(_RESULT),
+)
+_CRITIC_REQUEST = b'{"kind":"critic-request","schema_version":1}'
+_CRITIC_REQUEST_DIGEST = hashlib.sha256(_CRITIC_REQUEST).hexdigest()
+_CRITIC_REQUEST_REF = f"mission-critic+json:sha256:{_CRITIC_REQUEST_DIGEST}"
+_CRITIC_RESULT = b'{"kind":"critic-result","schema_version":1}'
+_CRITIC_RESULT_DIGEST = hashlib.sha256(_CRITIC_RESULT).hexdigest()
+_CRITIC_RESULT_REF = MissionJobValueRef(
+    ref=f"mission-critic+json:sha256:{_CRITIC_RESULT_DIGEST}",
+    digest=_CRITIC_RESULT_DIGEST,
+    size_bytes=len(_CRITIC_RESULT),
 )
 
 
@@ -90,7 +101,11 @@ class _AuthorValues:
 
 class _CriticValues:
     async def get_encoded_request(self, value: CriticActivityRequestRef) -> bytes:
-        raise AssertionError(f"critic request was not expected: {value!r}")
+        assert value == CriticActivityRequestRef(
+            ref=_CRITIC_REQUEST_REF,
+            digest=_CRITIC_REQUEST_DIGEST,
+        )
+        return _CRITIC_REQUEST
 
     async def put_encoded_result(
         self,
@@ -99,6 +114,16 @@ class _CriticValues:
         digest: str,
     ) -> CriticActivityResultRef:
         raise AssertionError(f"critic result was not expected: {payload!r} {digest!r}")
+
+
+class _Launcher:
+    def __init__(self) -> None:
+        self.handle = _WorkflowHandle()
+        self.command: MissionModalJobWorkflowInput | None = None
+
+    async def start(self, command: MissionModalJobWorkflowInput) -> _WorkflowHandle:
+        self.command = command
+        return self.handle
 
 
 class _WorkflowHandle:
@@ -275,5 +300,46 @@ async def test_projector_retry_reuses_prebound_workflow_and_records_one_result(
         inventory = inspect_sqlite_activity_catalog(path)
         assert inventory.attempt_count == 0
         assert inventory.provider_operation_count == 0
+    finally:
+        await physical.close()
+
+
+async def test_critic_result_retains_critic_media_type(tmp_path) -> None:
+    physical = SqliteActivityCatalog(tmp_path / "activities.sqlite3")
+    index = ActivityCoordinator(physical)
+    launcher = _Launcher()
+    catalog = MissionTemporalCriticActivityCatalog(
+        index=index,
+        workflows=launcher,
+        values=MissionModalActivityValueStore(
+            author=_AuthorValues(),
+            critic=_CriticValues(),
+        ),
+        namespace_digest=_NAMESPACE_DIGEST,
+    )
+    request = CriticActivityRequestRef(
+        ref=_CRITIC_REQUEST_REF,
+        digest=_CRITIC_REQUEST_DIGEST,
+    )
+    try:
+        await catalog.admit_critic(
+            world_id=_WORLD_ID,
+            receipt=_receipt(),
+            activity_id="review-temporal-critic",
+            request=request,
+        )
+        assert launcher.command is not None
+        launcher.handle.state = MissionModalJobWorkflowState(
+            family="critic",
+            operation_id=launcher.command.operation_id,
+            request_digest=launcher.command.request.digest,
+            status="succeeded",
+            result=_CRITIC_RESULT_REF,
+        )
+
+        assert await catalog.complete_started(world_id=_WORLD_ID)
+        deliveries = await catalog.pending_critic_results(world_id=_WORLD_ID)
+        assert len(deliveries) == 1
+        assert deliveries[0].result.media_type == "application/vnd.archetype.missions.critic+json"
     finally:
         await physical.close()
