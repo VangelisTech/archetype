@@ -64,6 +64,7 @@ from archetype.missions.temporal.client import MissionTemporalClient
 from archetype.missions.temporal.contracts import MissionWorkflowEvent, MissionWorkflowState
 from archetype.missions.temporal.modal_job_client import MissionModalJobWorkflowLauncher
 from archetype.missions.temporal.worker import create_mission_worker
+from archetype.missions.temporal.workflow import MissionWorkflow
 from archetype.missions.trajectories.models import (
     GradeTrajectory,
     IngestClaudeTranscript,
@@ -580,7 +581,7 @@ async def _handle_get_mission_run(
     _ensure_temporal_mission_workers(context, config)
     client = _require_temporal_run_client(config)
     handle = client.get(operation.run_id)
-    state = await handle.query("state")
+    state = await handle.query(MissionWorkflow.state)
     if state is None:
         raise MissionRunNotFoundError(operation.run_id)
     return await _temporal_run(handle, submission_from_json(state.submission_json))
@@ -599,8 +600,8 @@ async def _handle_cancel_mission_run(
         if operation.reason
         else ""
     )
-    await handle.signal("request_cancel", reason)
-    state = await handle.query("state")
+    await handle.signal(MissionWorkflow.request_cancel, reason)
+    state = await handle.query(MissionWorkflow.state)
     if state is None:
         raise MissionRunNotFoundError(operation.run_id)
     return await _temporal_run(handle, submission_from_json(state.submission_json))
@@ -613,7 +614,7 @@ async def _handle_get_mission_run_events(
 ) -> Any:
     _ensure_temporal_mission_workers(context, config)
     client = _require_temporal_run_client(config)
-    events = await client.get(operation.run_id).query("events")
+    events = await client.get(operation.run_id).query(MissionWorkflow.events)
     return tuple(
         MissionRunEvent(
             run_id=operation.run_id,
@@ -641,7 +642,7 @@ async def _handle_list_mission_runs(
     )
     runs: list[MissionRun] = []
     for handle in handles:
-        state = await handle.query("state")
+        state = await handle.query(MissionWorkflow.state)
         if state is not None:
             runs.append(await _temporal_run(handle, submission_from_json(state.submission_json)))
     return tuple(runs)
@@ -655,10 +656,13 @@ def _require_temporal_run_client(config: MissionsExtensionConfig) -> MissionTemp
 
 
 async def _temporal_run(handle: Any, submission: MissionSubmission) -> MissionRun:
-    state = cast(MissionWorkflowState | None, await handle.query("state"))
+    state = cast(MissionWorkflowState | None, await handle.query(MissionWorkflow.state))
     if state is None:
         raise MissionRunNotFoundError(str(getattr(handle, "id", "unknown")))
-    events = cast(tuple[MissionWorkflowEvent, ...], await handle.query("events"))
+    events = cast(
+        tuple[MissionWorkflowEvent, ...],
+        await handle.query(MissionWorkflow.events),
+    )
     terminal = state.status in {"succeeded", "failed", "cancelled"}
     timestamps = {event.event_type: event.created_at_ms for event in events}
     result = mission_result_from_json(state.result_json) if state.result_json else None
