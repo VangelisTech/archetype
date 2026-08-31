@@ -78,6 +78,35 @@ class CriticActivityResultDelivery:
 
 
 @runtime_checkable
+class MissionCriticActivityProjectionCatalog(Protocol):
+    """Admission and settlement facts consumed by the committed projector."""
+
+    async def admit_critic(
+        self,
+        *,
+        world_id: str,
+        receipt: CommittedTickReceipt,
+        activity_id: str,
+        request: CriticActivityRequestRef,
+    ) -> None: ...
+
+    async def pending_critic_results(
+        self,
+        *,
+        world_id: str,
+    ) -> tuple[CriticActivityResultDelivery, ...]: ...
+
+    async def settle_critic_observation(
+        self,
+        *,
+        world_id: str,
+        activity_id: str,
+        result_digest: str,
+        receipt: CommittedTickReceipt,
+    ) -> None: ...
+
+
+@runtime_checkable
 class MissionCriticActivityCatalog(Protocol):
     """Mission view of generic critic Activity coordination mechanics."""
 
@@ -199,7 +228,7 @@ class MissionCriticActivityProjector:
         self,
         *,
         reader: MissionCommittedIntentReader,
-        catalog: MissionCriticActivityCatalog,
+        catalog: MissionCriticActivityProjectionCatalog,
         values: MissionCriticValueStore,
     ) -> None:
         self._reader = reader

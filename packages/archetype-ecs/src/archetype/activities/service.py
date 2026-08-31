@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable
+from typing import Protocol
 
 from archetype.activities.contracts import (
     ActivityAdmission,
@@ -283,8 +284,21 @@ async def claim_next_pending(
         after_sequence = _scan_cursor(page[-1])
 
 
+class _ActivityResultIndex(Protocol):
+    """Result-delivery subset shared by legacy and orchestrated indexes."""
+
+    async def pending_results(
+        self,
+        *,
+        kind: str | None = None,
+        world_id: str | None = None,
+        limit: int = 100,
+        after_sequence: int = 0,
+    ) -> tuple[ActivitySnapshot, ...]: ...
+
+
 async def collect_pending_results(
-    coordinator: iActivityCoordinator,
+    coordinator: _ActivityResultIndex,
     *,
     kind: str,
     world_id: str,

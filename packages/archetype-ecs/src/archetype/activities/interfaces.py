@@ -113,7 +113,11 @@ class iActivityCoordinator(Protocol):
 class iActivitySettlementIndex(Protocol):
     """Strongly consistent ECS admission and settlement facts without execution leases."""
 
-    async def admit(self, admission: ActivityAdmission) -> ActivitySnapshot: ...
+    async def admit(
+        self,
+        admission: ActivityAdmission,
+        execution: ActivityExecutionIdentity,
+    ) -> ActivitySnapshot: ...
 
     async def get(
         self,

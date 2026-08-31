@@ -137,6 +137,35 @@ class MissionCommittedIntentReader(Protocol):
 
 
 @runtime_checkable
+class MissionAuthorActivityProjectionCatalog(Protocol):
+    """Admission and settlement facts consumed by the committed projector."""
+
+    async def admit_author(
+        self,
+        *,
+        world_id: str,
+        receipt: CommittedTickReceipt,
+        activity_id: str,
+        request: AuthorActivityRequestRef,
+    ) -> None: ...
+
+    async def pending_author_results(
+        self,
+        *,
+        world_id: str,
+    ) -> tuple[AuthorActivityResultDelivery, ...]: ...
+
+    async def settle_author_observation(
+        self,
+        *,
+        world_id: str,
+        activity_id: str,
+        result_digest: str,
+        receipt: CommittedTickReceipt,
+    ) -> None: ...
+
+
+@runtime_checkable
 class MissionAuthorActivityCatalog(Protocol):
     """Application view of generic activity coordination mechanics.
 
@@ -268,7 +297,7 @@ class MissionAuthorActivityProjector:
         self,
         *,
         reader: MissionCommittedIntentReader,
-        catalog: MissionAuthorActivityCatalog,
+        catalog: MissionAuthorActivityProjectionCatalog,
         values: MissionAuthorValueStore,
     ) -> None:
         self._reader = reader
