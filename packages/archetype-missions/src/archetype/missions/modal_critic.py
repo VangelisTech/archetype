@@ -636,6 +636,24 @@ class ModalMissionCriticExecutor:
             return CriticRecoveryUnknown(marker.reason)
         return CriticRecoveryUnknown("provider marker observation returned an invalid outcome")
 
+    async def result_for(
+        self,
+        *,
+        operation_id: str,
+        request: CriticActivityRequest,
+    ) -> CriticExecutionResult | None:
+        """Read and validate the first result without execution or cleanup."""
+
+        identity = self._capability.identity(operation_id)
+        self._barrier.operation_marker_name(identity)
+        stored = await self._results.get(
+            identity=identity,
+            request_digest=self._codec.encode_request(request).digest,
+        )
+        if stored is None:
+            return None
+        return self._execution_result(request, stored.result)
+
     async def _require_cleanup_before_recovered_result(
         self,
         stored: _StoredCriticResult,

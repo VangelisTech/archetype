@@ -777,6 +777,26 @@ class ModalMissionAuthorExecutor:
             return AuthorRecoveryUnknown(marker.reason)
         return AuthorRecoveryUnknown("provider marker observation returned an invalid outcome")
 
+    async def result_for(
+        self,
+        *,
+        operation_id: str,
+        request: TaskDispatchRequest,
+    ) -> AuthorExecutionObservation | None:
+        """Read and validate the first result without execution or cleanup."""
+
+        sanitized_request = self._codec.sanitize_request(request)
+        identity = self._capability.identity(operation_id)
+        self._barrier.operation_marker_name(identity)
+        stored = await self._results.get(
+            identity=identity,
+            request_digest=self._request_digest(sanitized_request),
+        )
+        if stored is None:
+            return None
+        self._validate_result(sanitized_request, stored.observation.result)
+        return self._codec.execution_observation(stored.observation)
+
     async def _require_cleanup_before_recovered_result(
         self,
         stored: _StoredAuthorResult,
