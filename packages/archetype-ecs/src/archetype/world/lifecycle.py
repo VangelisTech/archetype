@@ -366,13 +366,18 @@ class WorldLifecycle:
     async def fork_world(
         self,
         source_world_id: str | UUID,
+        destination_world_id: str | UUID | None = None,
         name: str | None = None,
         storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,
     ) -> AsyncWorld:
         """Fork one locked source snapshot with fresh managed bindings."""
 
-        fork_world_id = str(uuid7())
+        fork_world_id = str(
+            _require_uuid7(destination_world_id, field="destination_world_id")
+            if destination_world_id is not None
+            else uuid7()
+        )
         async with self._registry.operation(str(source_world_id)) as source:
             if not isinstance(source, AsyncWorld):
                 raise TypeError("Can only fork AsyncWorld instances")

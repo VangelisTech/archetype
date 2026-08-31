@@ -16,6 +16,7 @@ from archetype.world.models import EpisodeConfig
 from archetype.world.simulation import (
     PostCommitProjectionError,
     RequiredProjector,
+    advance_world_to_tick,
     retry_required_projection,
     run,
     run_episode,
@@ -237,6 +238,29 @@ async def test_run_recovers_prepared_tick_before_counting_requested_steps(
     assert result.final_tick == expected_final_tick
     assert projected == expected_projected
     assert registry.pending is None
+
+
+async def test_advance_world_to_tick_is_absolute_and_retry_idempotent() -> None:
+    world = _World([_receipt(0), _receipt(1), _receipt(2)])
+    registry = _Registry(world)
+
+    first = await advance_world_to_tick(registry, world.world_id, 3, RunConfig())
+    retry = await advance_world_to_tick(registry, world.world_id, 3, RunConfig())
+
+    assert first.ticks_completed == 3
+    assert first.final_tick == 3
+    assert retry.ticks_completed == 0
+    assert retry.final_tick == 3
+    assert world.steps == 3
+
+
+async def test_advance_world_to_tick_refuses_an_overshot_target() -> None:
+    world = _World([_receipt(0), _receipt(1)])
+    registry = _Registry(world)
+    await advance_world_to_tick(registry, world.world_id, 2, RunConfig())
+
+    with pytest.raises(RuntimeError, match="beyond target 1"):
+        await advance_world_to_tick(registry, world.world_id, 1, RunConfig())
 
 
 @pytest.mark.parametrize(

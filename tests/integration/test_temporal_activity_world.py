@@ -40,6 +40,7 @@ from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
 from archetype.world.errors import WorldHasUnsettledWorkError
 from archetype.world.models import (
     AddHook,
+    AdvanceWorldToTick,
     ComponentTypeRef,
     ComponentValue,
     CreateWorld,
@@ -247,6 +248,10 @@ class _ForkActivities:
         # reconciles this file instead of creating another parent/fork pair.
         if not self._checkpoint_path.exists():
             fixture = Path(__file__).resolve().parents[1] / "fixtures" / "temporal_fork_owner.py"
+            digest = hashlib.sha256(command.workflow_id.encode("utf-8")).hexdigest()
+            destination_world_id = (
+                f"{digest[0:8]}-{digest[8:12]}-7{digest[13:16]}-8{digest[17:20]}-{digest[20:32]}"
+            )
             process = await asyncio.to_thread(
                 subprocess.run,
                 [
@@ -257,6 +262,7 @@ class _ForkActivities:
                     str(self._checkpoint_path),
                     str(self.destroyed_marker),
                     command.workflow_id,
+                    destination_world_id,
                 ],
                 capture_output=True,
                 text=True,
@@ -326,7 +332,14 @@ class _ForkActivities:
                     components=(ComponentValue.from_component(TemporalCounter(value=101)),),
                 )
             )
-            await resources.dispatcher.apply(Step(world_id=checkpoint.fork_world_id))
+            result = await resources.dispatcher.apply(
+                AdvanceWorldToTick(
+                    world_id=checkpoint.fork_world_id,
+                    target_tick=absolute_target_tick,
+                )
+            )
+            if result.final_tick != absolute_target_tick or result.ticks_completed != 1:
+                raise RuntimeError("absolute-target advancement did not commit exactly one tick")
         async with worlds.operation(checkpoint.fork_world_id) as resumed:
             resumed_tick = resumed.tick
             run_id = str(resumed.run_id)

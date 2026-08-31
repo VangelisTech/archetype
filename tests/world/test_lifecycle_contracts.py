@@ -591,11 +591,17 @@ async def test_fork_mints_identity_and_wires_fresh_projector_binding() -> None:
     assert len(catalog.records) == 1
 
     unsettled = False
-    fork = await lifecycle.fork_world(source.world_id, name="fork")
+    chosen_fork_id = "00000000-0000-7000-8000-000000000074"
+    fork = await lifecycle.fork_world(
+        source.world_id,
+        destination_world_id=chosen_fork_id,
+        name="fork",
+    )
 
     assert source.run_id.version == 7
     assert fork.run_id.version == 7
     assert fork.run_id != source.run_id
+    assert str(fork.world_id) == chosen_fork_id
     assert fork.resources is source.resources
     assert fork._materialize_commands is materialize_commands
     assert len(projectors) == 2

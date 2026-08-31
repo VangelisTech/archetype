@@ -296,6 +296,42 @@ async def run(
         )
 
 
+async def advance_world_to_tick(
+    registry: iWorldRegistry,
+    world_id: str | UUID,
+    target_tick: int,
+    run_config: RunConfig,
+    **input_kwargs: Any,
+) -> RunResult:
+    """Advance to one absolute next-tick target without replaying committed work."""
+
+    if target_tick < 0:
+        raise ValueError("target_tick must be non-negative")
+    async with registry.operation(world_id) as world:
+        await reconcile_committed_work_locked(registry, world_id, world)
+        if world.tick > target_tick:
+            raise RuntimeError(
+                f"world {world_id} is already at tick {world.tick}, beyond target {target_tick}"
+            )
+        start_tick = world.tick
+        commands_applied = 0
+        while world.tick < target_tick:
+            commands_applied += await _step_locked(
+                registry,
+                world_id,
+                world,
+                run_config,
+                **input_kwargs,
+            )
+        return RunResult(
+            run_id=world.run_id,
+            world_id=world.world_id,
+            ticks_completed=world.tick - start_tick,
+            commands_applied=commands_applied,
+            final_tick=world.tick,
+        )
+
+
 async def _entities_terminal(
     storage: iStorageService,
     world: AsyncWorld,

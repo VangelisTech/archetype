@@ -198,7 +198,7 @@ def test_portable_admission_and_handler_inventories_are_exact() -> None:
     assert require_portable_tick_operation(spawn) is spawn
     assert type(spawn) in PORTABLE_TICK_OPERATION_TYPES
     assert len(PORTABLE_TICK_OPERATION_TYPES) == 6
-    assert len(WORLD_OPERATION_TYPES) == 32
+    assert len(WORLD_OPERATION_TYPES) == 33
     assert frozenset(WORLD_OPERATION_HANDLERS) == frozenset(WORLD_OPERATION_TYPES)
 
 

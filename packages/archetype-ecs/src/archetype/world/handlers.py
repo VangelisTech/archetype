@@ -23,6 +23,7 @@ from archetype.world.models import (
     AddHook,
     AddProcessor,
     AddResource,
+    AdvanceWorldToTick,
     ComponentTypeRef,
     ComponentValue,
     CreateEntities,
@@ -290,6 +291,7 @@ async def fork_world(
 ) -> WorldInfo:
     world = await fork(
         operation.source_world_id,
+        destination_world_id=operation.destination_world_id,
         name=operation.name,
         storage_config=operation.storage_config,
         cache_config=operation.cache_config,
@@ -387,6 +389,19 @@ async def run(registry: iWorldRegistry, operation: Run):
     return await simulation.run(
         registry,
         operation.world_id,
+        operation.run_config,
+        **operation.input_kwargs,
+    )
+
+
+async def advance_world_to_tick(
+    registry: iWorldRegistry,
+    operation: AdvanceWorldToTick,
+):
+    return await simulation.advance_world_to_tick(
+        registry,
+        operation.world_id,
+        operation.target_tick,
         operation.run_config,
         **operation.input_kwargs,
     )
@@ -613,6 +628,7 @@ WORLD_OPERATION_HANDLERS = {
     ResumeWorld: resume_world,
     Step: step,
     Run: run,
+    AdvanceWorldToTick: advance_world_to_tick,
     RunEpisode: run_episode,
     RunRollout: run_rollout,
     QueryComponents: query_components,

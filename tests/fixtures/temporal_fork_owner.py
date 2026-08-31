@@ -39,6 +39,7 @@ async def main() -> None:
     checkpoint_path = Path(sys.argv[3])
     destroyed_marker = Path(sys.argv[4])
     workflow_id = sys.argv[5]
+    destination_world_id = sys.argv[6]
 
     control = ControlCatalogConfig(catalog_dir=control_dir)
     storage_service = StorageService(control_catalog_config=control)
@@ -65,7 +66,11 @@ async def main() -> None:
     )
     await resources.dispatcher.apply(Step(world_id=parent.world_id))
     fork = await resources.dispatcher.apply(
-        ForkWorld(source_world_id=parent.world_id, name="temporal-fork-child")
+        ForkWorld(
+            source_world_id=parent.world_id,
+            destination_world_id=destination_world_id,
+            name="temporal-fork-child",
+        )
     )
 
     async def on_destroy(_event: OnDestroy) -> None:
