@@ -169,7 +169,6 @@ section = "3. Preflight, quiescence, and destination emptiness"
 owner = "migration"
 risk = "high"
 pytest = [
-  "tests/activities/test_activity_migration.py",
   "tests/migration/test_handlers.py::test_any_activity_history_rejects_before_destination_initialization",
 ]
 static = []
@@ -248,7 +247,7 @@ pytest = [
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_workflow_cleanup_cannot_admit_a_sibling_world",
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_concurrent_runtime_shutdown_is_single_flight",
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_cancelled_runtime_shutdown_retains_cleanup_for_retry",
-  "tests/missions/test_mission_author_world_integration.py::test_modal_mission_submit_binds_required_activity_before_first_tick",
+  "tests/runtime/test_runtime_missions_owner.py",
 ]
 static = []
 evals = []
@@ -390,7 +389,7 @@ profiles = ["pr", "main", "release"]
 [[contract]]
 id = "missions.temporal.recovery"
 source = "docs/missions/recovery.md"
-section = "Mission recovery"
+section = "Mission Activity recovery"
 owner = "missions"
 risk = "high"
 pytest = [
@@ -681,7 +680,7 @@ profiles = ["pr", "main", "release"]
 [[contract]]
 id = "physical_ai.workflow.evidence"
 source = "docs/guide/physical-ai.md"
-section = "Committed-state sequence"
+section = "Hosted episode migration"
 owner = "physical_ai"
 risk = "high"
 pytest = [
@@ -696,7 +695,7 @@ profiles = ["pr", "main", "release"]
 [[contract]]
 id = "physical_ai.activity.recovery"
 source = "docs/guide/physical-ai.md"
-section = "Hosted-episode recovery"
+section = "Hosted episode migration"
 owner = "physical_ai"
 risk = "high"
 pytest = [
@@ -943,7 +942,7 @@ owner = "missions"
 risk = "high"
 pytest = [
   "tests/missions/test_sandbox_service.py",
-  "tests/missions/test_mission_author_world_integration.py::test_modal_mission_submit_binds_required_activity_before_first_tick",
+  "tests/runtime/test_runtime_missions_owner.py",
 ]
 static = []
 evals = []

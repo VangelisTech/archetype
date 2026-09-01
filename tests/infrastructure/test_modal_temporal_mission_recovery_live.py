@@ -50,7 +50,7 @@ _REQUEST_DIGEST = hashlib.sha256(_REQUEST_BYTES).hexdigest()
 
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.contract("missions.temporal.modal_exact_reattachment"),
+    pytest.mark.contract("missions.temporal.recovery"),
     pytest.mark.integration,
     pytest.mark.external,
     pytest.mark.slow,

@@ -41,7 +41,7 @@ from archetype.storage.activity_catalog import (
 
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.contract("missions.temporal_activity_handoff"),
+    pytest.mark.contract("missions.temporal.recovery"),
 ]
 
 _WORLD_ID = "world-temporal-author"
