@@ -984,11 +984,16 @@ async def _run_controller(
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        logger.exception(
+        error_type = type(exc).__name__[:128]
+        logger.error(
             "Modal Mission built-in job failed",
-            extra={"family": family, "operation_id": operation_id},
+            extra={
+                "error_type": error_type,
+                "family": family,
+                "operation_id": operation_id,
+            },
         )
-        raise ModalMissionControllerExecutionFailed(type(exc).__name__[:128]) from None
+        raise ModalMissionControllerExecutionFailed(error_type) from None
     receipt = modal_mission_call_record(outcome)
     encoded = json.dumps(
         receipt,

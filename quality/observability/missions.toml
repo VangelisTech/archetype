@@ -72,7 +72,6 @@ operations = [
   "service.MissionRedactor.policy_id",
   "service.MissionRedactor.redact_text",
   "temporal.activities.MissionTemporalExecutor.load_existing",
-  "temporal.activities.MissionTemporalExecutor.prepare",
   "temporal.activities.MissionTemporalExecutor.run",
   "temporal.activities.MissionTemporalExecutor.submit",
   "temporal.activity_values.MissionModalAuthorValueStore.get_encoded_request",

@@ -25,10 +25,12 @@ qualified_scope = "archetype.world.handlers"
 
 [[disposition]]
 operations = [
+  "handlers.advance_world_to_tick",
   "handlers.run",
   "handlers.run_episode",
   "handlers.run_rollout",
   "handlers.step",
+  "simulation.advance_world_to_tick",
   "simulation.run",
   "simulation.run_episode",
   "simulation.run_rollout",
