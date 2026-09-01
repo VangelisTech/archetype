@@ -12,6 +12,8 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from archetype.errors import AvailabilityError
+
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,1023}$")
 _CALL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,1023}$")
@@ -181,7 +183,7 @@ class ModalMissionJobRuntime(Protocol):
     async def result_payload(self, ref: ModalMissionJobRef) -> bytes | None: ...
 
 
-class ModalMissionJobStillRunning(Exception):
+class ModalMissionJobStillRunning(AvailabilityError):
     """The exact durable provider call has not reached a terminal outcome."""
 
 

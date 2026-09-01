@@ -25,6 +25,7 @@ from typing import Any
 from temporalio.client import Client
 from temporalio.worker import Worker
 
+from archetype.errors import AvailabilityError, ConflictError
 from archetype.missions.activity_values import MissionAuthorValueCodec
 from archetype.missions.coding_agents.app_server import CodexAppServerDriver
 from archetype.missions.coding_agents.harness import (
@@ -101,7 +102,7 @@ class ModalMissionControllerFailpoint(StrEnum):
     AFTER_SELF_REGISTRATION = "after-self-registration"
 
 
-class ModalMissionControllerFailpointReached(RuntimeError):
+class ModalMissionControllerFailpointReached(AvailabilityError):
     """A deployment-fixed controller failpoint stopped this call."""
 
     def __init__(self, failpoint: ModalMissionControllerFailpoint) -> None:
@@ -109,7 +110,7 @@ class ModalMissionControllerFailpointReached(RuntimeError):
         super().__init__(f"Modal Mission controller failpoint reached: {failpoint.value}")
 
 
-class ModalMissionControllerRejected(RuntimeError):
+class ModalMissionControllerRejected(ConflictError):
     """The current Modal call does not own the exact durable operation."""
 
     def __init__(self, reason: str) -> None:
@@ -119,7 +120,7 @@ class ModalMissionControllerRejected(RuntimeError):
         super().__init__(f"Modal Mission controller rejected the call: {reason}")
 
 
-class ModalMissionControllerExecutionFailed(RuntimeError):
+class ModalMissionControllerExecutionFailed(AvailabilityError):
     """A built-in controller phase failed without leaking its raw exception."""
 
     def __init__(self, error_type: str) -> None:
