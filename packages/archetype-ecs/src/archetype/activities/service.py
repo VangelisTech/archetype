@@ -36,13 +36,15 @@ class ActivityCoordinator:
     async def admit(
         self,
         admission: ActivityAdmission,
-        execution: ActivityExecutionIdentity | None = None,
+        execution: ActivityExecutionIdentity,
     ) -> ActivitySnapshot:
+        if not isinstance(execution, ActivityExecutionIdentity):
+            raise TypeError("execution must be an ActivityExecutionIdentity")
         record = await _translate_catalog_errors(
             self._catalog.admit_activity(
                 _admission_record(admission),
-                execution_provider=execution.provider if execution is not None else None,
-                execution_operation_id=(execution.operation_id if execution is not None else None),
+                execution_provider=execution.provider,
+                execution_operation_id=execution.operation_id,
             )
         )
         return _snapshot(record)

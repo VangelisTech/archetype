@@ -10,6 +10,7 @@ import asyncio
 import pytest
 from temporalio.testing import WorkflowEnvironment
 
+from archetype.missions._extension import _temporal_request
 from archetype.missions.contracts import (
     AgentMissionConfig,
     AgentTask,
@@ -21,6 +22,7 @@ from archetype.missions.contracts import (
 )
 from archetype.missions.run_contracts import (
     MissionRunConflictError,
+    MissionRunNotFoundError,
     MissionRunRequest,
     execution_profile_identity,
 )
@@ -202,5 +204,70 @@ async def test_workflow_idempotency_reuses_same_request_and_rejects_changed_requ
             await first.signal(MissionWorkflow.request_cancel, "test complete")
             result = await first.result()
             assert result.status == "cancelled"
+            events = await first.query(MissionWorkflow.events)
+            assert "cancelling" in [event.event_type for event in events]
+    finally:
+        await environment.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_cancel_signal_projects_cancelling_before_terminal_completion() -> None:
+    class BlockingSubmitExecutor(_Executor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.submit_started = asyncio.Event()
+            self.release_submit = asyncio.Event()
+
+        async def submit(self, run):
+            self.submit_started.set()
+            await self.release_submit.wait()
+            return await super().submit(run)
+
+    environment = await WorkflowEnvironment.start_time_skipping()
+    executor = BlockingSubmitExecutor()
+    task_queue = "temporal-mission-cancelling"
+    client = MissionTemporalClient(environment.client, task_queue=task_queue)
+    try:
+        worker = create_mission_worker(environment.client, executor, task_queue=task_queue)
+        async with worker:
+            handle = await client.start(_request("cancel"), _profile())
+            await asyncio.wait_for(executor.submit_started.wait(), timeout=5)
+            await handle.signal(MissionWorkflow.request_cancel, "operator stop")
+
+            cancelling = await handle.query(MissionWorkflow.state)
+            assert cancelling is not None
+            assert cancelling.status == "cancelling"
+            events = await handle.query(MissionWorkflow.events)
+            assert [event.event_type for event in events] == [
+                "accepted",
+                "running",
+                "cancel_requested",
+                "cancelling",
+            ]
+
+            executor.release_submit.set()
+            result = await handle.result()
+            assert result.status == "cancelled"
+    finally:
+        await environment.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_unknown_temporal_run_translates_to_mission_run_not_found() -> None:
+    environment = await WorkflowEnvironment.start_time_skipping()
+    client = MissionTemporalClient(environment.client, task_queue="temporal-mission-missing")
+    handle = client.get("missing-run")
+    try:
+        with pytest.raises(MissionRunNotFoundError):
+            await _temporal_request("missing-run", handle.query(MissionWorkflow.state))
+        with pytest.raises(MissionRunNotFoundError):
+            await _temporal_request("missing-run", handle.query(MissionWorkflow.events))
+        with pytest.raises(MissionRunNotFoundError):
+            await _temporal_request(
+                "missing-run",
+                handle.signal(MissionWorkflow.request_cancel, "stop"),
+            )
     finally:
         await environment.shutdown()

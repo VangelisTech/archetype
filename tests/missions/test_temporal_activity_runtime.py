@@ -11,7 +11,7 @@ from typing import cast
 import pytest
 from temporalio.client import Client
 
-from archetype.activities import ActivityCoordinator, ActivityExecutionIdentity
+from archetype.activities import ActivityAdmission, ActivityCoordinator, ActivityExecutionIdentity
 from archetype.core.interfaces import CommittedTickReceipt
 from archetype.errors import ConflictError
 from archetype.missions.activities import (
@@ -222,6 +222,26 @@ async def test_temporal_client_rejects_existing_workflow_with_another_request() 
 
     with pytest.raises(ConflictError, match="another canonical request"):
         await client.start(command)
+
+
+async def test_activity_admission_requires_temporal_execution_identity(tmp_path) -> None:
+    physical = SqliteActivityCatalog(tmp_path / "activities.sqlite3")
+    index = ActivityCoordinator(physical)
+    try:
+        with pytest.raises(TypeError, match="execution must be an ActivityExecutionIdentity"):
+            await index.admit(
+                ActivityAdmission(
+                    activity_id=_ACTIVITY_ID,
+                    kind=AUTHOR_ACTIVITY_KIND,
+                    source=_receipt(),
+                    input_ref=_REQUEST_REF,
+                    input_digest=_REQUEST_DIGEST,
+                ),
+                None,  # type: ignore[arg-type]
+            )
+        assert not await index.has_unsettled(_WORLD_ID)
+    finally:
+        await physical.close()
 
 
 async def test_projector_retry_reuses_prebound_workflow_and_records_one_result(

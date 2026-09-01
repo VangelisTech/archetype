@@ -8,12 +8,13 @@ from __future__ import annotations
 import asyncio
 import gc
 import weakref
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+import archetype.missions._extension as missions_extension
 from archetype.core.config import StorageConfig
-from archetype.missions._extension import get_manifest
 from archetype.missions.contracts import (
     AgentMissionConfig,
     AgentTask,
@@ -471,7 +472,7 @@ async def test_mission_close_from_current_admitted_operation_rejects_without_dea
 
 @pytest.mark.asyncio
 async def test_mission_supervised_task_cannot_partially_close_its_owner(tmp_path) -> None:
-    runtime = ArchetypeRuntime(world_libraries=(get_manifest(),))
+    runtime = ArchetypeRuntime(world_libraries=(missions_extension.get_manifest(),))
     handle = Missions(
         runtime,
         "supervised-mission-self-close",
@@ -503,3 +504,19 @@ async def test_mission_supervised_task_cannot_partially_close_its_owner(tmp_path
     await handle.close()
     assert reservation.released
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_temporal_executor_treats_unbound_owner_as_recoverable() -> None:
+    class UnboundReservation:
+        def require_bound(self) -> object:
+            raise RuntimeError("runtime owner 'mission-temporal:run-1' is not bound")
+
+    class Resources:
+        def owner(self, owner: str) -> UnboundReservation:
+            assert owner == "mission-temporal:run-1"
+            return UnboundReservation()
+
+    executor = missions_extension._TemporalMissionExecutor(SimpleNamespace(resources=Resources()))
+
+    assert await executor.load_existing(SimpleNamespace(run_id="run-1")) is None

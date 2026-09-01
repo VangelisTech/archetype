@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from pydantic import BaseModel
+from temporalio.service import RPCError, RPCStatusCode
 
 from archetype.activities import ActivityCoordinator
 from archetype.commands.registry import OperationSpec
@@ -518,7 +519,12 @@ class _TemporalMissionExecutor:
             reservation = self._context.resources.owner(self._owner_id(run))
         except KeyError:
             return None
-        service = reservation.require_bound()
+        try:
+            service = reservation.require_bound()
+        except RuntimeError as exc:
+            if "is not bound" not in str(exc):
+                raise
+            return None
         recovered = await service.recover_submitted()
         return (
             None
@@ -581,7 +587,7 @@ async def _handle_get_mission_run(
     _ensure_temporal_mission_workers(context, config)
     client = _require_temporal_run_client(config)
     handle = client.get(operation.run_id)
-    state = await handle.query(MissionWorkflow.state)
+    state = await _temporal_request(operation.run_id, handle.query(MissionWorkflow.state))
     if state is None:
         raise MissionRunNotFoundError(operation.run_id)
     return await _temporal_run(handle, submission_from_json(state.submission_json))
@@ -600,8 +606,8 @@ async def _handle_cancel_mission_run(
         if operation.reason
         else ""
     )
-    await handle.signal(MissionWorkflow.request_cancel, reason)
-    state = await handle.query(MissionWorkflow.state)
+    await _temporal_request(operation.run_id, handle.signal(MissionWorkflow.request_cancel, reason))
+    state = await _temporal_request(operation.run_id, handle.query(MissionWorkflow.state))
     if state is None:
         raise MissionRunNotFoundError(operation.run_id)
     return await _temporal_run(handle, submission_from_json(state.submission_json))
@@ -614,7 +620,10 @@ async def _handle_get_mission_run_events(
 ) -> Any:
     _ensure_temporal_mission_workers(context, config)
     client = _require_temporal_run_client(config)
-    events = await client.get(operation.run_id).query(MissionWorkflow.events)
+    events = await _temporal_request(
+        operation.run_id,
+        client.get(operation.run_id).query(MissionWorkflow.events),
+    )
     return tuple(
         MissionRunEvent(
             run_id=operation.run_id,
@@ -656,12 +665,16 @@ def _require_temporal_run_client(config: MissionsExtensionConfig) -> MissionTemp
 
 
 async def _temporal_run(handle: Any, submission: MissionSubmission) -> MissionRun:
-    state = cast(MissionWorkflowState | None, await handle.query(MissionWorkflow.state))
+    run_id = str(getattr(handle, "id", "unknown"))
+    state = cast(
+        MissionWorkflowState | None,
+        await _temporal_request(run_id, handle.query(MissionWorkflow.state)),
+    )
     if state is None:
-        raise MissionRunNotFoundError(str(getattr(handle, "id", "unknown")))
+        raise MissionRunNotFoundError(run_id)
     events = cast(
         tuple[MissionWorkflowEvent, ...],
-        await handle.query(MissionWorkflow.events),
+        await _temporal_request(state.run_id, handle.query(MissionWorkflow.events)),
     )
     terminal = state.status in {"succeeded", "failed", "cancelled"}
     timestamps = {event.event_type: event.created_at_ms for event in events}
@@ -690,6 +703,15 @@ async def _temporal_run(handle: Any, submission: MissionSubmission) -> MissionRu
         updated_at_ms=(events[-1].created_at_ms if events else 0),
         interrupted_reason=state.failure_reason,
     )
+
+
+async def _temporal_request[T](run_id: str, awaitable: Awaitable[T]) -> T:
+    try:
+        return await awaitable
+    except RPCError as exc:
+        if exc.status is RPCStatusCode.NOT_FOUND:
+            raise MissionRunNotFoundError(run_id) from exc
+        raise
 
 
 async def _handle_restore_mission_sandbox(

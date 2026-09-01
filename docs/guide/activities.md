@@ -15,7 +15,6 @@ without changing tick atomicity.
 
 > A Resource is a capability available while executing a tick. Correctness
 > must not depend on its process-local lifetime.
-
 > An Activity is external work derived from committed world intent and
 > supervised by the application's durable orchestrator.
 

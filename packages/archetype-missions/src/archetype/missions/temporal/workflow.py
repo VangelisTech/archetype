@@ -126,11 +126,18 @@ class MissionWorkflow:
         state = self._state
         if state is None or state.status in {"succeeded", "failed", "cancelled"}:
             return
+        bounded_reason = reason[:_MAX_REASON_CHARS]
+        if state.cancellation_requested:
+            if state.cancellation_reason != bounded_reason:
+                self._replace(cancellation_reason=bounded_reason)
+            return
         self._replace(
+            status="cancelling",
             cancellation_requested=True,
-            cancellation_reason=reason[:_MAX_REASON_CHARS],
+            cancellation_reason=bounded_reason,
         )
         self._record("cancel_requested", "cancellation")
+        self._record("cancelling", "cancellation")
 
     @workflow.signal
     def release_execution(self) -> None:
