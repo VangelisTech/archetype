@@ -650,11 +650,11 @@ owner_paths = [
   "packages/archetype-ecs/src/archetype/runtime",
   "packages/archetype-ecs/src/archetype/wiring.py",
 ]
-source_path = "tests/integration/test_hosted_physical_runtime.py"
+source_path = "tests/physical_ai/test_hosted_episode_contract.py"
 source_command = [
   "pytest",
   "-q",
-  "tests/integration/test_hosted_physical_runtime.py",
+  "tests/physical_ai/test_hosted_episode_contract.py",
 ]
 required_extras = []
 tier = 1
@@ -662,7 +662,7 @@ applicability = ["source", "wheel"]
 timeout_seconds = 600
 prerequisites = []
 missing_prerequisite = "fail"
-semantic_oracle = { kind = "pytest", ref = "tests/integration/test_hosted_physical_runtime.py" }
+semantic_oracle = { kind = "pytest", ref = "tests/physical_ai/test_hosted_episode_contract.py" }
 contracts = [
   "physical_ai.workflow.evidence",
 ]

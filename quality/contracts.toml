@@ -685,9 +685,7 @@ section = "Committed-state sequence"
 owner = "physical_ai"
 risk = "high"
 pytest = [
-  "tests/physical_ai/test_hosted_episode_activities.py",
-  "tests/physical_ai/test_hosted_modal_activity.py",
-  "tests/integration/test_hosted_physical_runtime.py",
+  "tests/physical_ai/test_hosted_episode_contract.py",
   "tests/world/test_required_projector_fanout.py",
 ]
 static = []
@@ -702,8 +700,7 @@ section = "Hosted-episode recovery"
 owner = "physical_ai"
 risk = "high"
 pytest = [
-  "tests/physical_ai/test_hosted_episode_activities.py",
-  "tests/physical_ai/test_hosted_modal_activity.py",
+  "tests/physical_ai/test_hosted_episode_contract.py",
 ]
 static = []
 evals = []
