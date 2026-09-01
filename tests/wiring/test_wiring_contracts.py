@@ -116,6 +116,7 @@ _WORLD_PERMISSION_OVERRIDES = {
 }
 _WORLD_TOKEN_COSTS = {
     "add_components": 8,
+    "advance_world_to_tick": 50,
     "add_hook": 10,
     "add_processor": 15,
     "add_resource": 10,
@@ -365,7 +366,7 @@ async def test_builder_returns_complete_runtime_resources(tmp_path: Path) -> Non
     try:
         assert type(resources) is RuntimeResources
         assert resources.dispatcher is not None
-        assert len(_specs(resources)) == 37
+        assert len(_specs(resources)) == 38
         assert resources.world_library_manifests == ()
         assert dict(resources.world_libraries) == {}
         assert resources.close_state.value == "OPEN"
@@ -417,7 +418,7 @@ async def test_registry_contains_framework_plus_resolved_library_specs_exactly_o
     tmp_path: Path,
 ) -> None:
     expected = _expected_models()
-    assert len(expected) == 51
+    assert len(expected) == 52
     duplicate_counterfactual = (
         (_operation_name(expected[0]), expected[0]),
         (_operation_name(expected[0]), expected[0]),
@@ -433,7 +434,7 @@ async def test_registry_contains_framework_plus_resolved_library_specs_exactly_o
         world_libraries=manifests,
     ) as resources:
         actual = _inventory(resources)
-        assert len(actual) == 51
+        assert len(actual) == 52
         assert _inventory_defects(actual, expected) == (set(), set(), set(), set())
         assert set(actual) == {(_operation_name(model), model) for model in expected}
         assert tuple(manifest.name for manifest in resources.world_library_manifests) == (
@@ -662,7 +663,7 @@ async def test_wiring_is_explicit_topological_and_has_no_setter_injection(
             ("ack", (scheduler, outbox_rows)),
         ]
         assert resources._storage is audit._storage_service
-        assert len(registry.specs) == 38
+        assert len(registry.specs) == 39
         assert [
             spec.name
             for spec in registry.specs

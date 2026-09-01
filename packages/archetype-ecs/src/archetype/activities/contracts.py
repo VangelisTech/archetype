@@ -11,7 +11,6 @@ observation schema.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
 
 from archetype.core.interfaces import CommittedTickReceipt
 from archetype.errors import ConflictError
@@ -109,24 +108,18 @@ class ActivityResultRef:
 
 
 @dataclass(frozen=True, slots=True)
-class ActivityRetryGuard:
-    """Bounded proof that confirmed absence makes a fresh attempt safe.
+class ActivityExecutionIdentity:
+    """Stable external operation identity owned by a durable orchestrator."""
 
-    The owning provider adapter retains the guard's meaning.  Its durable
-    reference and digest must prove either provider-side atomic
-    idempotency/fencing or that every stale claimant is irrevocably unable to
-    start the prior operation.
-    """
-
-    ref: str
-    digest: str
+    provider: str
+    operation_id: str
 
     def __post_init__(self) -> None:
-        _require_bounded_text(self.ref, "activity retry guard ref", _MAX_REF_CHARS)
+        _require_bounded_text(self.provider, "activity provider", _MAX_PROVIDER_CHARS)
         _require_bounded_text(
-            self.digest,
-            "activity retry guard digest",
-            _MAX_DIGEST_CHARS,
+            self.operation_id,
+            "activity provider_operation_id",
+            _MAX_PROVIDER_OPERATION_CHARS,
         )
 
 
@@ -157,24 +150,14 @@ class ActivitySnapshot:
     """
 
     admission: ActivityAdmission
+    execution: ActivityExecutionIdentity | None = None
     result: ActivityResultRef | None = None
     settlement: ActivitySettlement | None = None
-    result_attempt: int | None = None
-    result_fence: int | None = None
     sequence: int | None = None
 
     def __post_init__(self) -> None:
         if self.sequence is not None and self.sequence < 1:
             raise ValueError("activity sequence must be positive")
-        result_identity = (self.result_attempt, self.result_fence)
-        if self.result is None and any(value is not None for value in result_identity):
-            raise ValueError("activity result identity cannot exist without a result")
-        if self.result is not None and any(value is None for value in result_identity):
-            raise ValueError("activity result requires attempt and fence identity")
-        if self.result_attempt is not None and self.result_attempt < 1:
-            raise ValueError("activity result_attempt must be positive")
-        if self.result_fence is not None and self.result_fence < 1:
-            raise ValueError("activity result_fence must be positive")
         if self.settlement is not None and self.result is None:
             raise ValueError("an activity cannot be settled before it has a result")
         if (
@@ -191,101 +174,12 @@ class ActivitySnapshot:
         return self.result is not None and self.settlement is None
 
 
-@dataclass(frozen=True, slots=True)
-class ActivityClaim:
-    """One fenced worker claim over an activity.
-
-    An acquired claim with ``reconciliation_required`` authorizes only
-    provider-specific reconciliation and result recording.  It never
-    authorizes invocation of a new provider operation.
-    """
-
-    snapshot: ActivitySnapshot
-    acquired: bool
-    attempt: int | None = None
-    fence: int | None = None
-    owner: str | None = None
-    lease_expires_at: float | None = None
-    provider: str | None = None
-    provider_operation_id: str | None = None
-    retry_guard: ActivityRetryGuard | None = None
-    reconciles_attempt: int | None = None
-    reconciles_provider: str | None = None
-    reconciles_provider_operation_id: str | None = None
-
-    def __post_init__(self) -> None:
-        claim_values = (
-            self.attempt,
-            self.fence,
-            self.owner,
-            self.lease_expires_at,
-        )
-        if self.acquired and any(value is None for value in claim_values):
-            raise ValueError("an acquired activity claim requires complete lease identity")
-        if self.attempt is not None and self.attempt < 1:
-            raise ValueError("activity claim attempt must be positive")
-        if self.fence is not None and self.fence < 1:
-            raise ValueError("activity claim fence must be positive")
-        if self.lease_expires_at is not None and not isfinite(self.lease_expires_at):
-            raise ValueError("activity claim lease_expires_at must be finite")
-        if self.owner is not None:
-            _require_bounded_text(self.owner, "activity claim owner", _MAX_ID_CHARS)
-        if self.provider is not None:
-            _require_bounded_text(
-                self.provider,
-                "activity claim provider",
-                _MAX_PROVIDER_CHARS,
-            )
-        if self.provider_operation_id is not None:
-            _require_bounded_text(
-                self.provider_operation_id,
-                "activity claim provider_operation_id",
-                _MAX_PROVIDER_OPERATION_CHARS,
-            )
-        if self.retry_guard is not None and not isinstance(
-            self.retry_guard,
-            ActivityRetryGuard,
-        ):
-            raise TypeError("activity claim retry_guard must be an ActivityRetryGuard")
-        reconciliation_values = (
-            self.reconciles_attempt,
-            self.reconciles_provider,
-            self.reconciles_provider_operation_id,
-        )
-        if any(value is not None for value in reconciliation_values) and any(
-            value is None for value in reconciliation_values
-        ):
-            raise ValueError("activity reconciliation identity must be complete")
-
-    @property
-    def world_id(self) -> str:
-        return self.snapshot.admission.source.world_id
-
-    @property
-    def activity_id(self) -> str:
-        return self.snapshot.admission.activity_id
-
-    @property
-    def kind(self) -> str:
-        return self.snapshot.admission.kind
-
-    @property
-    def reconciliation_required(self) -> bool:
-        """Whether provider-specific reconciliation is required before settlement."""
-
-        return self.reconciles_provider_operation_id is not None
-
-
 class ActivityConflictError(ConflictError):
     """A logical activity identity or immutable fact conflicts."""
 
 
 class ActivityNotFoundError(KeyError):
     """No activity exists for the supplied world-and-kind-scoped identity."""
-
-
-class ActivityClaimError(ConflictError):
-    """A claim is stale or does not authorize the requested operation."""
 
 
 def _identity_receipt(receipt: CommittedTickReceipt) -> CommittedTickReceipt:
@@ -304,12 +198,10 @@ def _identity_receipt(receipt: CommittedTickReceipt) -> CommittedTickReceipt:
 
 __all__ = [
     "ActivityAdmission",
-    "ActivityClaim",
-    "ActivityClaimError",
     "ActivityConflictError",
+    "ActivityExecutionIdentity",
     "ActivityNotFoundError",
     "ActivityResultRef",
-    "ActivityRetryGuard",
     "ActivitySettlement",
     "ActivitySnapshot",
 ]

@@ -38,6 +38,7 @@ from archetype.missions.config import installed_execution_profiles
 from archetype.missions.contracts import (
     AgentTask,
     CommandValidator,
+    CriticPolicy,
     MissionSubmission,
 )
 from archetype.missions.execution_profiles import (
@@ -575,6 +576,11 @@ def _submission_from_request(
                 depends_on=tuple(task.depends_on),
                 max_dispatches=task.max_dispatches,
                 publication_policy=profile.publication_policy,
+                critic_policy=CriticPolicy(
+                    driver=profile.critic_driver,
+                    model=profile.model,
+                    timeout_seconds=profile.timeout_seconds,
+                ),
             )
         )
     return MissionSubmission(

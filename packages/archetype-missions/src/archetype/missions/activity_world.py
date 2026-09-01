@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from typing import cast
 
 from daft import DataFrame, Expression, col
@@ -19,7 +19,6 @@ from archetype.missions.activities import (
     AuthorActivityEntityFact,
     AuthorActivityResultRef,
     DurableAuthorExecutionObservation,
-    MissionAuthorExecutor,
     complete_author_activity_fact_bundle,
     complete_author_activity_fact_count,
 )
@@ -79,15 +78,8 @@ from archetype.world.query import (
     pin_query_snapshot_for_receipt,
     query_components,
 )
-from archetype.world.simulation import RequiredProjector
 
-from .author_activity import (
-    CommittedMissionSnapshot,
-    MissionAuthorActivityCatalog,
-    MissionAuthorActivityProjector,
-    MissionAuthorActivityWorker,
-    MissionAuthorValueStore,
-)
+from .author_activity import CommittedMissionSnapshot
 
 _MISSION_QUERY_GROUPS: tuple[tuple[type[Component], ...], ...] = (
     (
@@ -443,75 +435,7 @@ class WorldMissionAuthorObservationStager:
             raise ValueError("author delivery result does not match its request")
 
 
-class MissionAuthorActivityBinding:
-    """Bind one exact world to the Activity-backed author choreography.
-
-    Runtime composition installs this binding for supported Modal Missions.
-    Maintainer hosts may also pass ``required_projector_for`` and
-    ``has_unsettled_work`` into world lifecycle composition explicitly. The
-    worker always runs outside tick locks.
-    """
-
-    def __init__(
-        self,
-        *,
-        world_id: str,
-        owner: str,
-        reader: StorageMissionCommittedIntentReader,
-        catalog: MissionAuthorActivityCatalog,
-        values: MissionAuthorValueStore,
-        executor: MissionAuthorExecutor,
-        stager: WorldMissionAuthorObservationStager,
-        close: Callable[[], Awaitable[None]] | None = None,
-    ) -> None:
-        if not world_id.strip():
-            raise ValueError("mission author binding requires a world identity")
-        self.world_id = world_id
-        self.projector = MissionAuthorActivityProjector(
-            reader=reader,
-            catalog=catalog,
-            values=values,
-        )
-        self.required_projector = RequiredProjector(
-            consumer_name=self.projector.consumer_name,
-            project=self.projector.project,
-        )
-        self.worker = MissionAuthorActivityWorker(
-            world_id=world_id,
-            owner=owner,
-            catalog=catalog,
-            values=values,
-            executor=executor,
-            stager=stager,
-        )
-        self._catalog = catalog
-        self._close = close
-        self._closed = False
-
-    def required_projector_for(self, world_id: str) -> RequiredProjector | None:
-        """Bind the sole projector slot only for this explicitly selected world."""
-
-        return self.required_projector if str(world_id) == self.world_id else None
-
-    async def has_unsettled_work(self, world_id: str) -> bool:
-        """Report only this binding's exact world to the lifecycle gate."""
-
-        if str(world_id) != self.world_id:
-            return False
-        return await self._catalog.has_unsettled_work(self.world_id)
-
-    async def aclose(self) -> None:
-        """Release the concrete catalog only after its world has closed."""
-
-        if self._closed:
-            return
-        if self._close is not None:
-            await self._close()
-        self._closed = True
-
-
 __all__ = [
-    "MissionAuthorActivityBinding",
     "StorageMissionCommittedIntentReader",
     "WorldMissionAuthorObservationStager",
 ]

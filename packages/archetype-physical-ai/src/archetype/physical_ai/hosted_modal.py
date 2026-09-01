@@ -57,6 +57,7 @@ _OPERATION = re.compile(r"^physical-episode:[0-9a-f]{64}$")
 _PAYLOAD_KINDS = ("request", "trajectory", "episode-results", "manifest")
 _RESULT_SCHEMA_VERSION = 1
 _START_SCHEMA_VERSION = 1
+_CALL_SCHEMA_VERSION = 1
 _RESULT_ROOT = "archetype-physical-ai-hosted-v1"
 
 
@@ -98,6 +99,10 @@ def _start_key(operation_id: str) -> str:
 
 def _result_key(operation_id: str) -> str:
     return f"result:{_operation_key(operation_id)}"
+
+
+def _call_key(operation_id: str) -> str:
+    return f"call:{_operation_key(operation_id)}"
 
 
 def _blob_path(kind: str, digest: str) -> str:
@@ -230,6 +235,12 @@ class ModalHostedEpisodeRuntime(Protocol):
 
     async def wait(self, call: object) -> object: ...
 
+    def call_id(self, call: object) -> str: ...
+
+    async def reattach(self, call_id: str) -> object: ...
+
+    async def cancel(self, call: object) -> None: ...
+
     async def read_blob(self, path: str) -> bytes: ...
 
 
@@ -282,10 +293,19 @@ class ModalHostedEpisodeProvider:
                 "retry guard does not bind this provider namespace and request",
             )
 
-        recovered = await self._recover_if_complete(
-            operation_id=operation_id,
-            request_ipc=request_ipc,
-        )
+        try:
+            recovered = await self._recover_if_complete(
+                operation_id=operation_id,
+                request_ipc=request_ipc,
+            )
+        except ModalHostedEpisodeProviderUnknown:
+            if await self._runtime.get(_call_key(operation_id)) is None:
+                raise
+            return await self._resume_call(
+                operation_id=operation_id,
+                request_ipc=request_ipc,
+                request_digest=request_digest,
+            )
         if recovered is not None:
             return recovered
 
@@ -321,9 +341,10 @@ class ModalHostedEpisodeProvider:
             )
             if recovered is not None:
                 return recovered
-            raise ModalHostedEpisodeProviderUnknown(
-                operation_id,
-                "permanent start exists without a complete result index",
+            return await self._resume_call(
+                operation_id=operation_id,
+                request_ipc=request_ipc,
+                request_digest=request_digest,
             )
 
         try:
@@ -332,6 +353,19 @@ class ModalHostedEpisodeProvider:
                 request_ipc=request_ipc,
                 namespace_digest=self._config.namespace_digest,
             )
+            call_id = self._runtime.call_id(call)
+            call_record = self._call_record(
+                operation_id=operation_id,
+                request_digest=request_digest,
+                call_id=call_id,
+            )
+            inserted = await self._runtime.put_if_absent(_call_key(operation_id), call_record)
+            if not inserted:
+                stored = await self._runtime.get(_call_key(operation_id))
+                if stored != call_record:
+                    raise ModalHostedEpisodeProviderUnknown(
+                        operation_id, "durable Modal call identity conflicts"
+                    )
             await self._runtime.wait(call)
         except asyncio.CancelledError:
             raise
@@ -357,6 +391,79 @@ class ModalHostedEpisodeProvider:
                 "remote completion returned without a complete result index",
             )
         return recovered
+
+    async def _resume_call(
+        self,
+        *,
+        operation_id: str,
+        request_ipc: bytes,
+        request_digest: str,
+    ) -> HostedEpisodeProviderResult:
+        raw = await self._runtime.get(_call_key(operation_id))
+        call_id = self._parse_call_record(
+            raw,
+            operation_id=operation_id,
+            request_digest=request_digest,
+        )
+        if call_id is None:
+            raise ModalHostedEpisodeProviderUnknown(
+                operation_id,
+                "permanent start exists without a durable Modal call identity",
+            )
+        try:
+            call = await self._runtime.reattach(call_id)
+            await self._runtime.wait(call)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            recovered = await self._recover_if_complete(
+                operation_id=operation_id, request_ipc=request_ipc
+            )
+            if recovered is not None:
+                return recovered
+            raise ModalHostedEpisodeProviderUnknown(
+                operation_id,
+                f"reattached execution ended without provider result ({type(exc).__name__[:128]})",
+            ) from exc
+        recovered = await self._recover_if_complete(
+            operation_id=operation_id, request_ipc=request_ipc
+        )
+        if recovered is None:
+            raise ModalHostedEpisodeProviderUnknown(
+                operation_id, "reattached execution completed without a result index"
+            )
+        return recovered
+
+    def _call_record(
+        self, *, operation_id: str, request_digest: str, call_id: str
+    ) -> dict[str, str | int]:
+        if not isinstance(call_id, str) or not call_id.strip() or len(call_id) > 1024:
+            raise ValueError("Modal hosted function call identity is invalid")
+        return {
+            "call_id": call_id,
+            "namespace_digest": self._config.namespace_digest,
+            "operation_id": operation_id,
+            "protocol_epoch": self._config.protocol_epoch,
+            "request_digest": request_digest,
+            "schema_version": _CALL_SCHEMA_VERSION,
+        }
+
+    def _parse_call_record(
+        self, raw: object, *, operation_id: str, request_digest: str
+    ) -> str | None:
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise ModalHostedEpisodeProviderUnknown(operation_id, "call record is invalid")
+        record = cast(dict[str, object], raw)
+        expected = self._call_record(
+            operation_id=operation_id,
+            request_digest=request_digest,
+            call_id=str(record.get("call_id", "")),
+        )
+        if record != expected:
+            raise ModalHostedEpisodeProviderUnknown(operation_id, "call record conflicts")
+        return cast(str, record["call_id"])
 
     async def reconcile(
         self,
@@ -423,6 +530,33 @@ class ModalHostedEpisodeProvider:
             operation_id=operation_id,
             request_ipc=request_ipc,
         )
+
+    async def cancel(self, *, operation_id: str, request_ipc: bytes) -> None:
+        """Cancel only the exact durable Modal call bound to this request."""
+
+        request_digest = self._validate_request(operation_id, request_ipc)
+        raw_start = await self._runtime.get(_start_key(operation_id))
+        if raw_start is None:
+            return
+        if not self._start_matches(
+            raw_start,
+            operation_id=operation_id,
+            request_digest=request_digest,
+        ):
+            raise ModalHostedEpisodeProviderUnknown(operation_id, "start marker conflicts")
+        raw_call = await self._runtime.get(_call_key(operation_id))
+        call_id = self._parse_call_record(
+            raw_call,
+            operation_id=operation_id,
+            request_digest=request_digest,
+        )
+        if call_id is None:
+            raise ModalHostedEpisodeProviderUnknown(
+                operation_id,
+                "cannot cancel a started operation without an exact durable call identity",
+            )
+        call = await self._runtime.reattach(call_id)
+        await self._runtime.cancel(call)
 
     async def _recover_if_complete(
         self,
@@ -654,6 +788,23 @@ class ModalNamedHostedEpisodeRuntime:
             raise TypeError("Modal hosted function call has no async result boundary")
         self._last_completion = await get.aio(timeout=float(self._config.call_timeout_seconds))
         return self._last_completion
+
+    def call_id(self, call: object) -> str:
+        value = getattr(call, "object_id", None)
+        if not isinstance(value, str) or not value:
+            raise TypeError("Modal hosted function call has no durable object identity")
+        return value
+
+    async def reattach(self, call_id: str) -> object:
+        await self._objects()
+        modal = _load_modal()
+        return modal.FunctionCall.from_id(call_id, client=self._client)
+
+    async def cancel(self, call: object) -> None:
+        cancel = getattr(call, "cancel", None)
+        if cancel is None or not hasattr(cancel, "aio"):
+            raise TypeError("Modal hosted function call has no async cancellation boundary")
+        await cancel.aio()
 
     async def read_blob(self, path: str) -> bytes:
         if not self._valid_blob_path(path):

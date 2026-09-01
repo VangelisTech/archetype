@@ -197,6 +197,7 @@ class iWorldLifecycle(Protocol):
     async def fork_world(
         self,
         source_world_id: str | UUID,
+        destination_world_id: str | UUID | None = None,
         name: str | None = None,
         storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,

@@ -25,6 +25,7 @@ from archetype.missions.sandboxes import (
     ModalSandboxConfig,
     ModalSandboxOperationCapability,
     ModalSandboxOperationIdentity,
+    ModalSandboxOperationResourceCleanup,
     ModalSandboxOperationRunning,
     ModalSandboxOperationUnknown,
     ModalSandboxSession,
@@ -682,6 +683,69 @@ async def test_named_modal_operation_reports_running_without_sharing_execution_h
 
 
 @pytest.mark.asyncio
+async def test_named_modal_operation_persists_intent_and_each_resource_before_execution(
+    modal_operation,
+) -> None:
+    registry, backend, _capability, spec = modal_operation
+    events: list[tuple[ModalSandboxOperationIdentity, str, str, str]] = []
+
+    async def observe(
+        identity: ModalSandboxOperationIdentity,
+        cohort_id: str,
+        role: str,
+        object_id: str,
+    ) -> None:
+        events.append((identity, cohort_id, role, object_id))
+
+    capability = ModalSandboxOperationCapability(
+        ModalSandboxBackend(backend.config),
+        resource_observer=observe,
+    )
+    operation_id = "missions.author:world-a:dispatch-resource-intent"
+    identity = capability.identity(operation_id)
+
+    _barrier, started = await _start_once(capability, spec, operation_id)
+    cleanup = started.session.operation_cleanup
+
+    assert events == [
+        (identity, cleanup.cohort_id, "intent", ""),
+        (identity, cleanup.cohort_id, "auth", cleanup.auth_sandbox_id),
+        (identity, cleanup.cohort_id, "mission", cleanup.mission_sandbox_id),
+    ]
+    await started.session.close()
+
+
+@pytest.mark.asyncio
+async def test_resource_recording_failure_closes_every_created_resource(
+    modal_operation,
+) -> None:
+    registry, backend, _capability, spec = modal_operation
+
+    async def reject_mission(
+        _identity: ModalSandboxOperationIdentity,
+        _cohort_id: str,
+        role: str,
+        _object_id: str,
+    ) -> None:
+        if role == "mission":
+            raise RuntimeError("durable resource write failed")
+
+    capability = ModalSandboxOperationCapability(
+        ModalSandboxBackend(backend.config),
+        resource_observer=reject_mission,
+    )
+
+    with pytest.raises(RuntimeError, match="durable resource write failed"):
+        await _start_once(
+            capability,
+            spec,
+            "missions.author:world-a:dispatch-resource-write-failure",
+        )
+
+    assert registry.resources == {}
+
+
+@pytest.mark.asyncio
 async def test_completed_operation_cleanup_reopens_only_exact_durable_cohort(
     modal_operation,
 ) -> None:
@@ -694,6 +758,81 @@ async def test_completed_operation_cleanup_reopens_only_exact_durable_cohort(
     await restarted.cleanup_completed(cleanup=cleanup, spec=spec)
 
     assert registry.resources == {}
+
+
+@pytest.mark.asyncio
+async def test_resource_intent_cleanup_recovers_unacknowledged_partial_creation(
+    modal_operation,
+) -> None:
+    registry, _backend, capability, spec = modal_operation
+    operation_id = "missions.author:world-a:dispatch-partial-cleanup"
+    identity = capability.identity(operation_id)
+    cohort_id = "cohort-v1:00000000000000000000000000000009"
+    auth = _remote_sandbox(
+        registry,
+        identity,
+        role="auth",
+        object_id="sb-recorded-auth",
+        cohort_id=cohort_id,
+    )
+    mission = _remote_sandbox(
+        registry,
+        identity,
+        role="mission",
+        object_id="sb-create-response-lost",
+        cohort_id=cohort_id,
+    )
+    registry.resources[auth.name] = auth
+    registry.resources[mission.name] = mission
+
+    await capability.cleanup_resources(
+        cleanup=ModalSandboxOperationResourceCleanup(
+            identity=identity,
+            cohort_id=cohort_id,
+            auth_sandbox_id=auth.object_id,
+        ),
+        spec=spec,
+    )
+    await capability.cleanup_resources(
+        cleanup=ModalSandboxOperationResourceCleanup(
+            identity=identity,
+            cohort_id=cohort_id,
+            auth_sandbox_id=auth.object_id,
+        ),
+        spec=spec,
+    )
+
+    assert registry.resources == {}
+    assert auth.terminated == mission.terminated == 1
+
+
+@pytest.mark.asyncio
+async def test_resource_intent_cleanup_rejects_a_different_unrecorded_cohort(
+    modal_operation,
+) -> None:
+    registry, _backend, capability, spec = modal_operation
+    operation_id = "missions.author:world-a:dispatch-partial-conflict"
+    identity = capability.identity(operation_id)
+    intended_cohort = "cohort-v1:00000000000000000000000000000009"
+    newer = _remote_sandbox(
+        registry,
+        identity,
+        role="mission",
+        object_id="sb-newer-mission",
+        cohort_id="cohort-v1:00000000000000000000000000000010",
+    )
+    registry.resources[newer.name] = newer
+
+    with pytest.raises(RuntimeError, match="durable result"):
+        await capability.cleanup_resources(
+            cleanup=ModalSandboxOperationResourceCleanup(
+                identity=identity,
+                cohort_id=intended_cohort,
+            ),
+            spec=spec,
+        )
+
+    assert newer.terminated == 0
 
 
 @pytest.mark.asyncio

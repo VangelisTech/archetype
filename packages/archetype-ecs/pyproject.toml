@@ -45,6 +45,7 @@ dependencies = [
 archetype = "archetype.cli.main:app"
 
 [project.optional-dependencies]
+temporal = ["temporalio==1.27.2"]
 missions = ["archetype-missions>=0.6,<0.7"]
 physical-ai = ["archetype-physical-ai>=0.6,<0.7"]
 research = ["archetype-research>=0.6,<0.7"]

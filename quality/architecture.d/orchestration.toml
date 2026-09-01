@@ -1,0 +1,9 @@
+# Architecture policy fragment: orchestration.
+# Merged into quality/architecture.toml by scripts/check_architecture.py;
+# fragments may declare only rule/exception arrays, never scalar policy.
+
+[[top_level_family_rule]]
+name = "orchestration-infrastructure-family"
+consumer = "archetype.orchestration"
+allowed_families = []
+

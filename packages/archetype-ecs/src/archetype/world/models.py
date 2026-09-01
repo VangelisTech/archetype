@@ -344,6 +344,7 @@ class CreateWorld(WorldOperation):
 class ForkWorld(WorldOperation):
     operation: Literal["fork_world"] = "fork_world"
     source_world_id: str | JsonUUID
+    destination_world_id: str | JsonUUID | None = None
     name: str | None = None
     storage_config: StorageConfig | None = None
     cache_config: CacheConfig | None = None
@@ -390,6 +391,16 @@ class Step(WorldOperation):
 class Run(WorldOperation):
     operation: Literal["run"] = "run"
     world_id: str | JsonUUID
+    run_config: RunConfig = Field(default_factory=RunConfig)
+    input_kwargs: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdvanceWorldToTick(WorldOperation):
+    """Idempotently advance a world until its next tick equals ``target_tick``."""
+
+    operation: Literal["advance_world_to_tick"] = "advance_world_to_tick"
+    world_id: str | JsonUUID
+    target_tick: int = Field(ge=0)
     run_config: RunConfig = Field(default_factory=RunConfig)
     input_kwargs: dict[str, Any] = Field(default_factory=dict)
 
@@ -519,6 +530,7 @@ WORLD_OPERATION_TYPES = (
     ResumeWorld,
     Step,
     Run,
+    AdvanceWorldToTick,
     RunEpisode,
     RunRollout,
     QueryComponents,

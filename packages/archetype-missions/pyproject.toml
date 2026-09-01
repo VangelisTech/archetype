@@ -17,7 +17,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "archetype-ecs>=0.6,<0.7",
+    "archetype-ecs[temporal]>=0.6,<0.7",
     "daft>=0.7.19",
     "pydantic>=2.0",
     "fastapi>=0.110",

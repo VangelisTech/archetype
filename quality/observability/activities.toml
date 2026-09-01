@@ -4,23 +4,19 @@ family = "activities"
 
 [[disposition]]
 operations = [
-  "interfaces.iActivityCoordinator.admit",
-  "interfaces.iActivityCoordinator.bind_provider_operation",
-  "interfaces.iActivityCoordinator.claim",
-  "interfaces.iActivityCoordinator.confirm_provider_operation_absent",
-  "interfaces.iActivityCoordinator.get",
-  "interfaces.iActivityCoordinator.has_unsettled",
-  "interfaces.iActivityCoordinator.pending",
-  "interfaces.iActivityCoordinator.pending_results",
-  "interfaces.iActivityCoordinator.record_result",
-  "interfaces.iActivityCoordinator.release",
-  "interfaces.iActivityCoordinator.settle_observation",
+  "service._ActivityResultIndex.pending_results",
+  "interfaces.iActivitySettlementIndex.admit",
+  "interfaces.iActivitySettlementIndex.get",
+  "interfaces.iActivitySettlementIndex.has_unsettled",
+  "interfaces.iActivitySettlementIndex.pending_results",
+  "interfaces.iActivitySettlementIndex.record_orchestrated_result",
+  "interfaces.iActivitySettlementIndex.settle_observation",
 ]
 signals = ["none"]
-outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
-authority = "The local activity catalog's immutable admission, fenced attempt, provider-operation binding, bounded result reference, and exact observation settlement remain authoritative."
+outcomes = ["propagated_failure", "handled_outcome"]
+authority = "Temporal owns orchestration and recovery; the local index retains immutable admission, external execution identity, bounded result reference, and exact ECS observation settlement."
 evidence = [
   "docs/guide/activities.md",
-  "tests/activities/test_activity_catalog_contracts.py",
+  "tests/integration/test_temporal_activity_world.py",
 ]
-rationale = "The coordinator emits no second authority signal; durable control facts and typed return values expose every admitted, ambiguous, recovered, and settled transition."
+rationale = "The settlement index emits no second orchestration authority; typed facts expose admission, result delivery, and settlement while Temporal owns retries and worker recovery."

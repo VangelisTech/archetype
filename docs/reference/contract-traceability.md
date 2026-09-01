@@ -19,7 +19,7 @@ machine authority; this page is its review surface.
 | `migration.tables.deterministic_evidence` | `storage` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 4. Data-plane transfer | pytest: 2 | `pr`, `main`, `release` |
 | `migration.artifacts.occurrence_relocation` | `artifacts` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 5. Artifact relocation without re-ingestion | pytest: 1 | `pr`, `main`, `release` |
 | `migration.control.exact_activation` | `storage` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 6. Control import and writer fencing | pytest: 1 | `pr`, `main`, `release` |
-| `migration.activities.empty_only` | `migration` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 3. Preflight, quiescence, and destination emptiness | pytest: 2 | `pr`, `main`, `release` |
+| `migration.activities.empty_only` | `migration` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 3. Preflight, quiescence, and destination emptiness | pytest: 1 | `pr`, `main`, `release` |
 | `architecture.protocols.complete` | `app` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 8. Protocol policy and wiring | pytest: 1; static: 1; eval: 1 | `pr`, `main`, `release` |
 | `storage.execution.single_authority` | `storage` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — Storage execution authority | pytest: 3; static: 2 | `pr`, `main`, `release` |
 | `runtime.trust.actor_free` | `runtime` | high | [docs/guide/runtime.md](../guide/runtime.md) — R3 — Runtime is actor-free | pytest: 1; static: 1; eval: 1 | `pr`, `main`, `release` |
@@ -33,7 +33,7 @@ machine authority; this page is its review surface.
 | `world.tick.atomic_visibility` | `world` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 10. Supported durability profile | pytest: 1; eval: 2 | `pr`, `main`, `release` |
 | `world.writer.fenced` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 6. `resume_world` (fenced mutable cold resume) | pytest: 2; eval: 3 | `pr`, `main`, `release` |
 | `activities.durable_control` | `activities` | high | [docs/guide/activities.md](../guide/activities.md) — 2. The committed-state protocol | pytest: 1; static: 2 | `pr`, `main`, `release` |
-| `missions.activity.recovery` | `missions` | high | [docs/missions/recovery.md](../missions/recovery.md) — Mission Activity recovery | pytest: 5 | `pr`, `main`, `release` |
+| `missions.temporal.recovery` | `missions` | high | [docs/missions/recovery.md](../missions/recovery.md) — Mission Activity recovery | pytest: 4 | `pr`, `main`, `release` |
 | `world.lifecycle.idempotent` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 2. World lifecycle operations | pytest: 2; eval: 2 | `pr`, `main`, `release` |
 | `world.fork.lineage` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 4. `fork_world` | pytest: 2; eval: 1 | `pr`, `main`, `release` |
 | `world.run_identity.cold_resume` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 6. `resume_world` (fenced mutable cold resume) | pytest: 2; eval: 1 | `pr`, `main`, `release` |
@@ -53,8 +53,8 @@ machine authority; this page is its review surface.
 | `evaluation.ontology.separated` | `evaluation` | medium | [docs/guide/dataset-eval-ontology.md](../guide/dataset-eval-ontology.md) — 1. The contract in one view | pytest: 1; eval: 2 | `pr`, `main`, `release` |
 | `audit.append_only.evidence` | `commands` | high | [docs/guide/audit-log.md](../guide/audit-log.md) — 2. Append-only invariant | pytest: 1; eval: 1 | `pr`, `main`, `release` |
 | `simulation.episode.termination` | `world` | medium | [docs/guide/specification.md](../guide/specification.md) — Run contract | pytest: 1; eval: 3 | `pr`, `main`, `release` |
-| `physical_ai.workflow.evidence` | `physical_ai` | high | [docs/guide/physical-ai.md](../guide/physical-ai.md) — Committed-state sequence | pytest: 4 | `pr`, `main`, `release` |
-| `physical_ai.activity.recovery` | `physical_ai` | high | [docs/guide/physical-ai.md](../guide/physical-ai.md) — Hosted-episode recovery | pytest: 2 | `pr`, `main`, `release` |
+| `physical_ai.workflow.evidence` | `physical_ai` | high | [docs/guide/physical-ai.md](../guide/physical-ai.md) — Hosted episode migration | pytest: 2 | `pr`, `main`, `release` |
+| `physical_ai.activity.recovery` | `physical_ai` | high | [docs/guide/physical-ai.md](../guide/physical-ai.md) — Hosted episode migration | pytest: 1 | `pr`, `main`, `release` |
 | `core.ecs.data_model` | `core` | high | [docs/guide/specification.md](../guide/specification.md) — Data Model Contracts | pytest: 2; eval: 2; benchmark: 1 | `pr`, `main`, `release` |
 | `core.processors.execution` | `core` | high | [docs/guide/specification.md](../guide/specification.md) — System and Processor Contracts | pytest: 3; eval: 1 | `pr`, `main`, `release` |
 | `core.hooks.lifecycle` | `core` | medium | [docs/guide/specification.md](../guide/specification.md) — Lifecycle Hook Contracts | pytest: 3 | `pr`, `main`, `release` |
@@ -68,7 +68,7 @@ machine authority; this page is its review surface.
 | `missions.mcp.trusted_host_adapter` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 11. Mission MCP server | pytest: 3 | `pr`, `main`, `release` |
 | `missions.agent_v1.public_authoring` | `missions` | medium | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 2. Public authoring surface | pytest: 2 | `pr`, `main`, `release` |
 | `missions.agent_v1.validator_gated` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 4. State and transition protocol | pytest: 7; static: 2 | `pr`, `main`, `release` |
-| `missions.agent_v1.exact_head_critic` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — Independent exact-head critic | pytest: 4 | `pr`, `main`, `release` |
+| `missions.agent_v1.exact_head_critic` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — Independent exact-head critic | pytest: 3 | `pr`, `main`, `release` |
 | `missions.sandbox.cleanup_ownership` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Sandbox and validator protocol | pytest: 2 | `pr`, `main`, `release` |
 | `missions.control.authenticated_profiles` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — Authenticated execution profiles | pytest: 3; static: 1 | `pr`, `main`, `release` |
 | `security.redaction.pre_durability` | `redaction` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 9. Security boundary | pytest: 2; eval: 1 | `pr`, `main`, `release` |

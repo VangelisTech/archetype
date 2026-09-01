@@ -10,6 +10,7 @@ allowed_families = [
   "archetype.artifacts",
   "archetype.evaluation",
   "archetype.graph",
+  "archetype.orchestration",
   "archetype.projections",
   "archetype.redaction",
   "archetype.storage",

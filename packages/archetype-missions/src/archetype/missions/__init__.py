@@ -33,7 +33,10 @@ from archetype.missions.components import (
     TaskWorkspace,
     ValidationResult,
 )
-from archetype.missions.config import MissionsExtensionConfig, installed_execution_profiles
+from archetype.missions.config import (
+    MissionsExtensionConfig,
+    installed_execution_profiles,
+)
 from archetype.missions.contracts import (
     AgentMissionConfig,
     AgentTask,

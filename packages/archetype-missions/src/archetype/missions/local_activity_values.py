@@ -12,9 +12,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Literal, overload
-
-from pydantic import TypeAdapter
+from typing import Literal, overload
 
 from archetype.missions.activities import (
     AuthorActivityRequestRef,
@@ -27,8 +25,8 @@ from archetype.missions.author_activity import MissionAuthorRedactor
 from archetype.missions.coding_agents.contracts import TaskDispatchRequest
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
-_REF_PREFIX = "mission-author+json:sha256:"
-_REQUEST_ADAPTER = TypeAdapter(TaskDispatchRequest)
+AUTHOR_ACTIVITY_VALUE_REF_PREFIX = "mission-author+json:sha256:"
+_REF_PREFIX = AUTHOR_ACTIVITY_VALUE_REF_PREFIX
 
 
 class LocalMissionAuthorValueStore:
@@ -46,17 +44,24 @@ class LocalMissionAuthorValueStore:
     async def put_request(self, request: TaskDispatchRequest) -> AuthorActivityRequestRef:
         durable = self._codec.sanitize_request(request)
         value = await asyncio.to_thread(
-            self._put,
+            self._put_encoded,
             "request",
-            _REQUEST_ADAPTER.dump_python(durable, mode="json"),
+            self._codec.encode_request(durable),
         )
         if not isinstance(value, AuthorActivityRequestRef):
             raise AssertionError("request persistence returned a result reference")
         return value
 
     async def get_request(self, value: AuthorActivityRequestRef) -> TaskDispatchRequest:
-        payload = await asyncio.to_thread(self._read, value, "request")
-        return _REQUEST_ADAPTER.validate_python(payload)
+        encoded = await asyncio.to_thread(self._read_encoded, value, "request")
+        return self._codec.decode_request(encoded)
+
+    async def get_encoded_request(self, value: AuthorActivityRequestRef) -> bytes:
+        """Read exact canonical request bytes for provider orchestration."""
+
+        encoded = await asyncio.to_thread(self._read_encoded, value, "request")
+        self._codec.decode_request(encoded)
+        return encoded
 
     async def put_result(
         self,
@@ -75,44 +80,27 @@ class LocalMissionAuthorValueStore:
         encoded = await asyncio.to_thread(self._read_encoded, value, "result")
         return self._codec.decode_observation(encoded)
 
+    async def put_encoded_result(
+        self,
+        encoded: bytes,
+        *,
+        digest: str,
+    ) -> AuthorActivityResultRef:
+        """Revalidate and persist one controller-produced canonical result."""
+
+        if hashlib.sha256(encoded).hexdigest() != digest:
+            raise ValueError("author encoded result does not match its provider digest")
+        self._codec.decode_observation(encoded)
+        value = await asyncio.to_thread(self._put_encoded, "result", encoded)
+        if not isinstance(value, AuthorActivityResultRef):
+            raise AssertionError("encoded result persistence returned a request reference")
+        return value
+
     def _put_result(
         self,
         value: DurableAuthorExecutionObservation,
     ) -> AuthorActivityResultRef:
         return self._put_encoded("result", self._codec.encode_observation(value))
-
-    @overload
-    def _put(
-        self,
-        kind: Literal["request"],
-        value: Any,
-    ) -> AuthorActivityRequestRef: ...
-
-    @overload
-    def _put(
-        self,
-        kind: Literal["result"],
-        value: Any,
-    ) -> AuthorActivityResultRef: ...
-
-    def _put(
-        self,
-        kind: Literal["request", "result"],
-        value: Any,
-    ) -> AuthorActivityRequestRef | AuthorActivityResultRef:
-        return self._put_encoded(
-            kind,
-            json.dumps(
-                {
-                    "kind": kind,
-                    "schema_version": 1,
-                    "value": value,
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ).encode(),
-        )
 
     @overload
     def _put_encoded(
@@ -142,11 +130,7 @@ class LocalMissionAuthorValueStore:
         ):
             raise ValueError("author activity value has an incompatible envelope")
         canonical = json.dumps(
-            {
-                "kind": kind,
-                "schema_version": 1,
-                "value": envelope["value"],
-            },
+            envelope,
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
@@ -190,14 +174,6 @@ class LocalMissionAuthorValueStore:
             size_bytes=len(encoded),
         )
 
-    def _read(
-        self,
-        value: AuthorActivityRequestRef | AuthorActivityResultRef,
-        expected_kind: Literal["request", "result"],
-    ) -> Any:
-        encoded = self._read_encoded(value, expected_kind)
-        return json.loads(encoded)["value"]
-
     def _read_encoded(
         self,
         value: AuthorActivityRequestRef | AuthorActivityResultRef,
@@ -239,4 +215,4 @@ class LocalMissionAuthorValueStore:
         return self._root / digest[:2] / f"{digest}.json"
 
 
-__all__ = ["LocalMissionAuthorValueStore"]
+__all__ = ["AUTHOR_ACTIVITY_VALUE_REF_PREFIX", "LocalMissionAuthorValueStore"]

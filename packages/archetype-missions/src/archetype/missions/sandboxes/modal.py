@@ -14,12 +14,12 @@ import re
 import shlex
 import sys
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import uuid4
 
@@ -633,6 +633,51 @@ class ModalSandboxOperationCleanup:
             auth_sandbox_id=auth_sandbox_id,
             cohort_id=cohort_id,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ModalSandboxOperationResourceCleanup:
+    """Durable cleanup intent for a complete or partially created cohort.
+
+    The random cohort is persisted before either provider create.  A role ID
+    is added only after Modal acknowledges that exact resource.  Missing role
+    IDs are therefore not absence claims: cleanup resolves the stable name and
+    accepts a handle only when its immutable tags prove the same operation and
+    cohort.
+    """
+
+    identity: ModalSandboxOperationIdentity
+    cohort_id: str
+    mission_sandbox_id: str | None = None
+    auth_sandbox_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not _MODAL_OPERATION_COHORT.fullmatch(self.cohort_id)
+            or len(self.cohort_id) > _MAX_PROVIDER_COHORT_ID_LENGTH
+        ):
+            raise ValueError("Modal operation resource cleanup cohort identity is invalid")
+        for role, value in (
+            ("mission", self.mission_sandbox_id),
+            ("auth", self.auth_sandbox_id),
+        ):
+            if value is not None and (
+                not value.strip() or len(value) > _MAX_PROVIDER_OBJECT_ID_LENGTH
+            ):
+                raise ValueError(f"Modal operation {role} cleanup identity is invalid")
+        if self.mission_sandbox_id is not None and self.mission_sandbox_id == self.auth_sandbox_id:
+            raise ValueError("Modal operation cleanup sandbox identities must be distinct")
+
+
+type ModalSandboxResourceObserver = Callable[
+    [
+        ModalSandboxOperationIdentity,
+        str,
+        Literal["intent", "auth", "mission"],
+        str,
+    ],
+    Awaitable[None],
+]
 
 
 class ModalSandboxSession:
@@ -2463,6 +2508,7 @@ class ModalSandboxBackend:
         image: Any,
         *,
         operation_identity: ModalSandboxOperationIdentity | None = None,
+        resource_observer: ModalSandboxResourceObserver | None = None,
         client: Any | None = None,
     ) -> SandboxSession:
         if operation_identity is not None:
@@ -2489,6 +2535,15 @@ class ModalSandboxBackend:
         )
         metadata = spec.metadata_dict()
         operation_cohort_id = f"cohort-v1:{uuid4().hex}" if operation_identity is not None else None
+        if resource_observer is not None:
+            if operation_identity is None or operation_cohort_id is None:
+                raise ValueError("Modal resource observation requires a named operation")
+            await resource_observer(
+                operation_identity,
+                operation_cohort_id,
+                "intent",
+                "",
+            )
         operation_tags = (
             {
                 "operation_digest": operation_identity.digest,
@@ -2515,6 +2570,15 @@ class ModalSandboxBackend:
             **auth_name,
         )
         try:
+            if resource_observer is not None:
+                assert operation_identity is not None
+                assert operation_cohort_id is not None
+                await resource_observer(
+                    operation_identity,
+                    operation_cohort_id,
+                    "auth",
+                    str(auth_sandbox.object_id),
+                )
             mission_name = (
                 {"name": operation_identity.mission_sandbox_name}
                 if operation_identity is not None
@@ -2532,6 +2596,19 @@ class ModalSandboxBackend:
                 client=client,
                 **mission_name,
             )
+            if resource_observer is not None:
+                assert operation_identity is not None
+                assert operation_cohort_id is not None
+                try:
+                    await resource_observer(
+                        operation_identity,
+                        operation_cohort_id,
+                        "mission",
+                        str(sandbox.object_id),
+                    )
+                except BaseException:
+                    await ModalSandboxSession._terminate(sandbox)
+                    raise
         except BaseException:
             await ModalSandboxSession._terminate(auth_sandbox)
             raise
@@ -2730,8 +2807,14 @@ class ModalSandboxOperationCapability:
     as start authority.
     """
 
-    def __init__(self, backend: ModalSandboxBackend) -> None:
+    def __init__(
+        self,
+        backend: ModalSandboxBackend,
+        *,
+        resource_observer: ModalSandboxResourceObserver | None = None,
+    ) -> None:
         self._backend = backend
+        self._resource_observer = resource_observer
         config = backend.config
         if config.workspace_name is None:
             raise ValueError("Modal named operations require an explicit workspace_name")
@@ -2793,6 +2876,7 @@ class ModalSandboxOperationCapability:
             spec,
             image,
             operation_identity=identity,
+            resource_observer=self._resource_observer,
             client=client,
         )
         if not isinstance(session, ModalSandboxSession):
@@ -2928,6 +3012,31 @@ class ModalSandboxOperationCapability:
         terminating either exact handle.
         """
 
+        await self.cleanup_resources(
+            cleanup=ModalSandboxOperationResourceCleanup(
+                identity=cleanup.identity,
+                cohort_id=cleanup.cohort_id,
+                mission_sandbox_id=cleanup.mission_sandbox_id,
+                auth_sandbox_id=cleanup.auth_sandbox_id,
+            ),
+            spec=spec,
+        )
+
+    async def cleanup_resources(
+        self,
+        *,
+        cleanup: ModalSandboxOperationResourceCleanup,
+        spec: SandboxSpec,
+    ) -> None:
+        """Retry exact teardown from intent written before resource creation.
+
+        A missing durable role ID is not treated as provider absence.  The
+        stable role name is reopened and may be terminated only when its tags
+        prove the exact persisted operation digest and random cohort.  This
+        closes the provider-response-loss window without granting general
+        name-based cleanup authority.
+        """
+
         identity = cleanup.identity
         if self.identity(identity.operation_id) != identity:
             raise ValueError("Modal cleanup belongs to another operation capability")
@@ -2959,7 +3068,7 @@ class ModalSandboxOperationCapability:
         if failures:
             raise RuntimeError("; ".join(sorted(failures)))
 
-        expected_ids = {
+        expected_ids: dict[str, str | None] = {
             "mission": cleanup.mission_sandbox_id,
             "auth": cleanup.auth_sandbox_id,
         }
@@ -2969,7 +3078,8 @@ class ModalSandboxOperationCapability:
         if not present:
             return
         for role, handle in present.items():
-            if str(handle.object_id) != expected_ids[role]:
+            expected_id = expected_ids[role]
+            if expected_id is not None and str(handle.object_id) != expected_id:
                 raise RuntimeError(f"{role} cleanup resolved a different Modal sandbox generation")
 
         tags = await asyncio.gather(
@@ -3094,8 +3204,10 @@ __all__ = [
     "ModalSandboxOperationCapability",
     "ModalSandboxOperationCleanup",
     "ModalSandboxOperationIdentity",
+    "ModalSandboxOperationResourceCleanup",
     "ModalSandboxOperationReconciliation",
     "ModalSandboxOperationRunning",
     "ModalSandboxOperationUnknown",
+    "ModalSandboxResourceObserver",
     "ModalSandboxSession",
 ]

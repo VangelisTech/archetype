@@ -58,6 +58,7 @@ _INTERNAL_WORLD_OPERATIONS = {
     "spawn_reserved",
 }
 _WORLD_TOKEN_COSTS = {
+    "advance_world_to_tick": 50,
     "spawn": 10,
     "create_entities": 10,
     "reserve_entity_ids": 10,
@@ -547,7 +548,7 @@ async def test_runtime_wiring_composes_the_exact_world_registry(tmp_path) -> Non
 
         world_specs = tuple(spec for spec in registry.specs if spec.model in WORLD_OPERATION_TYPES)
         actual_models = tuple(spec.model for spec in world_specs)
-        assert len(world_specs) == 32
+        assert len(world_specs) == 33
         assert len(actual_models) == len(set(actual_models))
         assert set(actual_models) == set(WORLD_OPERATION_TYPES)
         assert {spec.name for spec in world_specs} == {

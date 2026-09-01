@@ -231,13 +231,12 @@ world-library seam rather than a parallel service locator:
 same resolution from lifespan-owned state.
 
 Authentication and profile authorization do not create a run. Missions policy
-consumes the authenticated principal and the ownership/profile projection from
-the durable MissionRun owner. It checks the requested capability, explicit run
-ownership/grants, the exact pinned profile digest, and the profile's capability
-flag. The MissionRun lifecycle alone mints `run_id` and persists acceptance.
-HTTP, MCP, and interactive adapters remain thin consumers of those exact
-operations; they do not keep a second in-memory run catalog or mutate policy
-state directly.
+checks the authenticated principal, requested capability, explicit ownership,
+the pinned profile digest, and the profile's capability flag. The Temporal
+client mints the stable `run_id`/workflow ID and starts exactly one workflow.
+HTTP, MCP, and interactive adapters remain thin consumers of that control
+surface. Run status and listing come from Temporal queries and Visibility,
+not from a parallel SQLite MissionRun catalog.
 
 ### Submission contract
 
@@ -409,7 +408,7 @@ The built-in pipeline has four concerns:
 
 There is no durable `Attempt` aggregate. Retrying produces a new
 `TaskDispatch`; history preserves every prior dispatch and observation.
-Generic Activity attempts are control-plane delivery records, not Mission
+Temporal Activity executions are orchestration history, not Mission
 Components or task retries, so they do not change this semantic model.
 
 ### Intent, observation, decision
@@ -934,15 +933,10 @@ relationships. HTN decomposition is useful, but is not a V1 correctness gate.
 - a general relationship-to-sandbox placement scheduler; and
 - a requirement that checkpoints or manifests gate acceptance.
 
-The retired claim/fence/finalization subsystem is not a compatibility layer for
-this contract. Cleanup stops creating or consuming its tables and routes while
-leaving existing persisted tables inert; deleting historical operator data is
-a separate, explicit migration decision.
-
-This list describes the shipped V1 Mission/ECS model. The Activity contract
-adds generic claim, attempt, and fence mechanics outside that model; it does
-not restore the retired mission-specific subsystem or create an `Attempt`
-Component.
+The retired claim, lease, fence, attempt, and MissionRun subsystems are not
+compatibility layers for this contract. Their code and SQLite tables are
+deleted. Temporal is the sole orchestration authority; the slim Activity
+settlement index retains only ECS evidence.
 
 ### Current hardening gaps
 
@@ -957,22 +951,16 @@ Component.
 | Snapshot sanitization | Credentials are removed before capture; provider snapshots remain trusted recovery objects rather than published artifacts. | Quarantine/scan before any cross-provider or R2 publication. |
 | Prefab mission libraries | Direct materialization remains authoritative. | Author reusable graphs after generic prefab registry contracts settle. |
 
-`SubmittedMission.world_id` is the cold-recovery coordinate for an already
-materialized mission. `MissionRun.run_id` is the external asynchronous handle
-for a request that may not yet have a World or Mission. After process
-loss, construct `Missions(runtime, ...)` with the same storage configuration and
-pass the retained `run_id` to `get_run()`. The replacement handle reconstructs
-supervised execution from durable MissionRun state. Mission creation is keyed
-by that `run_id`; recovery cannot create a second World or Mission. A
-provider-bound Activity is reconciled by its recorded operation identity;
-unknown provider completion becomes `interrupted`, never a fabricated
-`failed` or `succeeded` result. The in-process `run(submitted)` path remains
-available for already-submitted missions.
+`SubmittedMission.world_id` is the ECS coordinate for a materialized mission.
+The public `run_id` is also the Temporal workflow ID. After process loss, a
+replacement client queries or signals that workflow and Temporal resumes its
+history. Stable provider call identity prevents recovery from creating a
+second World, Mission, Modal job, or publication.
 
-### Current v0.6 control-plane contract
+### Temporal control-plane contract
 
-This subsection is normative for v0.6. The supported Modal author and
-exact-head critic both use this Activity contract.
+This subsection is normative. The supported Modal author and exact-head critic
+run as Temporal Activities and use the slim ECS settlement contract.
 
 Agent Missions has three cooperating concerns with distinct authority:
 
@@ -983,34 +971,25 @@ Agent Missions has three cooperating concerns with distinct authority:
   candidate, critic, finding, receipt, checkpoint, and artifact-reference
   Components form the durable workflow record; processors alone decide
   readiness, priority, repair, acceptance, exhaustion, and mission rollup; and
-- generic Activity control records coordinate delivery between committed
-  intent and a later committed observation without becoming Mission
-  Components or transition authority.
+- the Activity settlement index binds committed intent and a later committed
+  observation without coordinating execution or becoming transition authority.
 
 The bridge is a required committed-tick projector outside the public hook bus.
 After manifest publication it reads the exact pinned visibility snapshot and
-writes one durable author-dispatch or critic-review Activity keyed by the
-processor-created identity. `dispatch_id` is currently world-local, so its
-control identity is `(world_id, kind, activity_id)` with immutable source run
-and committed-receipt binding. Provider operation identity must namespace the
-world and the Activity kind (`missions.author` or `missions.critic`) with the
-dispatch or review identity. A retry or cold reconstruction produces that same
-identity, preserves the original task base, and selects repair input from the
-newest superseded candidate's durable blocking findings. Projection failure is
-workflow failure; it is never swallowed as an advisory `PostTick` failure and
-never reruns the committed tick.
+writes one durable author-dispatch or critic-review settlement intent keyed by
+the processor-created identity. `dispatch_id` is world-local, so its identity
+is `(world_id, kind, activity_id)` with immutable source run and receipt
+binding. The Temporal workflow namespaces provider operation identity with the
+world and kind. Recovery reuses the same identity, preserves the original task
+base, and selects repair input from durable blocking findings. Projection
+failure is workflow failure; it never reruns the committed tick.
 
-Only after durable Activity intent exists and a namespaced logical provider
-operation identity is durably bound may its worker start provider work. An
-adapter that cannot bind that identity fails closed before effect. Failure
-after binding but before observation must reconcile that identity or fail
-closed; a missing provider-returned handle, durable claim, expired lease, or
-process-local seen set is not proof of exactly-once provider effects. Provider
-results are bounded factual observations staged for a later tick, and the
-Activity settles only when that tick contains Mission-owned completeness
-evidence bound to the exact recorded result reference/digest. A dispatch or
-review ID alone cannot settle partial facts. Neither a callback nor Activity
-catalog state directly advances task state.
+Only after durable settlement intent exists may the Temporal workflow start
+provider work using a stable call identity. Failure after start reattaches to
+that identity. Provider results are bounded factual observations staged for a
+later tick, and settlement occurs only when that tick contains Mission-owned
+completeness evidence bound to the exact result reference and digest. Neither
+a callback nor settlement-index state directly advances task state.
 
 For author results, that completeness evidence is schema v2. One atomic
 mutation-cache batch stages sandbox identity and optional mission membership,
@@ -1081,12 +1060,12 @@ admit another mission or touch a sibling world. This whole-operation barrier
 was introduced in v0.5 to resolve the admission race tracked in issue #627 and
 remains part of the v0.6 contract.
 
-### Mission Activity recovery
+### Mission recovery
 
-Missions owns the semantic recovery contract layered over generic Activity
-delivery. See [Mission Activity recovery](../missions/recovery.md) for the
-author and critic identities, crash matrix, reconciliation rules, and
-completeness evidence.
+Temporal owns orchestration recovery while Missions owns provider semantics
+and ECS completeness evidence. See
+[Mission Activity recovery](../missions/recovery.md) for author and critic identities,
+provider reconciliation, and completeness evidence.
 
 ## 8. File and responsibility map
 
@@ -1095,10 +1074,10 @@ The implementation follows this layout:
 | File | Owns |
 |---|---|
 | `archetype/missions/contracts.py` | Supported authoring, configuration, and result values. |
-| `archetype/missions/run_contracts.py` | Durable `MissionRun` values, request digest, profile identity, and lifecycle edges. |
-| `archetype/missions/run_catalog.py` | SQLite persistence for MissionRun control records. |
-| `archetype/missions/run_lifecycle.py` | Idempotent accept, CAS transitions, and recovery meaning. |
-| `archetype/missions/run_supervisor.py` | Process-local supervision of SubmitMission/RunMission independent of the caller. |
+| `archetype/missions/run_contracts.py` | Public run values, request digest, profile identity, and API status vocabulary. |
+| `archetype/missions/temporal/client.py` | Stable workflow admission, queries, signals, and Visibility-backed listing. |
+| `archetype/missions/temporal/workflow.py` | Durable Mission lifecycle and author/critic orchestration. |
+| `archetype/missions/temporal/activities.py` | Bounded provider and ECS integration Activities. |
 | `archetype/missions/components.py` | Mission, task, validator, candidate, critic, sandbox, execution, and output Components. |
 | `archetype/missions/relations.py` | Membership, dependency, guard, placement, candidate/review, and provenance Relations. |
 | `archetype/missions/transitions.py` | Small persisted status vocabularies and transition tables. |
@@ -1120,11 +1099,10 @@ The implementation follows this layout:
 | `packages/archetype-missions/src/archetype/missions/_extension.py` | Private manifest adapter, exact operation registration, family-internal construction, and binding into `RuntimeResources`. |
 | `packages/archetype-missions/src/archetype/missions/runtime.py` | `Missions` and `MissionWorld` typed adapters and workflow-handle lifecycle. |
 | `examples/11_coding_agent_mission.py` | Real typed dogfood script. |
-| `tests/missions/test_mission_run_lifecycle.py` | Durable MissionRun identity, idempotency, caller disconnect, restart, and interruption oracle. |
-| `tests/missions/test_mission_author_world_integration.py` | Exact committed author admission, staging, restart, and settlement oracle. |
-| `tests/missions/test_mission_critic_world_integration.py` | Exact committed critic admission, staging, restart, and settlement oracle. |
-| `tests/missions/test_modal_activity_executors.py` | Modal author and critic provider restart/reconciliation oracle. |
-| `tests/integration/test_mission_runtime_drain.py` | Issue #627 whole-operation shutdown/close drain oracle for admitted mission operations. |
+| `tests/missions/test_temporal_mission_workflow.py` | Temporal Mission lifecycle, identity, query, and cancellation contract. |
+| `tests/integration/test_temporal_activity_world.py` | Exact committed admission and settlement integration. |
+| `tests/missions/test_temporal_modal_job_values.py` | Durable Modal author and critic provider identity and result contract. |
+| `tests/missions/test_modal_durable_jobs_process.py` | Modal process recovery and reattachment integration. |
 
 No author imports a Component, processor, `GraphView`, application service, or
 provider SDK to run the built-in workflow.

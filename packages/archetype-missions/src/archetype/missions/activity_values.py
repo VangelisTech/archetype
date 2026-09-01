@@ -24,6 +24,8 @@ from archetype.missions.coding_agents.contracts import (
 from archetype.missions.sandboxes import CheckpointRef
 
 AUTHOR_RESULT_MAX_BYTES = 512 * 1024
+AUTHOR_REQUEST_MAX_BYTES = 1 << 20
+_REQUEST_KIND = "request"
 _RESULT_KIND = "result"
 _SCHEMA_VERSION = 1
 _REQUEST_ADAPTER = TypeAdapter(TaskDispatchRequest)
@@ -54,13 +56,17 @@ class MissionAuthorValueCodec:
         self,
         *,
         redactor: AuthorValueRedactor,
+        max_request_bytes: int = AUTHOR_REQUEST_MAX_BYTES,
         max_result_bytes: int = AUTHOR_RESULT_MAX_BYTES,
     ) -> None:
         if not redactor.policy_id.strip():
             raise ValueError("author value redactor requires a policy identity")
         if max_result_bytes < 1:
             raise ValueError("author result byte limit must be positive")
+        if max_request_bytes < 1:
+            raise ValueError("author request byte limit must be positive")
         self._redactor = redactor
+        self._max_request_bytes = max_request_bytes
         self._max_result_bytes = max_result_bytes
 
     @property
@@ -70,6 +76,10 @@ class MissionAuthorValueCodec:
     @property
     def max_result_bytes(self) -> int:
         return self._max_result_bytes
+
+    @property
+    def max_request_bytes(self) -> int:
+        return self._max_request_bytes
 
     def sanitize_request(self, request: TaskDispatchRequest) -> TaskDispatchRequest:
         """Remove free-text secrets and reject unsafe structural identities."""
@@ -100,7 +110,47 @@ class MissionAuthorValueCodec:
                 return {key: visit(child, (*path, str(key))) for key, child in item.items()}
             return item
 
-        return _REQUEST_ADAPTER.validate_python(visit(value, ("request",)))
+        sanitized = _REQUEST_ADAPTER.validate_python(visit(value, ("request",)))
+        self.encode_request(sanitized)
+        return sanitized
+
+    def encode_request(self, request: TaskDispatchRequest) -> bytes:
+        """Return the bounded canonical request envelope with policy identity."""
+
+        encoded = json.dumps(
+            {
+                "kind": _REQUEST_KIND,
+                "redaction_policy_id": self._redactor.policy_id,
+                "schema_version": _SCHEMA_VERSION,
+                "value": _REQUEST_ADAPTER.dump_python(request, mode="json"),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        if len(encoded) > self._max_request_bytes:
+            raise ValueError(
+                f"author activity request exceeds the {self._max_request_bytes}-byte durability limit"
+            )
+        self._assert_safe_encoded(encoded, policy_id=self._redactor.policy_id)
+        return encoded
+
+    def decode_request(self, encoded: bytes) -> TaskDispatchRequest:
+        """Decode only an exact canonical request owned by this redaction policy."""
+
+        if len(encoded) > self._max_request_bytes:
+            raise ValueError(
+                f"author activity request exceeds the {self._max_request_bytes}-byte durability limit"
+            )
+        envelope = self._decode_envelope(encoded, kind=_REQUEST_KIND)
+        policy_id = envelope.get("redaction_policy_id")
+        if set(envelope) != {"kind", "redaction_policy_id", "schema_version", "value"}:
+            raise ValueError("author activity request has an incompatible envelope")
+        request = _REQUEST_ADAPTER.validate_python(envelope["value"])
+        if self.encode_request(request) != encoded:
+            raise ValueError("author activity request is not canonically encoded")
+        self._assert_safe_encoded(encoded, policy_id=policy_id)
+        return request
 
     def sanitize_observation(
         self,
@@ -276,6 +326,10 @@ class MissionAuthorValueCodec:
             raise ValueError(
                 f"author activity result exceeds the {self._max_result_bytes}-byte durability limit"
             )
+        self._assert_safe_encoded(
+            encoded,
+            policy_id=observation.redaction_policy_id,
+        )
         return encoded
 
     def decode_observation(
@@ -300,9 +354,38 @@ class MissionAuthorValueCodec:
         ):
             raise ValueError("author activity result has an incompatible envelope")
         observation = _RESULT_ADAPTER.validate_python(envelope["value"])
+        self._assert_safe_encoded(
+            encoded,
+            policy_id=observation.redaction_policy_id,
+        )
         if self.encode_observation(observation) != encoded:
             raise ValueError("author activity result is not canonically encoded")
         return observation
+
+    @staticmethod
+    def _decode_envelope(encoded: bytes, *, kind: str) -> dict[str, Any]:
+        try:
+            envelope = json.loads(encoded)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"author activity {kind} is not canonical JSON") from exc
+        if (
+            not isinstance(envelope, dict)
+            or envelope.get("schema_version") != _SCHEMA_VERSION
+            or envelope.get("kind") != kind
+        ):
+            raise ValueError(f"author activity {kind} has an incompatible envelope")
+        return envelope
+
+    def _assert_safe_encoded(self, payload: bytes, *, policy_id: object) -> None:
+        if policy_id != self._redactor.policy_id:
+            raise ValueError("author Activity value belongs to another redaction policy")
+        text = payload.decode()
+        scanned = self._redactor.redact_text(
+            text,
+            scope="author-activity:canonical-value",
+        ).text
+        if scanned != text:
+            raise ValueError("author Activity value was not sanitized before encoding")
 
     @staticmethod
     def execution_observation(
@@ -332,6 +415,7 @@ class MissionAuthorValueCodec:
 
 __all__ = [
     "AUTHOR_RESULT_MAX_BYTES",
+    "AUTHOR_REQUEST_MAX_BYTES",
     "AuthorValueRedactor",
     "MissionAuthorValueCodec",
 ]

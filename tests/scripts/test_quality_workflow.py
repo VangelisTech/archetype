@@ -434,7 +434,7 @@ def test_every_release_scenario_is_installed_wheel_applicable() -> None:
     ids = {row["id"] for row in required}
     assert {
         "dogfood.runtime.shutdown",
-        "dogfood.agent_mission.modal_activity_contracts",
+        "dogfood.agent_mission.temporal_modal_contracts",
         "dogfood.physical_ai.hosted_episode",
         "dogfood.storage.r2",
     } <= ids

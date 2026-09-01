@@ -175,10 +175,11 @@ def test_world_library_signature_contracts_are_in_the_reference_inventory() -> N
     assert "::: archetype.physical_ai.interfaces.PolicyClient" not in physical
 
 
-def test_embedded_physical_ai_host_example_closes_its_runtime() -> None:
-    guide = (ROOT / "docs/guide/physical-ai.md").read_text(encoding="utf-8")
+def test_physical_ai_guide_keeps_hosted_episode_disabled_until_temporal_migration() -> None:
+    guide = " ".join((ROOT / "docs/guide/physical-ai.md").read_text(encoding="utf-8").split())
 
-    section = guide.split("For an embedded host", maxsplit=1)[1].split(
-        "## Committed-state sequence", maxsplit=1
-    )[0]
-    assert "async with ArchetypeRuntime(" in section
+    assert (
+        "The former hosted-episode route is deliberately disabled by the Temporal cutover." in guide
+    )
+    assert "run_hosted_episode` now fails explicitly" in guide
+    assert "no compatibility mode" in guide

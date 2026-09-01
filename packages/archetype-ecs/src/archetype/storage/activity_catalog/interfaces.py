@@ -9,7 +9,6 @@ from typing import Protocol, runtime_checkable
 
 from archetype.storage.activity_catalog.records import (
     ActivityAdmissionRecord,
-    ActivityClaimRecord,
     ActivityRecord,
 )
 
@@ -18,7 +17,13 @@ from archetype.storage.activity_catalog.records import (
 class ActivityCatalog(Protocol):
     """Physical activity authority; intentionally separate from ControlCatalog."""
 
-    async def admit_activity(self, admission: ActivityAdmissionRecord) -> ActivityRecord: ...
+    async def admit_activity(
+        self,
+        admission: ActivityAdmissionRecord,
+        *,
+        execution_provider: str | None = None,
+        execution_operation_id: str | None = None,
+    ) -> ActivityRecord: ...
 
     async def get_activity(
         self,
@@ -27,54 +32,21 @@ class ActivityCatalog(Protocol):
         activity_id: str,
     ) -> ActivityRecord | None: ...
 
-    async def claim_activity(
+    async def record_orchestrated_activity_result(
         self,
         world_id: str,
         kind: str,
         activity_id: str,
-        owner: str,
         *,
-        lease_seconds: float = 300.0,
-    ) -> ActivityClaimRecord: ...
-
-    async def bind_provider_operation(
-        self,
-        claim: ActivityClaimRecord,
         provider: str,
-        operation_id: str,
-    ) -> ActivityClaimRecord: ...
-
-    async def confirm_provider_operation_absent(
-        self,
-        claim: ActivityClaimRecord,
-        retry_guard_ref: str,
-        retry_guard_digest: str,
-        *,
-        lease_seconds: float = 300.0,
-    ) -> ActivityClaimRecord: ...
-
-    async def record_activity_result(
-        self,
-        claim: ActivityClaimRecord,
-        *,
+        provider_operation_id: str,
         result_ref: str,
         result_digest: str,
         result_media_type: str,
         result_size_bytes: int,
     ) -> ActivityRecord: ...
 
-    async def release_activity(self, claim: ActivityClaimRecord) -> None: ...
-
     async def has_unsettled_activities(self, world_id: str) -> bool: ...
-
-    async def list_incomplete_activities(
-        self,
-        *,
-        kind: str | None = None,
-        world_id: str | None = None,
-        limit: int = 100,
-        after_sequence: int = 0,
-    ) -> list[ActivityRecord]: ...
 
     async def list_unobserved_results(
         self,

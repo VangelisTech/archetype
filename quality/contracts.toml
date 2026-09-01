@@ -169,7 +169,6 @@ section = "3. Preflight, quiescence, and destination emptiness"
 owner = "migration"
 risk = "high"
 pytest = [
-  "tests/activities/test_activity_migration.py",
   "tests/migration/test_handlers.py::test_any_activity_history_rejects_before_destination_initialization",
 ]
 static = []
@@ -248,7 +247,7 @@ pytest = [
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_workflow_cleanup_cannot_admit_a_sibling_world",
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_concurrent_runtime_shutdown_is_single_flight",
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_cancelled_runtime_shutdown_retains_cleanup_for_retry",
-  "tests/missions/test_mission_author_world_integration.py::test_modal_mission_submit_binds_required_activity_before_first_tick",
+  "tests/runtime/test_runtime_missions_owner.py",
 ]
 static = []
 evals = []
@@ -281,7 +280,7 @@ owner = "missions"
 risk = "high"
 pytest = [
   "tests/api/test_mission_run_routes.py",
-  "tests/missions/test_mission_run_lifecycle.py",
+  "tests/missions/test_temporal_mission_workflow.py",
 ]
 static = []
 evals = []
@@ -378,7 +377,7 @@ source = "docs/guide/activities.md"
 section = "2. The committed-state protocol"
 owner = "activities"
 risk = "high"
-pytest = ["tests/activities/test_activity_catalog_contracts.py"]
+pytest = ["tests/integration/test_temporal_activity_world.py"]
 static = [
   "scripts/check_architecture.py",
   "scripts/check_observability.py",
@@ -388,17 +387,16 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
-id = "missions.activity.recovery"
+id = "missions.temporal.recovery"
 source = "docs/missions/recovery.md"
 section = "Mission Activity recovery"
 owner = "missions"
 risk = "high"
 pytest = [
-  "tests/missions/test_mission_author_activities.py",
-  "tests/missions/test_mission_author_world_integration.py",
-  "tests/missions/test_mission_critic_activities.py",
-  "tests/missions/test_mission_critic_world_integration.py",
-  "tests/missions/test_modal_activity_executors.py",
+  "tests/missions/test_temporal_mission_workflow.py",
+  "tests/missions/test_temporal_modal_job_values.py",
+  "tests/missions/test_modal_durable_jobs_process.py",
+  "tests/integration/test_temporal_activity_world.py",
 ]
 static = []
 evals = []
@@ -682,13 +680,11 @@ profiles = ["pr", "main", "release"]
 [[contract]]
 id = "physical_ai.workflow.evidence"
 source = "docs/guide/physical-ai.md"
-section = "Committed-state sequence"
+section = "Hosted episode migration"
 owner = "physical_ai"
 risk = "high"
 pytest = [
-  "tests/physical_ai/test_hosted_episode_activities.py",
-  "tests/physical_ai/test_hosted_modal_activity.py",
-  "tests/integration/test_hosted_physical_runtime.py",
+  "tests/physical_ai/test_hosted_episode_contract.py",
   "tests/world/test_required_projector_fanout.py",
 ]
 static = []
@@ -699,12 +695,11 @@ profiles = ["pr", "main", "release"]
 [[contract]]
 id = "physical_ai.activity.recovery"
 source = "docs/guide/physical-ai.md"
-section = "Hosted-episode recovery"
+section = "Hosted episode migration"
 owner = "physical_ai"
 risk = "high"
 pytest = [
-  "tests/physical_ai/test_hosted_episode_activities.py",
-  "tests/physical_ai/test_hosted_modal_activity.py",
+  "tests/physical_ai/test_hosted_episode_contract.py",
 ]
 static = []
 evals = []
@@ -912,8 +907,8 @@ pytest = [
   "tests/missions/test_coding_agent_harness.py",
   "tests/missions/test_sandbox_service.py",
   "tests/missions/test_modal_agent_sandbox.py",
-  "tests/missions/test_mission_author_activities.py",
-  "tests/missions/test_mission_author_world_integration.py",
+  "tests/missions/test_temporal_modal_job_values.py",
+  "tests/integration/test_temporal_activity_world.py",
 ]
 static = [
   "scripts/check_architecture.py",
@@ -931,9 +926,8 @@ owner = "missions"
 risk = "high"
 pytest = [
   "tests/missions/test_critic_harness.py",
-  "tests/missions/test_mission_critic_activities.py",
-  "tests/missions/test_mission_critic_world_integration.py",
-  "tests/missions/test_modal_activity_executors.py::test_modal_critic_cold_restart_recovers_exact_receipt_with_one_start",
+  "tests/missions/test_temporal_modal_job_values.py",
+  "tests/missions/test_modal_durable_jobs_process.py",
 ]
 static = []
 evals = []
@@ -948,7 +942,7 @@ owner = "missions"
 risk = "high"
 pytest = [
   "tests/missions/test_sandbox_service.py",
-  "tests/missions/test_mission_author_world_integration.py::test_modal_mission_submit_binds_required_activity_before_first_tick",
+  "tests/runtime/test_runtime_missions_owner.py",
 ]
 static = []
 evals = []

@@ -210,6 +210,27 @@ method = "to_pylist"
 reason = "Committed domain-budget boundary: finite CriticExecution facts are aggregated in Daft then materialized as attempt counts to assign the next semantic review attempt; generic Activity lease attempts cannot consume this budget."
 
 [[entries]]
+path = "packages/archetype-missions/src/archetype/missions/modal_jobs_app.py"
+symbol = "ModalMissionBuiltinJobService.collect"
+expr = "self._client(ref.family, request_bytes).collect"
+method = "collect"
+reason = "Modal provider-result boundary: this collect method reattaches to a previously recorded provider operation identity and retrieves its first-result payload; it is not a Daft DataFrame terminal and cannot be expressed as a lazy plan."
+
+[[entries]]
+path = "packages/archetype-missions/src/archetype/missions/temporal/modal_job_activities.py"
+symbol = "MissionModalJobActivities.collect"
+expr = "self._jobs.collect"
+method = "collect"
+reason = "Temporal Activity provider-result boundary: the Activity invokes the Modal job service's collect method for a durable operation identity before persisting a bounded value reference; it is not a Daft DataFrame terminal."
+
+[[entries]]
+path = "packages/archetype-missions/src/archetype/missions/temporal/modal_job_worker.py"
+symbol = "create_mission_modal_job_worker"
+expr = "activities.collect"
+method = "collect"
+reason = "Temporal Worker registration boundary: this passes the named Modal-job collect Activity callable into the Worker definition; it registers provider result retrieval and does not execute a Daft DataFrame plan."
+
+[[entries]]
 path = "packages/archetype-missions/src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection.on_post_tick"
 expr = "_daft_latest(task_frame, label='task dispatch state', allow_updates=True).to_pylist"
@@ -292,20 +313,6 @@ symbol = "_decode_rows"
 expr = "batches[0].to_pylist"
 method = "to_pylist"
 reason = "Canonical Arrow IPC codec boundary: the input is already one validated in-memory PyArrow RecordBatch, not a lazy Daft DataFrame, and exact Python values are required to validate cross-payload identities, terminal completeness, and canonical byte re-encoding before any Activity result reference can be recorded."
-
-[[entries]]
-path = "packages/archetype-physical-ai/src/archetype/physical_ai/hosted_activities.py"
-symbol = "_component_rows"
-expr = "selected.select(*columns).to_pylist"
-method = "to_pylist"
-reason = "Exact post-commit Activity boundary: the receipt-pinned reader has already admitted and materialized the committed snapshot, and only bounded HostedEpisodeIntent or HostedEpisodeObservation scalar fields cross into generic Activity admission or exact-digest settlement."
-
-[[entries]]
-path = "packages/archetype-physical-ai/src/archetype/physical_ai/hosted_activity_world.py"
-symbol = "WorldHostedEpisodeObservationStager._committed_observations"
-expr = "materialized.to_pylist"
-method = "to_pylist"
-reason = "Idempotent world-mutation boundary: StorageService has already admitted and materialized only HostedEpisodeObservation columns, whose bounded Activity identity and digest fields must enter Python to reject conflicts before staging one imperative world mutation."
 
 [[entries]]
 path = "packages/archetype-ecs/src/archetype/storage/service.py"

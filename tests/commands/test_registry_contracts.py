@@ -538,6 +538,13 @@ _EXPECTED_WORLD_REGISTRATIONS = {
         world_key_field="world_id",
         token_cost=50,
     ),
+    "advance_world_to_tick": _world_registration(
+        "AdvanceWorldToTick",
+        permission="advance_world_to_tick",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=50,
+    ),
     "run_episode": _world_registration(
         "RunEpisode",
         permission="run_episode",
@@ -706,7 +713,7 @@ def test_world_operation_registration_inventory_is_exact_and_complete() -> None:
         assert (spec.world_key is None) == (expected.world_key_field is None)
         assert (spec.durable is not None) is expected.durable
 
-    assert len(registry.specs) == 32
+    assert len(registry.specs) == 33
 
     durable_models = frozenset(spec.model for spec in registry.specs if spec.durable is not None)
     missing_durable = sorted(

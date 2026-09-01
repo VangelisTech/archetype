@@ -24,6 +24,7 @@ types = [
 composition_roots = [
   "archetype.wiring",
   "archetype.missions._extension",
+  "archetype.missions.modal_jobs_app",
   "archetype.physical_ai._extension",
   "archetype.research._extension",
 ]

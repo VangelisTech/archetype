@@ -17,13 +17,18 @@ from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.missions import Missions, MissionWorld
 from archetype.missions._extension import MISSION_OPERATION_MODELS, get_manifest
-from archetype.missions.config import MissionsExtensionConfig, installed_execution_profiles
+from archetype.missions.config import (
+    MissionsExtensionConfig,
+    MissionTemporalActivityConfig,
+    installed_execution_profiles,
+)
 from archetype.missions.contracts import AgentMissionConfig
 from archetype.missions.execution_profiles import (
     ExecutionProfile,
     ExecutionProfileBinding,
     ExecutionProfileCatalog,
 )
+from archetype.missions.temporal.activity_values import MissionModalActivityValueStore
 from archetype.missions.trajectories import ClaudeTranscriptSource, TrajectorySelection
 from archetype.missions.trajectories.models import (
     GradeTrajectory,
@@ -153,6 +158,59 @@ def test_install_accepts_exact_missions_configuration(tmp_path: Path) -> None:
     assert installed.name == "missions"
     assert installed.config is context.config
     assert tuple(spec.model for spec in context.registry.specs) == MISSION_OPERATION_MODELS
+
+
+def test_temporal_activity_configuration_is_explicit_and_digest_bound(
+    tmp_path: Path,
+) -> None:
+    class Workflows:
+        async def start(self, _command: object) -> object:
+            return object()
+
+    temporal = MissionTemporalActivityConfig(
+        workflows=Workflows(),
+        values=MissionModalActivityValueStore(
+            author=SimpleNamespace(),
+            critic=SimpleNamespace(),
+        ),
+        namespace_digest="a" * 64,
+    )
+    context = replace(
+        _context(tmp_path),
+        config=MissionsExtensionConfig(temporal_activities=temporal),
+    )
+
+    installed = get_manifest().install(context)
+
+    assert installed.config is context.config
+    assert installed.config.temporal_activities is temporal
+
+
+def test_temporal_activity_configuration_rejects_unusable_authority() -> None:
+    with pytest.raises(TypeError, match="Workflow launcher"):
+        MissionTemporalActivityConfig(
+            workflows=object(),
+            values=MissionModalActivityValueStore(
+                author=SimpleNamespace(),
+                critic=SimpleNamespace(),
+            ),
+            namespace_digest="a" * 64,
+        )
+    with pytest.raises(ValueError, match="namespace digest"):
+        MissionTemporalActivityConfig(
+            workflows=SimpleNamespace(start=lambda _command: None),
+            values=MissionModalActivityValueStore(
+                author=SimpleNamespace(),
+                critic=SimpleNamespace(),
+            ),
+            namespace_digest="mutable-name",
+        )
+    with pytest.raises(TypeError, match="shared value store"):
+        MissionTemporalActivityConfig(
+            workflows=SimpleNamespace(start=lambda _command: None),
+            values=SimpleNamespace(),  # type: ignore[arg-type]
+            namespace_digest="a" * 64,
+        )
 
 
 def test_installed_library_resolves_bound_profiles_to_live_configuration(

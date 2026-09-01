@@ -82,6 +82,7 @@ _PERMISSION_OVERRIDES = {
 _INTERNAL_OPERATIONS = frozenset({"reserve_entity_ids", "spawn_reserved"})
 _WORLD_TOKEN_COSTS = {
     "add_components": 8,
+    "advance_world_to_tick": 50,
     "add_hook": 10,
     "add_processor": 15,
     "add_resource": 10,
@@ -120,7 +121,7 @@ _FRAMEWORK_PULL_FORWARD_MODELS: tuple[type[BaseModel], ...] = (
     RunGraders,
     Evaluate,
 )
-_FRAMEWORK_OPERATION_COUNT = 37
+_FRAMEWORK_OPERATION_COUNT = 38
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
