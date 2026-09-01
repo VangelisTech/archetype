@@ -255,6 +255,48 @@ async def test_cancel_signal_projects_cancelling_before_terminal_completion() ->
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_cancel_during_in_flight_provider_work_records_cancelling_once() -> None:
+    class BlockingRunExecutor(_Executor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.run_started = asyncio.Event()
+            self.release_run = asyncio.Event()
+
+        async def run(self, run, mission):
+            self.run_started.set()
+            await self.release_run.wait()
+            return await super().run(run, mission)
+
+    environment = await WorkflowEnvironment.start_time_skipping()
+    executor = BlockingRunExecutor()
+    task_queue = "temporal-mission-provider-cancel"
+    client = MissionTemporalClient(environment.client, task_queue=task_queue)
+    try:
+        worker = create_mission_worker(environment.client, executor, task_queue=task_queue)
+        async with worker:
+            handle = await client.start(_request("provider-cancel"), _profile())
+            await _wait_for_bound(handle)
+            await asyncio.wait_for(executor.run_started.wait(), timeout=5)
+
+            await handle.signal(MissionWorkflow.request_cancel, "operator stop")
+            cancelling = await handle.query(MissionWorkflow.state)
+            assert cancelling is not None
+            assert cancelling.status == "cancelling"
+            assert cancelling.active_operation == "run_mission"
+            assert executor.run_calls == []
+
+            executor.release_run.set()
+            result = await handle.result()
+            assert result.status == "cancelled"
+            assert executor.run_calls == [handle.id]
+            events = await handle.query(MissionWorkflow.events)
+            assert [event.event_type for event in events].count("cancelling") == 1
+    finally:
+        await environment.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_unknown_temporal_run_translates_to_mission_run_not_found() -> None:
     environment = await WorkflowEnvironment.start_time_skipping()
     client = MissionTemporalClient(environment.client, task_queue="temporal-mission-missing")
