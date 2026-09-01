@@ -16,8 +16,7 @@ does not depend on Missions or Research.
 
 ## Start
 
-- [Run a hosted episode](../guide/physical-ai.md#run-a-hosted-episode)
-- [Committed-state sequence](../guide/physical-ai.md#committed-state-sequence)
+- [Hosted episode migration](../guide/physical-ai.md#hosted-episode-migration)
 - [Canonical episode contract](../guide/physical-ai.md#canonical-episode-contract)
 
 ## Reference

@@ -178,6 +178,8 @@ def test_world_library_signature_contracts_are_in_the_reference_inventory() -> N
 def test_physical_ai_guide_keeps_hosted_episode_disabled_until_temporal_migration() -> None:
     guide = " ".join((ROOT / "docs/guide/physical-ai.md").read_text(encoding="utf-8").split())
 
-    assert "The former hosted-episode route is deliberately disabled by the Temporal cutover." in guide
+    assert (
+        "The former hosted-episode route is deliberately disabled by the Temporal cutover." in guide
+    )
     assert "run_hosted_episode` now fails explicitly" in guide
     assert "no compatibility mode" in guide
