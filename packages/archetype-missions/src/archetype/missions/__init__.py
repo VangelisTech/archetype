@@ -35,7 +35,6 @@ from archetype.missions.components import (
 )
 from archetype.missions.config import (
     MissionsExtensionConfig,
-    MissionTemporalActivityConfig,
     installed_execution_profiles,
 )
 from archetype.missions.contracts import (
@@ -138,7 +137,6 @@ __all__ = [
     "MissionRunStatus",
     "MissionState",
     "MissionStatus",
-    "MissionTemporalActivityConfig",
     "MissionSubmission",
     "MissionProfileRequest",
     "Missions",
