@@ -1064,7 +1064,7 @@ remains part of the v0.6 contract.
 
 Temporal owns orchestration recovery while Missions owns provider semantics
 and ECS completeness evidence. See
-[Mission recovery](../missions/recovery.md) for author and critic identities,
+[Mission Activity recovery](../missions/recovery.md) for author and critic identities,
 provider reconciliation, and completeness evidence.
 
 ## 8. File and responsibility map
@@ -1103,7 +1103,6 @@ The implementation follows this layout:
 | `tests/integration/test_temporal_activity_world.py` | Exact committed admission and settlement integration. |
 | `tests/missions/test_temporal_modal_job_values.py` | Durable Modal author and critic provider identity and result contract. |
 | `tests/missions/test_modal_durable_jobs_process.py` | Modal process recovery and reattachment integration. |
-| `tests/integration/test_mission_runtime_drain.py` | Issue #627 whole-operation shutdown/close drain oracle for admitted mission operations. |
 
 No author imports a Component, processor, `GraphView`, application service, or
 provider SDK to run the built-in workflow.
