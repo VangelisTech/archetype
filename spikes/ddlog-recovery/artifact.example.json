@@ -1,0 +1,15 @@
+{
+  "runtime_commit": "3c377e6915bb640b2e6cb3ebf8c7fa0433ecc5c4",
+  "host_binary": "/absolute/path/lemmalog-ddlog-mcp",
+  "host_sha256": "5da1c0d232a9eb7f3c93e2415f17aa0ab257889f238b89fb7e43f70a7ddf8758",
+  "native_artifact": "/absolute/path/program_cli",
+  "native_sha256": "45eca6cbd741886548ab38d83f32cd8682894ea558a43cc6688e099b3506bb6d",
+  "native_bytes": 245697344,
+  "generated_files": {
+    "program.dl": "f07707494bcaf69e4c3030007685805bccd78c319fe5c335c7093862902019ee",
+    "lemmalog_star.dl": "185d130ea9974275a58bfbc155eac7779f500f5c663e0f39d88383fa5d1c52cb",
+    "lemmalog_star.rs": "b6b434bcaea589bee1bb1204700634390d2c2b7909c9158653aeb0a8726f185e"
+  },
+  "artifact_mode": "verified-reuse",
+  "native_builds": 0
+}

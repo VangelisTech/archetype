@@ -1,0 +1,33 @@
+[workspace]
+
+[package]
+name = "iceberg-v3-roundtrip-spike"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+
+[dependencies]
+iceberg = { version = "=0.10.1", default-features = false }
+iceberg-catalog-sql = "=0.10.1"
+arrow-array = "=58.3.0"
+arrow-schema = "=58.3.0"
+parquet = { version = "=58.1.0", default-features = false, features = ["arrow"] }
+sqlx = { version = "=0.8.6", default-features = false, features = ["any", "sqlite", "runtime-tokio"] }
+tokio = { version = "=1.52.1", features = ["macros", "rt-multi-thread", "time"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+sha2 = "0.10"
+anyhow = "1"
+async-trait = "0.1.89"
+bytes = "1"
+typetag = "0.2"
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false

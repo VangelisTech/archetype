@@ -1,0 +1,553 @@
+{
+  "before_commit_recovered": {
+    "format_version": 3,
+    "next_row_id": 2,
+    "rows": [
+      {
+        "difference": 1,
+        "entity_id": 7,
+        "is_active": true,
+        "logical_time": 10,
+        "publication_id": "p1",
+        "run_id": "1",
+        "source_row": 1,
+        "source_tx": 10,
+        "tick": 10,
+        "value": 9,
+        "world_id": "fixture"
+      },
+      {
+        "difference": 2,
+        "entity_id": 42,
+        "is_active": true,
+        "logical_time": 10,
+        "publication_id": "p1",
+        "run_id": "1",
+        "source_row": 0,
+        "source_tx": 10,
+        "tick": 10,
+        "value": 3,
+        "world_id": "fixture"
+      }
+    ],
+    "snapshots": [
+      {
+        "id": 919602512212776454,
+        "manifests": [
+          {
+            "added_files_count": 1,
+            "added_rows_count": 2,
+            "added_snapshot_id": 919602512212776454,
+            "first_row_id": 0
+          }
+        ],
+        "parent": null,
+        "row_range": [
+          0,
+          2
+        ],
+        "summary": {
+          "added-data-files": "1",
+          "added-files-size": "3917",
+          "added-records": "2",
+          "spike.publication-id": "p1",
+          "spike.publication-sha256": "e7a4006df3dfd4be7efe0d84cabe53c4f11f008e6113a86603b483d55282f412",
+          "total-data-files": "1",
+          "total-delete-files": "0",
+          "total-equality-deletes": "0",
+          "total-files-size": "3917",
+          "total-position-deletes": "0",
+          "total-records": "2"
+        }
+      }
+    ],
+    "table_uuid": "01a089a5-71c4-7651-8cfc-12d9e26e5486"
+  },
+  "cas": {
+    "after_first_cas": {
+      "format_version": 3,
+      "next_row_id": 2,
+      "rows": [
+        {
+          "difference": 1,
+          "entity_id": 7,
+          "is_active": true,
+          "logical_time": 10,
+          "publication_id": "p1",
+          "run_id": "1",
+          "source_row": 1,
+          "source_tx": 10,
+          "tick": 10,
+          "value": 9,
+          "world_id": "fixture"
+        },
+        {
+          "difference": 2,
+          "entity_id": 42,
+          "is_active": true,
+          "logical_time": 10,
+          "publication_id": "p1",
+          "run_id": "1",
+          "source_row": 0,
+          "source_tx": 10,
+          "tick": 10,
+          "value": 3,
+          "world_id": "fixture"
+        }
+      ],
+      "snapshots": [
+        {
+          "id": 3363106593056256991,
+          "manifests": [
+            {
+              "added_files_count": 1,
+              "added_rows_count": 2,
+              "added_snapshot_id": 3363106593056256991,
+              "first_row_id": 0
+            }
+          ],
+          "parent": null,
+          "row_range": [
+            0,
+            2
+          ],
+          "summary": {
+            "added-data-files": "1",
+            "added-files-size": "3917",
+            "added-records": "2",
+            "spike.publication-id": "p1",
+            "spike.publication-sha256": "212f3031a0bce472d8cefd0504f48260b1f4603462c198338485a5f45631ee5f",
+            "total-data-files": "1",
+            "total-delete-files": "0",
+            "total-equality-deletes": "0",
+            "total-files-size": "3917",
+            "total-position-deletes": "0",
+            "total-records": "2"
+          }
+        }
+      ],
+      "table_uuid": "01a089a5-7205-71f1-aec5-e501747a303e"
+    },
+    "after_reconciliation": {
+      "format_version": 3,
+      "next_row_id": 5,
+      "rows": [
+        {
+          "difference": 1,
+          "entity_id": 7,
+          "is_active": true,
+          "logical_time": 10,
+          "publication_id": "p1",
+          "run_id": "1",
+          "source_row": 1,
+          "source_tx": 10,
+          "tick": 10,
+          "value": 9,
+          "world_id": "fixture"
+        },
+        {
+          "difference": -1,
+          "entity_id": 7,
+          "is_active": true,
+          "logical_time": 13,
+          "publication_id": "p2",
+          "run_id": "1",
+          "source_row": 0,
+          "source_tx": 13,
+          "tick": 13,
+          "value": 9,
+          "world_id": "fixture"
+        },
+        {
+          "difference": 2,
+          "entity_id": 42,
+          "is_active": true,
+          "logical_time": 10,
+          "publication_id": "p1",
+          "run_id": "1",
+          "source_row": 0,
+          "source_tx": 10,
+          "tick": 10,
+          "value": 3,
+          "world_id": "fixture"
+        },
+        {
+          "difference": -2,
+          "entity_id": 42,
+          "is_active": true,
+          "logical_time": 12,
+          "publication_id": "p2",
+          "run_id": "1",
+          "source_row": 0,
+          "source_tx": 12,
+          "tick": 12,
+          "value": 3,
+          "world_id": "fixture"
+        },
+        {
+          "difference": 1,
+          "entity_id": 42,
+          "is_active": true,
+          "logical_time": 12,
+          "publication_id": "p2",
+          "run_id": "1",
+          "source_row": 1,
+          "source_tx": 12,
+          "tick": 12,
+          "value": 4,
+          "world_id": "fixture"
+        }
+      ],
+      "snapshots": [
+        {
+          "id": 3363106593056256991,
+          "manifests": [
+            {
+              "added_files_count": 1,
+              "added_rows_count": 2,
+              "added_snapshot_id": 3363106593056256991,
+              "first_row_id": 0
+            }
+          ],
+          "parent": null,
+          "row_range": [
+            0,
+            2
+          ],
+          "summary": {
+            "added-data-files": "1",
+            "added-files-size": "3917",
+            "added-records": "2",
+            "spike.publication-id": "p1",
+            "spike.publication-sha256": "212f3031a0bce472d8cefd0504f48260b1f4603462c198338485a5f45631ee5f",
+            "total-data-files": "1",
+            "total-delete-files": "0",
+            "total-equality-deletes": "0",
+            "total-files-size": "3917",
+            "total-position-deletes": "0",
+            "total-records": "2"
+          }
+        },
+        {
+          "id": 8900865366355327690,
+          "manifests": [
+            {
+              "added_files_count": 1,
+              "added_rows_count": 2,
+              "added_snapshot_id": 3363106593056256991,
+              "first_row_id": 0
+            },
+            {
+              "added_files_count": 1,
+              "added_rows_count": 3,
+              "added_snapshot_id": 8900865366355327690,
+              "first_row_id": 2
+            }
+          ],
+          "parent": 3363106593056256991,
+          "row_range": [
+            2,
+            3
+          ],
+          "summary": {
+            "added-data-files": "1",
+            "added-files-size": "3954",
+            "added-records": "3",
+            "spike.publication-id": "p2",
+            "spike.publication-sha256": "3376e9b86fee2ec0e7a3cc3185e7a36bffd2e58c5ef8fcb2f6847d373bc73e67",
+            "total-data-files": "2",
+            "total-delete-files": "0",
+            "total-equality-deletes": "0",
+            "total-files-size": "7871",
+            "total-position-deletes": "0",
+            "total-records": "5"
+          }
+        }
+      ],
+      "table_uuid": "01a089a5-7205-71f1-aec5-e501747a303e"
+    },
+    "metadata_barrier_arrivals": 2,
+    "outcomes": [
+      "ok",
+      "CatalogCommitConflicts"
+    ]
+  },
+  "flushes": [
+    {
+      "completed_through_exclusive": 12,
+      "digest": "cefff304262fb3e6388d299b3fb732e51a1e8c1a4763c782b518a108427875a6",
+      "publication_id": "p1",
+      "status": "files_durable",
+      "transactions": [
+        {
+          "changes": [
+            {
+              "difference": 2,
+              "entity": 42,
+              "value": 3
+            },
+            {
+              "difference": 1,
+              "entity": 7,
+              "value": 9
+            }
+          ],
+          "id": 10,
+          "logical_time": 10
+        },
+        {
+          "changes": [],
+          "id": 11,
+          "logical_time": 11
+        }
+      ]
+    },
+    {
+      "completed_through_exclusive": 14,
+      "digest": "8e480fc07cc83b7b11dc0b583f6a20834c901102f066d688150a5da2ecf1712e",
+      "publication_id": "p2",
+      "status": "files_durable",
+      "transactions": [
+        {
+          "changes": [
+            {
+              "difference": -2,
+              "entity": 42,
+              "value": 3
+            },
+            {
+              "difference": 1,
+              "entity": 42,
+              "value": 4
+            }
+          ],
+          "id": 12,
+          "logical_time": 12
+        },
+        {
+          "changes": [
+            {
+              "difference": -1,
+              "entity": 7,
+              "value": 9
+            }
+          ],
+          "id": 13,
+          "logical_time": 13
+        }
+      ]
+    }
+  ],
+  "history": {
+    "format_version": 3,
+    "next_row_id": 5,
+    "rows": [
+      {
+        "difference": 1,
+        "entity_id": 7,
+        "is_active": true,
+        "logical_time": 10,
+        "publication_id": "p1",
+        "run_id": "1",
+        "source_row": 1,
+        "source_tx": 10,
+        "tick": 10,
+        "value": 9,
+        "world_id": "fixture"
+      },
+      {
+        "difference": -1,
+        "entity_id": 7,
+        "is_active": true,
+        "logical_time": 13,
+        "publication_id": "p2",
+        "run_id": "1",
+        "source_row": 0,
+        "source_tx": 13,
+        "tick": 13,
+        "value": 9,
+        "world_id": "fixture"
+      },
+      {
+        "difference": 2,
+        "entity_id": 42,
+        "is_active": true,
+        "logical_time": 10,
+        "publication_id": "p1",
+        "run_id": "1",
+        "source_row": 0,
+        "source_tx": 10,
+        "tick": 10,
+        "value": 3,
+        "world_id": "fixture"
+      },
+      {
+        "difference": -2,
+        "entity_id": 42,
+        "is_active": true,
+        "logical_time": 12,
+        "publication_id": "p2",
+        "run_id": "1",
+        "source_row": 0,
+        "source_tx": 12,
+        "tick": 12,
+        "value": 3,
+        "world_id": "fixture"
+      },
+      {
+        "difference": 1,
+        "entity_id": 42,
+        "is_active": true,
+        "logical_time": 12,
+        "publication_id": "p2",
+        "run_id": "1",
+        "source_row": 1,
+        "source_tx": 12,
+        "tick": 12,
+        "value": 4,
+        "world_id": "fixture"
+      }
+    ],
+    "snapshots": [
+      {
+        "id": 5146243430215009511,
+        "manifests": [
+          {
+            "added_files_count": 1,
+            "added_rows_count": 2,
+            "added_snapshot_id": 5146243430215009511,
+            "first_row_id": 0
+          }
+        ],
+        "parent": null,
+        "row_range": [
+          0,
+          2
+        ],
+        "summary": {
+          "added-data-files": "1",
+          "added-files-size": "3917",
+          "added-records": "2",
+          "spike.publication-id": "p1",
+          "spike.publication-sha256": "cefff304262fb3e6388d299b3fb732e51a1e8c1a4763c782b518a108427875a6",
+          "total-data-files": "1",
+          "total-delete-files": "0",
+          "total-equality-deletes": "0",
+          "total-files-size": "3917",
+          "total-position-deletes": "0",
+          "total-records": "2"
+        }
+      },
+      {
+        "id": 9202898388401668560,
+        "manifests": [
+          {
+            "added_files_count": 1,
+            "added_rows_count": 2,
+            "added_snapshot_id": 5146243430215009511,
+            "first_row_id": 0
+          },
+          {
+            "added_files_count": 1,
+            "added_rows_count": 3,
+            "added_snapshot_id": 9202898388401668560,
+            "first_row_id": 2
+          }
+        ],
+        "parent": 5146243430215009511,
+        "row_range": [
+          2,
+          3
+        ],
+        "summary": {
+          "added-data-files": "1",
+          "added-files-size": "3954",
+          "added-records": "3",
+          "spike.publication-id": "p2",
+          "spike.publication-sha256": "8e480fc07cc83b7b11dc0b583f6a20834c901102f066d688150a5da2ecf1712e",
+          "total-data-files": "2",
+          "total-delete-files": "0",
+          "total-equality-deletes": "0",
+          "total-files-size": "7871",
+          "total-position-deletes": "0",
+          "total-records": "5"
+        }
+      }
+    ],
+    "table_uuid": "01a089a5-70d1-75f1-bf6d-5985ebcfab9a"
+  },
+  "identity_conflict": {
+    "exit_code": 1,
+    "fault": "conflict"
+  },
+  "invisible_before_commit": {
+    "format_version": 3,
+    "next_row_id": 0,
+    "rows": [],
+    "snapshots": [],
+    "table_uuid": "01a089a5-70d1-75f1-bf6d-5985ebcfab9a"
+  },
+  "lost_ack": {
+    "exit_code": 73,
+    "fault": "after-commit"
+  },
+  "omissions": [
+    "virtual lineage columns",
+    "injected SQLite COMMIT failure",
+    "power-loss durability",
+    "cloud storage",
+    "multi-host reconcilers",
+    "multi-table atomicity",
+    "empty entire flush",
+    "Archetype/DDlog integration"
+  ],
+  "p1_commit": {
+    "adopted": false,
+    "digest": "cefff304262fb3e6388d299b3fb732e51a1e8c1a4763c782b518a108427875a6",
+    "publication_id": "p1",
+    "snapshot": 5146243430215009511
+  },
+  "preflight_rejections": {
+    "duplicate_file_set": "duplicate file in publication",
+    "file_hash_mismatch": "immutable file changed"
+  },
+  "recovery": {
+    "adopted": true,
+    "digest": "8e480fc07cc83b7b11dc0b583f6a20834c901102f066d688150a5da2ecf1712e",
+    "publication_id": "p2",
+    "snapshot": 9202898388401668560
+  },
+  "retry_results": [
+    {
+      "adopted": true,
+      "digest": "cefff304262fb3e6388d299b3fb732e51a1e8c1a4763c782b518a108427875a6",
+      "publication_id": "p1",
+      "snapshot": 5146243430215009511
+    },
+    {
+      "adopted": true,
+      "digest": "8e480fc07cc83b7b11dc0b583f6a20834c901102f066d688150a5da2ecf1712e",
+      "publication_id": "p2",
+      "snapshot": 9202898388401668560
+    }
+  ],
+  "scope": "local synthetic signed change-history; not Archetype integration",
+  "status": "passed",
+  "versions": {
+    "arrow-array": "58.3.0",
+    "iceberg": "0.10.1",
+    "iceberg-catalog-sql": "0.10.1",
+    "parquet": "58.1.0",
+    "sqlx": "0.8.6",
+    "thrift": "0.17.0"
+  },
+  "raw_receipt_sha256": "2eba6e52184b88e3d522198c1cc5056d1a2c39feae3b029d15d7057ccfcdbc8f",
+  "redaction": "Local file paths omitted; raw local receipt retained separately.",
+  "source_sha256": {
+    "Cargo.lock": "01c776c21d1ac03835f245fcfce880b5b0cb67f3a1847316ce3e326b7b91d897",
+    "Cargo.toml": "0ea5579737e8a08d59022774a41b8822067cc0d759e8077e65aee825ecf11655",
+    "run_guarded.py": "1e5a5285323372dd941de344b060fff742c21869cd4f2e619fd7c6311d0a2c48",
+    "src/faults.rs": "7acc3aa84f0c9c448c62069f32f70a104a447927af4ae4ac19077070a61107b4",
+    "src/main.rs": "f56950ef2d14a5243b49f1a360ce29f515bbfec871d0aa56e9a7cc90e6b82e43"
+  }
+}
