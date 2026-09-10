@@ -49,11 +49,14 @@ liveness decisions.  `ChildOf` is exclusive and uses `DELETE`.
 
 ## Registration has two layers
 
-Biome's [`main.c`](https://github.com/SanderMertens/biome/blob/main/src/main.c)
-first imports C modules that register component metadata, systems, observers,
+The upstream `SanderMertens/biome` repository is unavailable on GitHub as of
+2026-09-09 (HTTP 404). The paths and revisions below preserve historical
+source provenance; the live dogfood bootstrap requires access to that
+repository and cannot currently be reproduced from its public URL.
+
+Biome's `src/main.c` first imports C modules that register component metadata, systems, observers,
 and hooks.  It then evaluates the root
-[`biome.flecs`](https://github.com/SanderMertens/biome/blob/main/etc/scenes/biome.flecs)
-script, which creates named prefabs and rules from those registered types.
+`etc/scenes/biome.flecs` script, which creates named prefabs and rules from those registered types.
 Archetype keeps the same code-versus-data boundary:
 
 | Biome | Archetype | Lifetime |
@@ -142,13 +145,13 @@ relation is deliberately generalized in `archetype.prefabs`.
 
 ## The Biome pattern being translated
 
-Biome's archived
-[`buildings.flecs`](https://github.com/SanderMertens/biome/blob/29b7f0e126c81568ba61946c1eb46d921abe8aa2/etc/scenes/config/buildings.flecs)
-shows the composition directly.  `PoweredBuilding` supplies common state;
+The historical `SanderMertens/biome` source at revision
+`29b7f0e126c81568ba61946c1eb46d921abe8aa2`,
+`etc/scenes/config/buildings.flecs`, shows the composition directly.
+`PoweredBuilding` supplies common state;
 `Drill` composes it with a drill emitter and adds `Building`, `StorageDesc`,
 `Storage`, `Miner`, `Power`, `Recipe`, and rendering components.  The
-[`miner` systems](https://github.com/SanderMertens/biome/blob/main/src/modules/miner.c)
-then match combinations including miner, storage, storage-description, and
+`src/modules/miner.c` systems then match combinations including miner, storage, storage-description, and
 power state.  The prefab is not a class that calls mining behavior.  Its
 component set makes an instance eligible for systems that implement mining.
 

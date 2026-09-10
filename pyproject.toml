@@ -156,7 +156,10 @@ aiohttp = "2026-07-24T00:00:00Z"
 h2 = "2026-08-04T00:00:00Z"
 hpack = "2026-06-24T00:00:00Z"
 pymdown-extensions = "2026-07-03T00:00:00Z"
-pypdf = "2026-08-07T00:00:00Z"
+# PR #864 lockfile-audit fixes: pypdf 6.16.1 (2026-08-14) and
+# mkdocs-material 9.7.7 (2026-07-17), each admitted through its release day.
+pypdf = "2026-08-15T00:00:00Z"
+mkdocs-material = "2026-07-18T00:00:00Z"
 setuptools = "2026-07-05T00:00:00Z"
 pillow = "2026-07-02T00:00:00Z"
 
