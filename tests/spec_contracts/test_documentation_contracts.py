@@ -234,6 +234,25 @@ def test_world_library_installation_and_native_boundary_are_explicit() -> None:
     assert re.search(r"not\s+the discovery or lifecycle protocol", guide)
 
 
+def test_readme_documents_the_shipped_mission_mcp_surface() -> None:
+    """Retired repo: the README archives what agents could call in the 0.6 line."""
+    readme = Path("README.md").read_text()
+
+    assert "archetype-missions-mcp" in readme
+    assert "python -m archetype.missions.mcp" in readme
+    for tool in (
+        "mission_submit",
+        "mission_get",
+        "mission_events",
+        "mission_result",
+        "mission_cancel",
+        "mission_list",
+    ):
+        assert tool in readme
+    assert "Retired" in readme
+    assert "never shipped an ACP" in readme or "does not ship an ACP" in readme
+
+
 def test_world_library_examples_use_typed_adapters() -> None:
     """Current examples teach library-owned adapters, not migration aliases."""
     paths = (
