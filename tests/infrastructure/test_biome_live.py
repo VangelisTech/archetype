@@ -46,7 +46,7 @@ from biome_agent.bootstrap import (  # noqa: E402
 _LIVE = os.environ.get("ARCHETYPE_BIOME_LIVE") == "1"
 
 pytestmark = [
-    pytest.mark.contract("missions.environment.pinned"),
+    pytest.mark.contract("examples.biome.pinned_execution"),
     pytest.mark.integration,
     pytest.mark.external,
     pytest.mark.slow,

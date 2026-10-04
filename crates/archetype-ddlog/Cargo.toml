@@ -1,0 +1,27 @@
+[package]
+name = "archetype-ddlog"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+repository.workspace = true
+rust-version = "1.95"
+description = "Archetype ECS cuts over the DDlog Runtime execution owner"
+
+[dependencies]
+anyhow.workspace = true
+arrow-array = "59.2"
+arrow-schema = "59.2"
+bytes = "1"
+ddlog-runtime = { git = "https://github.com/everettVT/ddlog-runtime", rev = "5524ed918014f4b2ffbf724b2930e556c479d7ae" }
+futures = "0.3"
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "4d83bc77dc10cff851a3ef427c451ff977bc3643" }
+iceberg-catalog-sql = { git = "https://github.com/apache/iceberg-rust", rev = "4d83bc77dc10cff851a3ef427c451ff977bc3643" }
+parquet = { version = "59.2", default-features = false, features = ["arrow"] }
+serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["any", "sqlite", "runtime-tokio"] }
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"

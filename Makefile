@@ -6,8 +6,8 @@ SHELL := /bin/bash
 # Archetype dev workflow (uv + ruff + pre-commit)
 # ==============================================================================
 
-SOURCE_ROOTS := packages/archetype-ecs/src packages/archetype-missions/src packages/archetype-physical-ai/src packages/archetype-research/src packages/archetype-smol/src
-PYTHONPATH ?= packages/archetype-ecs/src:packages/archetype-missions/src:packages/archetype-physical-ai/src:packages/archetype-research/src:packages/archetype-smol/src
+SOURCE_ROOTS := packages/archetype-ecs/src packages/archetype-research/src packages/archetype-smol/src
+PYTHONPATH ?= packages/archetype-ecs/src:packages/archetype-research/src:packages/archetype-smol/src
 VERSION := $(shell grep -m1 'version = ' packages/archetype-ecs/pyproject.toml | cut -d'"' -f2)
 RUFF_PATHS := packages tests evals bench scripts quality experiments examples
 SYNC_FLAGS := --all-packages --all-extras
@@ -32,7 +32,6 @@ help:
 	@echo "  make architecture-audit  Enforce dependency and encapsulation policy"
 	@echo "  make observability-audit Enforce signal safety and family dispositions"
 	@echo "  make lockfile-audit  Scan the locked dependency graph for known vulnerabilities"
-	@echo "  make version-inventory-audit  Validate pinned execution-environment inventory"
 	@echo "  make python-api-audit  Validate committed generated Python reference"
 	@echo "  make lint-fix       Lint and auto-fix"
 	@echo "  make check          Format + lint"
@@ -67,11 +66,9 @@ help:
 	@echo "  make examples-local  Run Tier-1 semantic examples in isolated storage"
 	@echo "  make operational-runtime  Run the shipped runtime/API/CLI loopback scenario"
 	@echo "  make operational-wheel  Run representative scenarios against the built wheel matrix"
-	@echo "  make operational-mission  Run the credential-free exact-head mission scenario"
 	@echo "  make operational-external  Require selected Tier-5/6 provider evidence"
 	@echo "  make operational-release  Run credential-free release evidence against the wheel matrix"
 	@echo "  make operational-demand-biome  Run the pinned live Biome wheel evidence (demand cadence)"
-	@echo "  make operational-demand-modal  Run the paid live Modal/Codex wheel evidence (demand cadence)"
 	@echo "  make test-infra     Run external-infrastructure tests (requires configured service)"
 	@echo ""
 	@echo "Build & Release:"
@@ -81,7 +78,6 @@ help:
 	@echo "  make verify-full    Main-branch profile"
 	@echo "  make verify-release Source profile plus exact installed-artifact release evidence"
 	@echo "  make release-check  Full pre-release validation"
-	@echo "  make codex-login    Refresh Codex device auth in the broker Volume (1h window)"
 	@echo "  make verify-test-index Verify exact TestPyPI bytes and install matrix"
 	@echo "  make verify-published Verify exact PyPI bytes and install matrix"
 	@echo "  make version        Show current version"
@@ -116,7 +112,7 @@ format:
 	@uv run ruff format $(RUFF_PATHS)
 
 .PHONY: lint
-lint: lazy-audit architecture-audit observability-audit lockfile-audit version-inventory-audit python-api-audit api-boundary-audit idempotency-audit gate-coverage-audit operational-audit
+lint: lazy-audit architecture-audit observability-audit lockfile-audit python-api-audit api-boundary-audit idempotency-audit gate-coverage-audit operational-audit
 	@uv run ruff check $(RUFF_PATHS)
 
 .PHONY: lint-fix
@@ -132,7 +128,7 @@ check: format lint
 
 .PHONY: typecheck
 typecheck:
-	@uvx ty@0.0.48 check --python .venv
+	@uvx ty@0.0.48 check --python $(if $(UV_PROJECT_ENVIRONMENT),$(UV_PROJECT_ENVIRONMENT),.venv)
 
 .PHONY: contract-audit
 contract-audit:
@@ -184,12 +180,6 @@ observability-audit:
 
 # Fail-closed load of the pinned execution-environment inventory plus a
 # freshness check of its rendered operator page (#507).
-.PHONY: version-inventory-audit
-version-inventory-audit:
-	@PYTHONPATH=$(PYTHONPATH) uv run python scripts/generate_version_inventory.py --check
-
-# Keep every normative idempotency-matrix row mapped to a registered eval.
-# This is static and fast; make eval-idem executes the behavioral scenarios.
 .PHONY: idempotency-audit
 idempotency-audit:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/check_idempotency_contracts.py
@@ -432,7 +422,6 @@ operational-wheel:
 			--scenario example.01_world_mutations \
 			--scenario example.02_fork_counterfactual \
 			--scenario example.03_time_travel \
-			--scenario example.06_trajectory_analysis \
 			--scenario example.10_autoresearch \
 			--scenario dogfood.runtime.loopback \
 			--scenario dogfood.commands.local \
@@ -449,13 +438,6 @@ operational-wheel:
 operational-wheel-existing:
 	@$(MAKE) --no-print-directory operational-wheel OPERATIONAL_BUILD_COMMAND=true
 
-.PHONY: operational-mission
-operational-mission:
-	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
-		--mode source --cadence pr --max-tier 1 --require-run \
-		--scenario dogfood.agent_mission.modal_activity_contracts \
-		--out operational-mission-results.json
-
 .PHONY: operational-external
 operational-external:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
@@ -463,7 +445,7 @@ operational-external:
 		--out operational-external-results.json
 
 # The release workflow builds once after the source profile, package-smokes
-# those exact ten artifacts, records every digest, and never rebuilds before
+# those exact six artifacts, records every digest, and never rebuilds before
 # upload.
 .PHONY: release-artifact
 release-artifact:
@@ -496,37 +478,16 @@ operational-release: release-artifact
 operational-release-openai: verify-release-artifact
 	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario example.05_llm_agents --out operational-release-openai-results.json)
 
-.PHONY: operational-release-docker
-operational-release-docker: verify-release-artifact
-	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.sandbox.docker --out operational-release-docker-results.json)
-
 .PHONY: operational-release-r2
 operational-release-r2: verify-release-artifact
 	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.storage.r2 --out operational-release-r2-results.json)
-
-.PHONY: operational-demand-apple
-operational-demand-apple: verify-release-artifact
-	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.sandbox.apple_container --out operational-demand-apple-results.json,,demand)
 
 .PHONY: operational-demand-biome
 operational-demand-biome: verify-release-artifact
 	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario example.14_biome_agent --out operational-demand-biome-results.json,ARCHETYPE_BIOME_LIVE=1,demand)
 
-.PHONY: operational-demand-modal
-operational-demand-modal: verify-release-artifact
-	@uv run python scripts/check_codex_auth.py --max-age-days 14
-	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.agent_mission.modal_live --out operational-demand-modal-results.json,ARCHETYPE_MODAL_AGENT_MISSION_LIVE=1,demand)
-
-.PHONY: codex-login
-codex-login:
-	uv run python scripts/codex_login.py
-
-.PHONY: operational-release-physical-modal-r2
-operational-release-physical-modal-r2: verify-release-artifact
-	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.physical_ai.modal_r2_live --out operational-release-physical-modal-r2-results.json,ARCHETYPE_MODAL_PHYSICAL_R2_LIVE=1)
-
 .PHONY: verify-pr
-verify-pr: static test package-smoke
+verify-pr: static test package-smoke ddlog-check
 	@echo "PR verification profile passed"
 
 .PHONY: verify-full-source
@@ -594,7 +555,6 @@ verify-published:
 docs-gen:
 	@echo "Generating API & CLI reference docs..."
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/generate_contract_traceability.py
-	@PYTHONPATH=$(PYTHONPATH) uv run python scripts/generate_version_inventory.py
 	@uv run python scripts/generate_python_api_docs.py
 	@uv run python scripts/generate_api_docs.py
 	@uv run python scripts/generate_cli_docs.py
@@ -663,3 +623,10 @@ precommit-install:
 .PHONY: precommit-run
 precommit-run:
 	@uv run pre-commit run --all-files
+
+# The native integration test remains opt-in with ARCHETYPE_DDLOG_DRIVER.
+.PHONY: ddlog-check
+ddlog-check:
+	@cargo +1.95.0 fmt -p archetype-ddlog -- --check
+	@cargo +1.95.0 clippy -p archetype-ddlog --all-targets --locked -- -D warnings
+	@cargo +1.95.0 test -p archetype-ddlog --locked

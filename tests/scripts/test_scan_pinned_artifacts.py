@@ -12,14 +12,29 @@ import pytest
 import scripts.scan_pinned_artifacts as scan_module
 from scripts.scan_pinned_artifacts import build_queries, load_pinned_artifacts, main, scan
 
-pytestmark = pytest.mark.contract("missions.environment.pinned")
 
-
-def test_default_inventory_tracks_the_missions_distribution() -> None:
-    assert scan_module.INVENTORY.relative_to(scan_module.ROOT).as_posix() == (
-        "packages/archetype-missions/src/archetype/missions/sandboxes/versions.toml"
+@pytest.fixture
+def inventory(tmp_path: Path) -> Path:
+    path = tmp_path / "inventory.toml"
+    rows = [
+        ("codex-cli", "npm-package", "@openai/codex", "1.0"),
+        ("modal-sdk", "python-package", "modal", "1.0"),
+        ("ttyd-x86-64", "binary", "ttyd", "1.0"),
+        ("ttyd-aarch64", "binary", "ttyd", "1.0"),
+        ("coding-agent-base-image", "image", "example", "1.0"),
+    ]
+    path.write_text(
+        "\n".join(
+            f'[[artifact]]\nid = "{key}"\nkind = "{kind}"\nname = "{name}"\nversion = "{version}"\nstatus = "pinned"\n'
+            for key, kind, name, version in rows
+        )
     )
-    assert scan_module.INVENTORY.is_file()
+    return path
+
+
+def test_inventory_is_explicit() -> None:
+    with pytest.raises(SystemExit):
+        main(["--out", "unused.json"])
 
 
 def _fake_fetch(vulnerable_names: set[str]) -> Any:
@@ -37,8 +52,8 @@ def _fake_fetch(vulnerable_names: set[str]) -> Any:
     return fetch
 
 
-def test_build_queries_covers_registry_pins_and_names_unscannable_kinds() -> None:
-    queries, unscannable = build_queries(load_pinned_artifacts())
+def test_build_queries_covers_registry_pins_and_names_unscannable_kinds(inventory: Path) -> None:
+    queries, unscannable = build_queries(load_pinned_artifacts(inventory))
     packages = {
         (item["query"]["package"]["ecosystem"], item["query"]["package"]["name"])
         for item in queries
@@ -52,9 +67,9 @@ def test_build_queries_covers_registry_pins_and_names_unscannable_kinds() -> Non
     ]
 
 
-def test_scan_reports_advisories_per_pinned_artifact() -> None:
+def test_scan_reports_advisories_per_pinned_artifact(inventory: Path) -> None:
     report = scan(
-        inventory=scan_module.INVENTORY,
+        inventory=inventory,
         endpoint="https://osv.invalid/querybatch",
         timeout=1.0,
         fetch=_fake_fetch({"modal"}),
@@ -69,10 +84,10 @@ def test_scan_reports_advisories_per_pinned_artifact() -> None:
     ]
 
 
-def test_scan_rejects_mismatched_osv_response() -> None:
+def test_scan_rejects_mismatched_osv_response(inventory: Path) -> None:
     with pytest.raises(ValueError, match="does not match the query count"):
         scan(
-            inventory=scan_module.INVENTORY,
+            inventory=inventory,
             endpoint="https://osv.invalid/querybatch",
             timeout=1.0,
             fetch=lambda url, payload, timeout: {"results": []},
@@ -80,16 +95,16 @@ def test_scan_rejects_mismatched_osv_response() -> None:
 
 
 def test_main_writes_report_and_gates_on_findings(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inventory: Path
 ) -> None:
     out = tmp_path / "pinned-artifact-osv.json"
 
     monkeypatch.setattr(scan_module, "_post_json", _fake_fetch(set()))
-    assert main(["--out", str(out), "--fail-on-findings"]) == 0
+    assert main(["--inventory", str(inventory), "--out", str(out), "--fail-on-findings"]) == 0
     clean = json.loads(out.read_text(encoding="utf-8"))
     assert clean["schema_version"] == 1
     assert all(not result["vulnerabilities"] for result in clean["results"])
 
     monkeypatch.setattr(scan_module, "_post_json", _fake_fetch({"modal"}))
-    assert main(["--out", str(out)]) == 0
-    assert main(["--out", str(out), "--fail-on-findings"]) == 1
+    assert main(["--inventory", str(inventory), "--out", str(out)]) == 0
+    assert main(["--inventory", str(inventory), "--out", str(out), "--fail-on-findings"]) == 1

@@ -212,18 +212,14 @@ def test_quickstart_variants_stage_initial_state_before_running() -> None:
 
 def test_world_library_installation_and_native_boundary_are_explicit() -> None:
     """The split must be understandable without reading workspace metadata."""
-    readme = Path("README.md").read_text()
     guide = (_GUIDE_ROOT / "world-libraries.md").read_text()
 
     for package_specifier in (
         "uv add archetype-ecs",
-        "uv add archetype-missions",
-        "uv add archetype-physical-ai",
         "uv add archetype-research",
         'uv add "archetype-ecs[all]"',
-        'uv add "archetype-ecs[missions,research]"',
     ):
-        assert package_specifier in readme
+        assert package_specifier in guide
         assert package_specifier in guide
 
     assert "archetype.world_libraries" in guide
@@ -238,15 +234,12 @@ def test_world_library_examples_use_typed_adapters() -> None:
     """Current examples teach library-owned adapters, not migration aliases."""
     paths = (
         _GUIDE_ROOT / "autoresearch.md",
-        _GUIDE_ROOT / "agent-missions.md",
         _GUIDE_ROOT / "runtime.md",
         Path("examples/10_autoresearch.py"),
-        Path("examples/11_coding_agent_mission.py"),
     )
     text = "\n".join(path.read_text() for path in paths)
 
     assert "Research(base).autoresearch(" in text
-    assert "Missions(\n" in text
     assert "runtime.missions(" not in text
     assert "base.autoresearch(" not in text
     assert "Research(world).run(" not in text
@@ -260,11 +253,7 @@ def test_mkdocs_resolves_all_distribution_source_roots() -> None:
 
     assert "packages/archetype-ecs/src" in config
     assert "scripts/griffe_world_libraries.py:WorldLibraryPackages" in config
-    for library_source_root in (
-        "packages/archetype-missions/src",
-        "packages/archetype-physical-ai/src",
-        "packages/archetype-research/src",
-    ):
+    for library_source_root in ("packages/archetype-research/src",):
         assert library_source_root in extension
 
     assert "- Install World Libraries: guide/world-libraries.md" in config
@@ -280,15 +269,11 @@ def test_package_navigation_has_one_explicit_owner_per_page() -> None:
         "Start",
         "Framework",
         "Smol",
-        "Missions",
-        "Physical AI",
         "Research",
         "Maintainers",
     )
     assert branches["Framework"][0] == "framework/index.md"
     assert branches["Smol"][0] == "smol/index.md"
-    assert branches["Missions"][0] == "missions/index.md"
-    assert branches["Physical AI"][0] == "physical-ai/index.md"
     assert branches["Research"][0] == "research/index.md"
     assert branches["Maintainers"][0] == "maintainers/index.md"
 
@@ -297,22 +282,6 @@ def test_package_navigation_has_one_explicit_owner_per_page() -> None:
     assert len(all_paths) == len(set(all_paths)), "a documentation page has multiple nav owners"
 
     expected_package_paths = {
-        "Missions": {
-            "guide/agent-missions.md",
-            "guide/trajectories.md",
-            "guide/mission-factory-assets.md",
-            "missions/recovery.md",
-            "missions/transcripts.md",
-            "reference/python/missions.md",
-            "reference/python/transcripts.md",
-            "reference/rest-api-missions.md",
-        },
-        "Physical AI": {
-            "guide/physical-ai.md",
-            "reference/python/physical-ai.md",
-            "reference/python/physical-ai-optimization.md",
-            "reference/python/physical-ai-host.md",
-        },
         "Research": {
             "guide/autoresearch.md",
             "reference/python/autoresearch.md",
@@ -342,7 +311,6 @@ def test_package_navigation_enables_native_and_content_tabs() -> None:
     assert "alternate_style: true" in config
 
     for path in (
-        Path("docs/index.md"),
         Path("docs/smol/index.md"),
         _GUIDE_ROOT / "quickstart.md",
         _GUIDE_ROOT / "world-libraries.md",

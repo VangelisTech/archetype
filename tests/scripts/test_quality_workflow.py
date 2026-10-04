@@ -38,13 +38,14 @@ def _job(workflow: str, job_id: str) -> str:
     return match.group("body")
 
 
-def test_pull_request_workflow_has_only_two_jobs() -> None:
+def test_pull_request_workflow_has_python_and_ddlog_checks() -> None:
     workflow = QUALITY_WORKFLOW.read_text(encoding="utf-8")
     _, _, jobs = workflow.partition("\njobs:\n")
 
     assert re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.MULTILINE) == [
         "static",
         "tests",
+        "ddlog-storage",
     ]
     assert "merge_group:" not in workflow
     assert "make static" in _job(workflow, "static")
@@ -57,7 +58,7 @@ def test_pull_request_workflow_has_only_two_jobs() -> None:
     assert "codecov" not in workflow.lower()
 
 
-def test_local_pr_profile_matches_the_two_ci_jobs() -> None:
+def test_local_pr_profile_matches_ci_jobs() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
     verify_pr = re.search(r"^verify-pr:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
     verify_full_source = re.search(
@@ -66,7 +67,12 @@ def test_local_pr_profile_matches_the_two_ci_jobs() -> None:
     verify_full = re.search(r"^verify-full:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
 
     assert verify_pr is not None
-    assert verify_pr.group("dependencies").split() == ["static", "test", "package-smoke"]
+    assert verify_pr.group("dependencies").split() == [
+        "static",
+        "test",
+        "package-smoke",
+        "ddlog-check",
+    ]
     assert verify_full_source is not None
     assert verify_full is not None
     source = verify_full_source.group("dependencies").split()
@@ -92,7 +98,10 @@ def test_local_pr_profile_matches_the_two_ci_jobs() -> None:
 def test_contributing_ci_profile_and_publishers_match_the_harness() -> None:
     guide = CONTRIBUTING.read_text(encoding="utf-8")
 
-    assert "| `make ci` | `make static` + `make test` + `make package-smoke` |" in guide
+    assert (
+        "| `make ci` | `make static` + `make test` + `make package-smoke` + `make ddlog-check` |"
+        in guide
+    )
     assert "| `Tests (3.12)` | `make test` + `make package-smoke` |" in guide
     for distribution, workflow in PUBLISHER_WORKFLOWS.items():
         assert f"| `{distribution}` | `{workflow}` |" in guide
@@ -160,18 +169,15 @@ def test_release_publish_requires_credentialed_r2_evidence() -> None:
     assert [row["id"] for row in selected] == ["dogfood.storage.r2"]
 
 
-def test_example_smoke_keeps_mission_authoring_credential_free() -> None:
+def test_example_smoke_keeps_quickstart_credential_free() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
     assert re.search(r"^examples-smoke: examples-local$", makefile, re.MULTILINE)
     assert "--mode source --cadence pr --kind example --max-tier 1" in makefile
 
     with OPERATIONAL_SCENARIOS.open("rb") as stream:
         scenarios = tomllib.load(stream)["scenario"]
-    mission = next(
-        row for row in scenarios if row["id"] == "example.11_coding_agent_mission.dry_run"
-    )
+    mission = next(row for row in scenarios if row["id"] == "example.00_quickstart")
 
-    assert mission["source_command"][-3:] == ["--dry-run", "--backend", "modal"]
     assert mission["prerequisites"] == []
     assert mission["missing_prerequisite"] == "fail"
     assert mission["tier"] == 1
@@ -434,72 +440,17 @@ def test_every_release_scenario_is_installed_wheel_applicable() -> None:
     ids = {row["id"] for row in required}
     assert {
         "dogfood.runtime.shutdown",
-        "dogfood.agent_mission.modal_activity_contracts",
-        "dogfood.physical_ai.hosted_episode",
         "dogfood.storage.r2",
     } <= ids
     core_ids = {row["id"] for row in required if int(row["tier"]) <= 4}
     assert ids - core_ids == {
         "example.05_llm_agents",
-        "dogfood.physical_ai.modal_r2_live",
-        "dogfood.sandbox.docker",
         "dogfood.storage.r2",
     }
     demand = {row["id"] for row in scenarios if "demand" in row["required_cadence"]}
     assert demand == {
-        "dogfood.agent_mission.modal_live",
         "example.14_biome_agent",
-        "dogfood.sandbox.apple_container",
     }
-
-
-def test_live_modal_demand_scenario_is_credentialed_and_opted_in() -> None:
-    with OPERATIONAL_SCENARIOS.open("rb") as stream:
-        scenarios = tomllib.load(stream)["scenario"]
-    modal = next(row for row in scenarios if row["id"] == "dogfood.agent_mission.modal_live")
-
-    assert modal["source_path"] == "tests/infrastructure/test_modal_agent_mission_live.py"
-    assert modal["semantic_oracle"]["ref"] in modal["source_command"]
-    assert modal["tier"] == 6
-    assert modal["required_cadence"] == ["demand"]
-    assert modal["applicability"] == ["source", "wheel"]
-    assert modal["required_extras"] == ["coding-agent"]
-    assert modal["cleanup_policy"] == "provider"
-    assert modal["artifact_policy"] == "redacted_receipt"
-    assert set(modal["prerequisites"]) == {
-        "credential:MODAL_TOKEN_ID",
-        "credential:MODAL_TOKEN_SECRET",
-        "infrastructure:CODING_AGENT_MODAL_WORKSPACE",
-        "infrastructure:CODING_AGENT_MODAL_ENVIRONMENT",
-        "infrastructure:CODEX_AUTH_VOLUME",
-        "infrastructure:CODING_AGENT_GITHUB_SECRET",
-    }
-    assert "ARCHETYPE_MODAL_AGENT_MISSION_LIVE=1" in MAKEFILE.read_text(encoding="utf-8")
-
-
-def test_live_physical_ai_release_scenario_binds_modal_compute_to_r2() -> None:
-    with OPERATIONAL_SCENARIOS.open("rb") as stream:
-        scenarios = tomllib.load(stream)["scenario"]
-    physical = next(row for row in scenarios if row["id"] == "dogfood.physical_ai.modal_r2_live")
-
-    assert physical["source_path"] == "tests/infrastructure/test_modal_physical_r2_live.py"
-    assert physical["semantic_oracle"]["ref"] in physical["source_command"]
-    assert physical["tier"] == 6
-    assert physical["applicability"] == ["source", "wheel"]
-    assert physical["required_extras"] == ["coding-agent"]
-    assert physical["cleanup_policy"] == "provider"
-    assert physical["artifact_policy"] == "redacted_receipt"
-    assert set(physical["prerequisites"]) == {
-        "credential:MODAL_TOKEN_ID",
-        "credential:MODAL_TOKEN_SECRET",
-        "credential:R2_ACCESS_KEY_ID",
-        "credential:R2_SECRET_ACCESS_KEY",
-        "infrastructure:CODING_AGENT_MODAL_WORKSPACE",
-        "infrastructure:CODING_AGENT_MODAL_ENVIRONMENT",
-        "infrastructure:R2_API_ENDPOINT",
-        "infrastructure:R2_BUCKET",
-    }
-    assert "ARCHETYPE_MODAL_PHYSICAL_R2_LIVE=1" in MAKEFILE.read_text(encoding="utf-8")
 
 
 def test_live_biome_demand_scenario_requires_the_pinned_macos_host() -> None:
@@ -629,9 +580,7 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert "operational-release-results.json" in profile
     for target in (
         "operational-release-openai",
-        "operational-release-docker",
         "operational-release-r2",
-        "operational-release-physical-modal-r2",
     ):
         assert f"target: {target}" in external
         make_target = re.search(
@@ -644,7 +593,7 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert "tests/infrastructure/test_r2_idempotency.py" in external
     assert "scripts/verify_release_evidence.py" in gate
     assert "uvx --with packaging==26.1 python" in gate
-    assert "operational-release-physical-modal-r2-results.json" in gate
+    assert "operational-release-physical-modal-r2-results.json" not in gate
     assert "biome" not in gate
     assert "apple" not in gate
     assert "operational-release-modal-results.json" not in gate

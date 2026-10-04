@@ -70,13 +70,11 @@ def _verify_receipt_artifact_set(
     wheel: dict[str, Any],
     release_wheels: dict[str, dict[str, str]],
 ) -> None:
-    """Verify the exact four-wheel world stack emitted by the operational runner."""
+    """Verify the exact two-wheel world stack emitted by the operational runner."""
 
     raw = wheel.get("artifacts")
     if not isinstance(raw, list) or len(raw) != len(WORLD_STACK_DISTRIBUTIONS):
-        raise ValueError(
-            f"{path} wheel artifact set must contain all four world-stack distributions"
-        )
+        raise ValueError(f"{path} wheel artifact set must contain both world-stack distributions")
 
     expected = {
         distribution: release_wheels[distribution] for distribution in WORLD_STACK_DISTRIBUTIONS

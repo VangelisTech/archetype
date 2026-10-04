@@ -17,9 +17,6 @@ archetype.artifacts
 archetype.storage
   Daft execution + Catalog table registration/read/write + Iceberg retry
   durable world/run envelope + published-head authority
-
-archetype.missions
-  transcript-specific redaction, parsing, and normalized-row publication
 ```
 
 The cohesive `archetype.artifacts.pipeline.FileIngestionPipeline` keeps the
@@ -284,10 +281,7 @@ ingestion.
 ## 9. Security boundary
 
 Generic artifact ingestion stores the bytes the caller submits. Workflows that
-handle potentially secret-bearing content must sanitize before calling it. The
-Missions-owned [transcript ingestion contract](../missions/transcripts.md)
-is one concrete implementation; its quarantine, parsing, and normalized-row
-semantics do not belong to the generic artifact family.
+handle potentially secret-bearing content must sanitize before calling it. Sanitization policy remains with the owning workflow.
 
 The common rule is simple: specialized workflows own pre-durability safety;
 the artifacts family owns exact file persistence and indexing; operation
@@ -349,8 +343,8 @@ reduces the attributed observations into one answer while retaining logical
 paths and artifact IDs.
 
 These are family-owned DataFrame transforms, not application orchestration.
-They do not choose a catalog, persist model output, or decide mission state.
-A mission processor may persist the resulting rows or use them as evidence for
+They do not choose a catalog, persist model output, or decide application state.
+An application processor may persist the resulting rows or use them as evidence for
 a transition. The selected Daft AI provider determines which content
 modalities its model accepts; storage and typed indexing support do not imply
 that every model can directly interpret every media type.
@@ -391,12 +385,6 @@ scans use the staged object. Live model calls remain an explicit
 credential-bearing external check; the deterministic contract tests validate
 the task anchoring and source attribution without pretending that a mocked
 provider is model evidence.
-
-The same protected full-stack proof composes Missions transcript ingestion over
-this framework boundary. Its normalized-row and redaction assertions are
-documented by the
-[Mission transcript contract](../missions/transcripts.md),
-not by the generic artifact schema.
 
 ## Whole-storage relocation preserves occurrences
 

@@ -11,16 +11,11 @@ The independent [Smol](../smol/index.md) package documents its complete four-nam
 | [World handle](python/world-handle.md) | `archetype-ecs` | Create entities, run simulations, query history, and manage one world. |
 | [Runtime models](python/runtime-models.md) | `archetype-ecs` | Configuration, result, and introspection records returned by world operations. |
 | [File artifacts](python/artifacts.md) | `archetype-ecs` | Declare files, configure content-addressed storage, retain portable references to indexed artifact occurrences, and anchor interpretation to a task. |
-| [Agent Missions](python/missions.md) | `archetype-missions` | Run coding-agent missions and inspect mission-owned transcript and trajectory evidence. |
-| [Coding-agent transcripts](python/transcripts.md) | `archetype-missions` | Ingest Claude Code JSONL through a redacted artifact boundary and append normalized mission rows linked to the sanitized file occurrence. |
 | [Building blocks](python/building-blocks.md) | `archetype-ecs` | Use these types to define component data, processors, and processor resources. |
 | [Hooks and ingress identity](python/hooks.md) | `archetype-ecs` | React to world lifecycle events and define the identity record used by trusted ingress adapters. |
 | [Configuration](python/configuration.md) | `archetype-ecs` | Runtime configuration is user-facing. `WorldConfig` is primarily for custom hosts and lower-level engine construction. |
 | [Research and AutoResearch](python/autoresearch.md) | `archetype-research` | Use the separately installed `archetype-research` library to configure optimization loops and persist its experiment ledger. |
 | [Framework evaluation](python/evaluation.md) | `archetype-ecs` | Grade frames and persist generic evaluation outcomes and receipts owned by `archetype-ecs`. |
-| [Physical AI](python/physical-ai.md) | `archetype-physical-ai` | Run or recover complete Modal-hosted episode batches through a World. |
-| [Physical AI optimization](python/physical-ai-optimization.md) | `archetype-physical-ai` | Build pure instruction-search workflows over an injected evaluator and strategy. |
-| [Physical AI host configuration](python/physical-ai-host.md) | `archetype-physical-ai` | Configure trusted hosted-episode providers at process composition time. |
 | [Core engine](python/core.md) | `archetype-ecs` | Supported engine primitives for custom execution and world lifecycle extensions. |
 | [Storage backends](python/storage.md) | `archetype-ecs` | Supported asynchronous storage implementations for custom engine wiring. |
 
@@ -28,7 +23,7 @@ The independent [Smol](../smol/index.md) package documents its complete four-nam
 
 Presence in `archetype.__all__` is an intentional supported exposure. The tier on each reference page and the focused specifications classify its stability. Types exposed by supported signatures are part of those contracts even when they are not top-level exports.
 
-World-library APIs are family-qualified and remain deliberately absent from the domain-free framework `archetype.__all__`. Import `Missions` and `MissionWorld` from `archetype.missions`, `PhysicalAI` from `archetype.physical_ai`, and `Research` from `archetype.research`.
+World-library APIs are family-qualified and remain deliberately absent from the domain-free framework `archetype.__all__`. Import `Research` from `archetype.research`.
 
 The container and concrete application services are internal and are not top-level exports. Repository wiring imports them from their owning family modules; applications use the runtime or an adapter.
 
@@ -37,18 +32,6 @@ See [API stability and docstrings](../guide/api-stability.md) for the full polic
 ## World-library facade classifications
 
 Every name in a world-library facade is assigned exactly one tier. The docs build fails when an export is added or removed without updating this inventory.
-
-### `archetype.missions`
-
-- **Recommended:** `Missions`, `MissionWorld`, `AgentMissionConfig`, `AgentTask`, `CommandValidator`, `CriticPolicy`, `RepositoryPublicationPolicy`, `SubmittedMission`, `MissionRun`, `MissionResult`, `TaskResult`
-- **Extension:** `MISSION_COMPONENTS`, `MISSION_TRANSITIONS`, `OUTPUT_COMPONENTS`, `TASK_COMPONENTS`, `TASK_TRANSITIONS`, `AgentArtifact`, `AgentExecution`, `AgentExecutionStatus`, `AuthoredBy`, `AuthorActivityObservation`, `Candidate`, `CandidateFor`, `Checkpoint`, `Commit`, `CompleteAuthorActivityObservation`, `CompleteCriticActivityObservation`, `CriticConclusion`, `CriticExecution`, `CriticExecutionStatus`, `CriticFinding`, `CriticReceipt`, `DependsOn`, `Executes`, `FilesystemManifest`, `FrictionLog`, `Guards`, `Mission`, `MissionRunCleanupState`, `MissionRunConflictError`, `MissionRunNotFoundError`, `MissionRunRequest`, `MissionRunStatus`, `MissionState`, `MissionStatus`, `MissionSubmission`, `mission_episode_id`, `PartOfMission`, `ProducedBy`, `Reviews`, `RunsIn`, `RunnerSession`, `Sandbox`, `Task`, `TaskCriticPolicy`, `TaskCriticSubjectPolicy`, `TaskDispatch`, `TaskPolicy`, `TaskState`, `TaskStatus`, `TaskValidator`, `TaskWorkspace`, `ValidationResult`, `Supersedes`, `require_mission_run_transition`, `require_mission_transition`, `require_task_transition`, `load_runner_sessions`
-- **Integration:** `MissionsExtensionConfig`, `ExecutionProfile`, `ExecutionProfileBinding`, `ExecutionProfileCatalog`, `ExecutionProfileIdentity`, `MissionProfileRequest`, `installed_execution_profiles`
-
-### `archetype.physical_ai`
-
-- **Recommended:** `PhysicalAI`, `HostedEpisodeRequest`, `HostedEpisodeObservation`, `ModalHostedEpisodeConfig`
-- **Extension:** `PerturbationStrategy`, `TemplatePerturbation`, `RoundRecord`, `OptimizationResult`, `optimize_instruction`
-- **Integration:** `PhysicalAIExtensionConfig`
 
 ### `archetype.research`
 

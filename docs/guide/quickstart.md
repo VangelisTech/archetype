@@ -220,4 +220,4 @@ with ArchetypeRuntime.sync() as runtime:
 - [Build a simulation](building-simulations.md)
 - [Components](components.md) · [Processors](processors.md) · [Worlds](working-with-worlds.md)
 - [Application layer](app-overview.md) — runtime, gateway, families above the core
-- [Agent Missions](agent-missions.md) · [Examples](examples.md)
+- [Examples](examples.md) · [DDlog migration](ddlog-runtime.md)

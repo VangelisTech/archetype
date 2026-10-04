@@ -71,22 +71,9 @@ _PULL_FORWARD_OPERATIONS = frozenset(
     {
         "autoresearch",
         "evaluate",
-        "grade_trajectory",
         "ingest_artifacts",
-        "ingest_claude_transcript",
         "query_artifacts",
-        "query_trajectory",
-        "query_transcript_rows",
-        "restore_mission_sandbox",
         "run_graders",
-        "run_mission",
-        "submit_mission",
-        "accept_mission_run",
-        "get_mission_run",
-        "cancel_mission_run",
-        "get_mission_run_events",
-        "list_mission_runs",
-        "run_hosted_episode",
     }
 )
 

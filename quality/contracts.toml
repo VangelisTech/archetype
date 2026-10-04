@@ -41,21 +41,6 @@ evals = []
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "missions.environment.pinned"
-source = "docs/guide/agent-missions.md"
-section = "5. Sandbox and validator protocol"
-owner = "missions"
-risk = "high"
-pytest = [
-    "tests/missions/test_version_inventory.py",
-    "tests/scripts/test_generate_version_inventory.py",
-    "tests/scripts/test_scan_pinned_artifacts.py",
-]
-static = ["scripts/generate_version_inventory.py"]
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "architecture.dependencies.enforced"
@@ -248,7 +233,6 @@ pytest = [
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_workflow_cleanup_cannot_admit_a_sibling_world",
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_concurrent_runtime_shutdown_is_single_flight",
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_cancelled_runtime_shutdown_retains_cleanup_for_retry",
-  "tests/missions/test_mission_author_world_integration.py::test_modal_mission_submit_binds_required_activity_before_first_tick",
 ]
 static = []
 evals = []
@@ -273,20 +257,6 @@ evals = [
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "missions.control.run_rest_surface"
-source = "docs/guide/api-layer.md"
-section = "MissionRun control surface"
-owner = "missions"
-risk = "high"
-pytest = [
-  "tests/api/test_mission_run_routes.py",
-  "tests/missions/test_mission_run_lifecycle.py",
-]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "commands.identity.idempotent"
@@ -387,23 +357,6 @@ evals = []
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "missions.activity.recovery"
-source = "docs/missions/recovery.md"
-section = "Mission Activity recovery"
-owner = "missions"
-risk = "high"
-pytest = [
-  "tests/missions/test_mission_author_activities.py",
-  "tests/missions/test_mission_author_world_integration.py",
-  "tests/missions/test_mission_critic_activities.py",
-  "tests/missions/test_mission_critic_world_integration.py",
-  "tests/missions/test_modal_activity_executors.py",
-]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "world.lifecycle.idempotent"
@@ -598,44 +551,8 @@ evals = ["idempotency.evaluation_result_replay"]
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "missions.transcripts.redacted_ingestion"
-source = "docs/missions/transcripts.md"
-section = "Transcript ingestion contract"
-owner = "missions"
-risk = "high"
-pytest = [
-  "tests/missions/test_transcript_ingestion.py",
-  "tests/missions/trajectories/test_claude_parser.py",
-]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "missions.transcripts.fail_closed"
-source = "docs/missions/transcripts.md"
-section = "Transcript ingestion contract"
-owner = "missions"
-risk = "high"
-pytest = ["tests/missions/test_transcript_ingestion.py"]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "missions.transcripts.occurrence_identity"
-source = "docs/missions/transcripts.md"
-section = "Transcript ingestion contract"
-owner = "missions"
-risk = "medium"
-pytest = ["tests/missions/test_transcript_ingestion.py"]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "evaluation.ontology.separated"
@@ -679,37 +596,7 @@ evals = [
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "physical_ai.workflow.evidence"
-source = "docs/guide/physical-ai.md"
-section = "Committed-state sequence"
-owner = "physical_ai"
-risk = "high"
-pytest = [
-  "tests/physical_ai/test_hosted_episode_activities.py",
-  "tests/physical_ai/test_hosted_modal_activity.py",
-  "tests/integration/test_hosted_physical_runtime.py",
-  "tests/world/test_required_projector_fanout.py",
-]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "physical_ai.activity.recovery"
-source = "docs/guide/physical-ai.md"
-section = "Hosted-episode recovery"
-owner = "physical_ai"
-risk = "high"
-pytest = [
-  "tests/physical_ai/test_hosted_episode_activities.py",
-  "tests/physical_ai/test_hosted_modal_activity.py",
-]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "core.ecs.data_model"
@@ -758,21 +645,6 @@ evals = []
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "missions.trajectory.runtime_service"
-source = "docs/guide/trajectories.md"
-section = "Select one evidence table"
-owner = "missions"
-risk = "medium"
-pytest = [
-  "tests/missions/test_trajectory_service.py",
-  "tests/integration/test_trajectory_analysis.py",
-  "tests/integration/test_domain_example_receipts.py::test_trajectory_receipt_is_semantic_and_stable",
-]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "research.autoresearch.ledger"
@@ -787,7 +659,7 @@ pytest = [
   "tests/app/test_application_review_contracts.py::test_stop_admission_then_wait_drained_joins_admitted_autoresearch",
   "tests/app/test_lifecycle_parity.py::TestShutdownErrorAggregation::test_shutdown_waits_for_admitted_autoresearch",
   "tests/wiring/test_wiring_contracts.py::test_wiring_is_explicit_topological_and_has_no_setter_injection",
-  "tests/wiring/test_wiring_contracts.py::test_pull_forward_registration_has_exact_four_actor_aware_and_fourteen_trusted_only_specs",
+  "tests/wiring/test_wiring_contracts.py::test_pull_forward_registration_has_exact_four_actor_aware_and_one_trusted_only_specs",
   "tests/integration/test_domain_example_receipts.py::test_autoresearch_receipt_pins_improvement_and_ledger_order",
 ]
 static = []
@@ -822,28 +694,12 @@ pytest = [
   "tests/graph/test_prefab_contract.py",
   "tests/integration/test_domain_example_receipts.py::test_prefab_receipt_pins_lineage_and_copy_semantics",
   "tests/integration/test_domain_example_receipts.py::test_biome_receipt_pins_composed_scene_outcome",
-  "tests/integration/test_domain_example_receipts.py::test_mission_factory_receipt_compiles_real_agent_authoring",
 ]
 static = []
 evals = []
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "missions.sandbox.checkpoint_restore"
-source = "docs/guide/agent-missions.md"
-section = "Supported sandbox backends"
-owner = "missions"
-risk = "high"
-pytest = [
-  "tests/missions/test_sandbox_service.py",
-  "tests/integration/test_docker_sandbox_parity.py",
-  "tests/integration/test_apple_container_sandbox_parity.py",
-]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "release.package.installable"
@@ -869,107 +725,11 @@ evals = []
 benchmarks = []
 profiles = ["main", "release"]
 
-[[contract]]
-id = "missions.mcp.trusted_host_adapter"
-source = "docs/guide/agent-missions.md"
-section = "11. Mission MCP server"
-owner = "missions"
-risk = "high"
-pytest = [
-  "tests/missions/mcp/test_mission_mcp_protocol.py",
-  "tests/missions/mcp/test_mission_mcp_rest_contract.py",
-  "tests/missions/mcp/test_mission_mcp_hostile_args.py",
-]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "missions.agent_v1.public_authoring"
-source = "docs/guide/agent-missions.md"
-section = "2. Public authoring surface"
-owner = "missions"
-risk = "medium"
-pytest = [
-  "tests/integration/test_domain_example_receipts.py::test_coding_agent_dry_run_receipt_is_typed_and_starts_no_work",
-  "tests/integration/test_domain_example_receipts.py::test_mission_factory_receipt_compiles_real_agent_authoring",
-]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "missions.agent_v1.validator_gated"
-source = "docs/guide/agent-missions.md"
-section = "4. State and transition protocol"
-owner = "missions"
-risk = "high"
-pytest = [
-  "tests/missions/test_domain_contracts.py",
-  "tests/missions/test_agent_mission_contracts.py",
-  "tests/missions/test_coding_agent_harness.py",
-  "tests/missions/test_sandbox_service.py",
-  "tests/missions/test_modal_agent_sandbox.py",
-  "tests/missions/test_mission_author_activities.py",
-  "tests/missions/test_mission_author_world_integration.py",
-]
-static = [
-  "scripts/check_architecture.py",
-  "scripts/check_lazy_audit.py",
-]
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "missions.agent_v1.exact_head_critic"
-source = "docs/guide/agent-missions.md"
-section = "Independent exact-head critic"
-owner = "missions"
-risk = "high"
-pytest = [
-  "tests/missions/test_critic_harness.py",
-  "tests/missions/test_mission_critic_activities.py",
-  "tests/missions/test_mission_critic_world_integration.py",
-  "tests/missions/test_modal_activity_executors.py::test_modal_critic_cold_restart_recovers_exact_receipt_with_one_start",
-]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "missions.sandbox.cleanup_ownership"
-source = "docs/guide/agent-missions.md"
-section = "5. Sandbox and validator protocol"
-owner = "missions"
-risk = "high"
-pytest = [
-  "tests/missions/test_sandbox_service.py",
-  "tests/missions/test_mission_author_world_integration.py::test_modal_mission_submit_binds_required_activity_before_first_tick",
-]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
-[[contract]]
-id = "missions.control.authenticated_profiles"
-source = "docs/guide/agent-missions.md"
-section = "Authenticated execution profiles"
-owner = "missions"
-risk = "high"
-pytest = [
-  "tests/api/test_mission_principals.py",
-  "tests/missions/test_execution_profiles.py",
-  "packages/archetype-missions/tests/test_missions_extension.py",
-]
-static = ["scripts/check_architecture.py"]
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "security.redaction.pre_durability"
@@ -979,9 +739,20 @@ owner = "redaction"
 risk = "high"
 pytest = [
   "tests/app/test_redaction_service.py",
-  "tests/missions/test_transcript_ingestion.py",
 ]
 static = []
 evals = ["security.pre_durability_redaction"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "examples.biome.pinned_execution"
+source = "docs/guide/examples.md"
+section = "14. Live Biome Agent"
+owner = "examples"
+risk = "high"
+pytest = ["tests/examples/test_biome_agent_contract.py"]
+static = []
+evals = []
 benchmarks = []
 profiles = ["pr", "main", "release"]

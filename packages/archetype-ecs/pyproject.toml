@@ -45,16 +45,10 @@ dependencies = [
 archetype = "archetype.cli.main:app"
 
 [project.optional-dependencies]
-missions = ["archetype-missions>=0.6,<0.7"]
-physical-ai = ["archetype-physical-ai>=0.6,<0.7"]
 research = ["archetype-research>=0.6,<0.7"]
 all = [
-    "archetype-missions>=0.6,<0.7",
-    "archetype-physical-ai>=0.6,<0.7",
     "archetype-research>=0.6,<0.7",
 ]
-coding-agent = ["archetype-missions[modal]>=0.6,<0.7"]
-sim = ["archetype-physical-ai[sim]>=0.6,<0.7"]
 otlp = ["opentelemetry-exporter-otlp-proto-http>=1.20"]
 logfire = ["logfire[fastapi]>=4.32.0"]
 

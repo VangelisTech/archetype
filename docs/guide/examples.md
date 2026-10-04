@@ -1,5 +1,8 @@
 # Examples
 
+These examples exercise the retained Python runtime. The native DDlog preview
+has its own [persistence example](ddlog-runtime.md#run-the-evidence).
+
 Every example on this page runs end-to-end with a single command. The
 recommended pattern is `ArchetypeRuntime` for scripts. A small number of
 examples intentionally exercise internal services as focused implementation
@@ -14,10 +17,7 @@ content.
 | Package context | Examples |
 |---|---|
 | Framework — `archetype-ecs` / `archetype` | [Quickstart](#0-quickstart), [world mutations](#1-world-mutations), [counterfactual forks](#2-fork-for-counterfactuals), [time travel](#3-time-travel-queries), [messaging](#4-agent-messaging), [LLM agents](#5-llm-powered-agents), [hooks](#7-lifecycle-hooks), [cloud storage](#9-cloud-storage), [graphs](#11b-graph-relationships), [prefabs](#12-prefabs), [Biome RTS](#13-biome-inspired-rts), and [live Biome](#14-live-biome-agent) |
-| Missions — `archetype-missions` / `archetype.missions` | [Trajectory analysis](#6-mission-trajectory-analysis), [HTN resolution](#8-htn-resolution), and [coding-agent mission](#11a-coding-agent-mission) |
 | Research — `archetype-research` / `archetype.research` | [AutoResearch](#10-autoresearch) |
-| Physical AI — `archetype-physical-ai` / `archetype.physical_ai` | The hosted-episode runnable contract lives in [Physical AI](physical-ai.md); there is no numbered script. |
-| Framework + Missions composition | [Mission Factory assets](#15-mission-factory-assets) |
 
 ## Example details
 
@@ -193,31 +193,6 @@ Requires an OpenAI API key (or any provider via `daft.set_provider()`).
 
 ---
 
-## 6. Mission Trajectory Analysis
-
-**Package context:** Missions (`archetype-missions`, import
-`archetype.missions`).
-
-Persist normalized turn and reward rows keyed by `episode_id`, then select
-and grade one episode's evidence through `MissionWorld`. The example is
-deterministic and requires no model credentials.
-
-```bash
-uv run python examples/06_trajectory_analysis.py
-```
-
-Source: [`examples/06_trajectory_analysis.py`](https://github.com/VangelisTech/archetype/blob/main/examples/06_trajectory_analysis.py)
-
-**What it demonstrates:**
-
-- **Normalized evidence**: turn and reward rows remain independently queryable per episode.
-- **Typed selection**: `TrajectorySelection` filters one evidence table by `episode_id`.
-- **Derived view**: `trajectory(...)` reconstructs one episode's seq-ordered evidence lazily.
-- **Typed composition**: `MissionWorld.query_trajectory()` uses persisted query access; `MissionWorld.grade_trajectory()` delegates graders to evaluation.
-- **No duplicate trajectory model**: the example consumes `archetype.missions.trajectories` directly.
-
----
-
 ## 7. Lifecycle Hooks
 
 **Package context:** Framework (`archetype-ecs`, import `archetype`).
@@ -236,25 +211,6 @@ Source: [`examples/07_hooks.py`](https://github.com/VangelisTech/archetype/blob/
 - **Tick telemetry**: `PreTick` starts a timer and `PostTick` computes metrics from `event.results`
 - **Hook handles**: unregister a temporary debug hook with `world.remove_hook(handle)`
 - **Boundary discipline**: hooks emit side effects; processors keep the simulation state deterministic
-
----
-
-## 8. HTN Resolution
-
-**Package context:** Missions (`archetype-missions`, import
-`archetype.missions`).
-
-Resolve a hierarchical task network into a fan-out AND/OR forest.
-
-```bash
-uv run python examples/08_htn_resolution.py
-```
-
-Source: [`examples/08_htn_resolution.py`](https://github.com/VangelisTech/archetype/blob/main/examples/08_htn_resolution.py)
-
-This is a planning primitive, not the Agent Missions V1 planner. The future
-mission-planning adapter may translate a resolved plan into task entities and
-`DependsOn` edges; it may not advance those tasks.
 
 ---
 
@@ -294,43 +250,6 @@ AutoResearch is a sibling workflow, not a coding-agent mission subfamily. It
 may consume an agent callback without inheriting mission transition authority.
 Its transient `ResearchCandidateContext` is not the persisted missions
 `Candidate` review subject.
-
----
-
-## 11a. Coding-Agent Mission
-
-**Package context:** Missions (`archetype-missions`, import
-`archetype.missions`).
-
-Submit a two-task repository mission: first prove a regression is red, then
-implement the fix only after that predecessor is accepted.
-
-```bash
-# Inspect the typed graph without creating Modal resources.
-uv run python examples/11_coding_agent_mission.py --dry-run
-
-# Run the credentialed dogfood.
-uv run python examples/11_coding_agent_mission.py
-```
-
-Source: [`examples/11_coding_agent_mission.py`](https://github.com/VangelisTech/archetype/blob/main/examples/11_coding_agent_mission.py)
-
-**What it demonstrates:**
-
-- typed `AgentTask` and `CommandValidator` authoring;
-- a temporal `DependsOn` relationship instead of a JSON plan cursor;
-- an expected-nonzero validator for the red regression;
-- committed dispatch admitted as a durable author Activity after its tick;
-- revision-bound validation and exact-head publication producing an immutable
-  candidate rather than acceptance;
-- independent review of that exact candidate in a distinct critic sandbox;
-- processor-owned acceptance only after a complete candidate-bound critic
-  receipt; and
-- same-worktree repair carrying durable validator failures or blocking critic
-  findings into a new dispatch and candidate.
-
-See [Agent Missions V1](agent-missions.md) for the complete state machine,
-sequence diagram, ownership map, dogfood result, and explicit limits.
 
 ---
 
@@ -383,9 +302,6 @@ uv run python examples/13_biome_rts.py
 
 Source: [`examples/13_biome_rts.py`](https://github.com/VangelisTech/archetype/blob/main/examples/13_biome_rts.py)
 
-The hosted physical-AI episode path has no numbered example script; its
-runnable snippet and contract live in [Physical AI](physical-ai.md).
-
 ---
 
 ## 14. Live Biome Agent
@@ -415,32 +331,3 @@ server is present. See [Prefab Libraries](prefab-libraries.md#literal-biome-dogf
 for the ownership boundary, upstream pins, and reproducibility notes.
 
 ---
-
-## 15. Mission Factory Assets
-
-**Package context:** Framework prefab primitives plus Missions authoring
-contracts (`archetype-ecs` + `archetype-missions`).
-
-Author a software factory as an ECS prefab library, instantiate its reusable
-`BugFixLine`, and compile the copied recipe entities into the same
-`MissionSubmission`, `AgentTask`, validators, publication policy, and critic
-policy accepted by Agent Missions. No agent, provider, or 3D renderer is
-started.
-
-```bash
-# Prove the semantic composition and print a compact receipt.
-uv run python examples/15_mission_factory_assets.py
-
-# Export all nine committed AI-ready object briefs.
-uv run python examples/15_mission_factory_assets.py --briefs-json
-```
-
-Source: [`examples/15_mission_factory_assets.py`](https://github.com/VangelisTech/archetype/blob/main/examples/15_mission_factory_assets.py)
-
-The example is deliberately not a new production family or a simulated game.
-Agent Missions remains the transition authority. The prefab world contains
-queryable task, validator, connection, geometry, socket, presentation, and
-interaction recipes; a trusted example-local compiler turns only the
-allowlisted `DependsOn` and `Guards` rules into supported authoring values.
-See the [Mission Factory Asset Bible](mission-factory-assets.md) for the
-factory grammar and 3D generation contract.

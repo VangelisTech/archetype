@@ -5,8 +5,8 @@
 This page is the hub for Archetype's **engine**. It is the same mental model as
 the [Framework overview](../framework/index.md), expanded so you can drill into each box.
 
-Product features — HTTP hosting, command gate, agent missions, physical AI,
-prefabs — live in the [Application layer](app-overview.md). They compose on
+Product features — HTTP hosting, command gate, Research, artifacts,
+and prefabs — live in the [Application layer](app-overview.md). They compose on
 top of this core; they are not a second storage model.
 
 Normative application ownership rules live in
@@ -205,7 +205,7 @@ graph TB
     Families --> Engine
 ```
 
-When you are ready for hosting, roles, missions, or eval workflows, leave this
+When you are ready for hosting, roles, or eval workflows, leave this
 hub and read the [Application layer](app-overview.md).
 
 ## Next steps
@@ -214,4 +214,4 @@ hub and read the [Application layer](app-overview.md).
 - [Building simulations](building-simulations.md) — end-to-end authoring pattern
 - [Application layer](app-overview.md) — families above the engine
 - [Architecture Overview](architecture.md) — app contracts and tick lifecycle
-- [Agent Missions](agent-missions.md) · [Physical AI](physical-ai.md) · [AutoResearch](autoresearch.md)
+- [AutoResearch](autoresearch.md) · [DDlog migration](ddlog-runtime.md)

@@ -45,11 +45,9 @@ from typing import Any, cast
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOTS = (
     ROOT / "packages/archetype-ecs/src",
-    ROOT / "packages/archetype-missions/src",
-    ROOT / "packages/archetype-physical-ai/src",
     ROOT / "packages/archetype-research/src",
 )
-EXPECTED_WORLD_LIBRARIES = ("missions", "physical-ai", "research")
+EXPECTED_WORLD_LIBRARIES = ("research",)
 COMMAND_SCHEDULER = ROOT / "packages/archetype-ecs/src/archetype/commands/scheduler.py"
 API_ERRORS = ROOT / "packages/archetype-ecs/src/archetype/api/errors.py"
 
@@ -97,23 +95,6 @@ def check_registry_coverage() -> list[str]:
     from archetype.artifacts.models import IngestArtifacts, QueryArtifacts
     from archetype.commands.models import GetAuditHistory
     from archetype.evaluation.models import Evaluate, RunGraders
-    from archetype.missions.models import (
-        AcceptMissionRun,
-        CancelMissionRun,
-        GetMissionRun,
-        GetMissionRunEvents,
-        ListMissionRuns,
-        RestoreMissionSandbox,
-        RunMission,
-        SubmitMission,
-    )
-    from archetype.missions.trajectories.models import (
-        GradeTrajectory,
-        IngestClaudeTranscript,
-        QueryTrajectory,
-        QueryTranscriptRows,
-    )
-    from archetype.physical_ai.models import RunHostedEpisode
     from archetype.research.models import AutoResearch
     from archetype.world.models import (
         PORTABLE_TICK_OPERATION_TYPES,
@@ -133,19 +114,6 @@ def check_registry_coverage() -> list[str]:
         QueryArtifacts,
         RunGraders,
         Evaluate,
-        IngestClaudeTranscript,
-        QueryTranscriptRows,
-        QueryTrajectory,
-        GradeTrajectory,
-        SubmitMission,
-        RunMission,
-        RestoreMissionSandbox,
-        AcceptMissionRun,
-        GetMissionRun,
-        CancelMissionRun,
-        GetMissionRunEvents,
-        ListMissionRuns,
-        RunHostedEpisode,
         AutoResearch,
     )
     expected_models = (*WORLD_OPERATION_TYPES, GetAuditHistory, *pull_forward_models)
@@ -244,8 +212,6 @@ ERROR_SURFACE_PACKAGES = (
     "archetype.artifacts",
     "archetype.commands",
     "archetype.evaluation",
-    "archetype.missions",
-    "archetype.physical_ai",
     "archetype.redaction",
     "archetype.research",
     "archetype.storage",
@@ -264,31 +230,7 @@ INTENTIONAL_UNMAPPED = {
 # Private control-flow exceptions proven not to cross a registered handler
 # boundary. A stale or newly mapped entry fails the audit just like the
 # intentional-500 manifest.
-INTERNAL_ONLY_EXCEPTIONS = {
-    "archetype.missions.coding_agents.app_server.CodexAppServerError": (
-        "caught and normalized into an errored AgentExecutionResult by "
-        "CodingAgentHarness.run before the mission handler returns"
-    ),
-    "archetype.missions.coding_agents.app_server.CodexTurnCompletionBarrierError": (
-        "caught by run_codex_app_server_turn while connector cleanup retries; "
-        "persistent cleanup failure is normalized by CodingAgentHarness before "
-        "the mission handler returns"
-    ),
-    "archetype.missions.critics.harness._UnverifiableReview": (
-        "caught and normalized inside CriticHarness.review before the mission handler returns"
-    ),
-    "archetype.missions.mcp.client.MissionToolError": (
-        "caught inside MissionMcpServer._tools_call and rendered as a bounded "
-        "isError MCP tool result; the MCP stdio adapter is an HTTP client of "
-        "the REST surface and never enters a registered API handler (issue #810)"
-    ),
-    "archetype.missions.sandboxes._subprocess._CleanupTimeout": (
-        "caught inside run_host and normalized into a bounded timeout ProcessResult"
-    ),
-    "archetype.missions.sandboxes._subprocess._JoinTimeout": (
-        "caught inside the private subprocess cleanup path before run_host returns"
-    ),
-}
+INTERNAL_ONLY_EXCEPTIONS: dict[str, str] = {}
 
 
 def _mapped_exception_bases() -> tuple[type[BaseException], ...]:

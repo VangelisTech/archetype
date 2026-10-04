@@ -51,13 +51,8 @@ archetype.wiring
   +-> evaluation handlers -> storage + world.query
   +-> resolved manifests -> bounded WorldLibraryContext
 
-archetype.missions._extension
-  +-> transcript + trajectory services -> declared framework families
-  +-> exact Mission handlers -> reservation-owned MissionService
 archetype.research._extension
   +-> AutoResearch handler + per-runtime admissions -> storage/world ports
-archetype.physical_ai._extension
-  +-> hosted-episode handler -> per-world Activity binding + storage/world ports
 ```
 
 Framework wiring injects `CommandScheduler.materialize` when lifecycle constructs
@@ -151,23 +146,6 @@ dispatcher awaits the handler inside its existing admission, so shutdown drains
 it without a second owner reservation or detached task. Scoring remains an
 explicit callback contract.
 
-`archetype-physical-ai` owns physical state, canonical provider protocols,
-hosted-episode values, provider recovery, and the whole-episode Activity
-workflow. Its private `archetype.physical_ai._extension` installer registers the
-single `run_hosted_episode` operation. On first use for a world it constructs
-and retains that world's provider-backed Activity binding through
-`RuntimeResources`, registers the required projector, and rejects a later
-attempt to change the world's provider namespace. Remote provider work never
-runs inside a retryable tick.
-
-`archetype-missions` owns mission state, sandboxes, coding-agent sessions,
-transcripts, and trajectory evidence. Its private
-`archetype.missions._extension` installer constructs transcript and trajectory
-services, registers every manifest-declared operation, and leaves each
-`MissionService` to be constructed inside its pre-reserved workflow owner when
-a Mission operation is admitted. These library internals do not move into the
-framework composition root.
-
 ## Commands family
 
 The top-level commands family owns exact operation registration,
@@ -220,7 +198,5 @@ The CLI remains an HTTP client.
 - artifact values, pipeline, scanners, views, and handlers: `packages/archetype-ecs/src/archetype/artifacts/`
 - evaluation values, grading, pinned views, handlers, and receipt schema: `packages/archetype-ecs/src/archetype/evaluation/`
 - world-library manifest, discovery, and context contracts: `packages/archetype-ecs/src/archetype/world_libraries/`
-- missions state, workflows, evidence, and private adapter: `packages/archetype-missions/src/archetype/missions/`
 - research values, ledger, views, admission, and handler: `packages/archetype-research/src/archetype/research/`
-- physical-AI models, state, views, and handlers: `packages/archetype-physical-ai/src/archetype/physical_ai/`
 - command/access audit projection: `packages/archetype-ecs/src/archetype/commands/audit.py`

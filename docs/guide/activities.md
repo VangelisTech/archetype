@@ -4,10 +4,9 @@
 
 **Status:** The generic boundary, local catalog, and migration order are
 ratified and implemented. Each consuming family owns its semantic schemas,
-provider recovery meaning, crash matrix, and executable oracles. See
-[Agent Missions](../missions/recovery.md) and
-[Physical AI](physical-ai.md#hosted-episode-recovery) for the two implemented
-first-party consumers.
+provider recovery meaning, crash matrix, and executable oracles. The former
+Missions and Physical AI consumers have been removed; generic delivery
+mechanics and their focused tests remain.
 
 **Scope:** Durable work admitted after one committed tick and observed by a
 later committed tick. This specification refines the required-projector rule
@@ -141,7 +140,7 @@ identity to the exact recorded result reference/digest and prove that the
 family's complete result-derived fact set is present. The Activity settles only
 when that binding appears in the exact later `CommittedTickReceipt`. A
 correlation ID by itself is not completion evidence. Settlement does not decide
-mission acceptance, physical success, retry, or any other family transition.
+acceptance, success, retry, or any other family transition.
 
 The receipt reader fails closed unless the requested world/run/tick is still
 the current committed head and its visibility token is the sole token at that
@@ -178,7 +177,7 @@ ordering, and settlement boundaries.
 publication, seeded simulation, and real robot may share claim and fence
 machinery without sharing a replay decision:
 
-- Mission Git work reconciles the exact repository, branch, base, provider
+- A Git publication adapter reconciles the exact repository, branch, base, provider
   operation identity, and published head.
 - A seeded simulation reuses the first durable result for its stable operation
   identity; byte-identical GPU replay is not a correctness assumption.
@@ -188,14 +187,7 @@ machinery without sharing a replay decision:
 No generic recovery-policy enum or lifecycle-status enum is ratified by this
 document. The initial catalog records durable facts and permits only the
 transitions required by the crash oracles. Shared vocabulary may be extracted
-after the Mission author, critic, and hosted Physical-AI consumers demonstrate
-that it has the same meaning.
-
-`archetype.missions` owns Agent Missions workflow authority, including its
-intent-to-Activity-to-observation choreography. `archetype.physical_ai` owns
-the corresponding hosted-physical choreography. Both families retain their
-Components, processors, value contracts, provider protocols, and recovery
-meaning; neither requires an `archetype.app` mirror.
+only after independent consumers demonstrate the same meaning.
 
 ## 5. Identity and bounded durability
 
@@ -261,14 +253,12 @@ reopen authority also survives a required-projector failure, because its retry
 may be the operation that first durably admits the Activity.
 
 Package-specific crash matrices and completeness evidence live with their
-owners: [Agent Missions](../missions/recovery.md) and
-[Physical AI](physical-ai.md#hosted-episode-recovery).
+owning adapters when those adapters are installed.
 
 ## 6. Resource-spike disposition
 
 The `AsyncResources`/WorldHost prototype is retained as architecture evidence
-and is frozen. It is not the implementation path for Agent Missions or
-whole-episode Physical AI.
+and is frozen. It is not the DDlog migration implementation path.
 
 This decision preserves the useful part of the Resource finding: process hosts
 may still own long-lived clients, placement, readiness, and teardown. It rejects

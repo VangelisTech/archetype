@@ -4,7 +4,7 @@ version = "0.6.3"
 description = "Development workspace for the Archetype framework, first-party world libraries, and independent Smol teaching engine."
 requires-python = ">=3.12"
 dependencies = [
-    "archetype-ecs[all,coding-agent,logfire,sim]==0.6.3",
+    "archetype-ecs[all,logfire]==0.6.3",
     "archetype-smol==0.6.3",
 ]
 
@@ -13,16 +13,12 @@ addopts = ["--import-mode=importlib"]
 testpaths = [
     "tests",
     "packages/archetype-ecs/tests",
-    "packages/archetype-missions/tests",
-    "packages/archetype-physical-ai/tests",
     "packages/archetype-research/tests",
     "packages/archetype-smol/tests",
 ]
 python_files = ["test_*.py"]
 pythonpath = [
     "packages/archetype-ecs/src",
-    "packages/archetype-missions/src",
-    "packages/archetype-physical-ai/src",
     "packages/archetype-research/src",
     "packages/archetype-smol/src",
     ".",
@@ -75,7 +71,6 @@ dev = [
     "httpx>=0.27",
     "pre-commit>=4.0",
     "mutmut>=3.5",
-    "mujoco>=3.2",  # physics parity tests (tests/physical_ai/test_mujoco_rollout.py)
     "pytest-xdist>=3.8.0",
     # Dev keeps the optional Logfire backend installed so CI can exercise the
     # explicit host adapter; the published base package remains vendor-neutral.
@@ -161,12 +156,10 @@ setuptools = "2026-07-05T00:00:00Z"
 pillow = "2026-07-02T00:00:00Z"
 
 [tool.uv.workspace]
-members = ["packages/*"]
+members = ["packages/archetype-ecs", "packages/archetype-research", "packages/archetype-smol"]
 
 [tool.uv.sources]
 archetype-ecs = { workspace = true }
-archetype-missions = { workspace = true }
-archetype-physical-ai = { workspace = true }
 archetype-research = { workspace = true }
 archetype-smol = { workspace = true }
 
@@ -207,8 +200,6 @@ python-version = "3.12"
 # bench/evals/experiments/examples/scripts and the vendored .venv/stdlib stubs.
 include = [
     "packages/archetype-ecs/src",
-    "packages/archetype-missions/src",
-    "packages/archetype-physical-ai/src",
     "packages/archetype-research/src",
     "packages/archetype-smol/src",
 ]

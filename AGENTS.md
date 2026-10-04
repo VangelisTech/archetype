@@ -2,6 +2,15 @@
 
 Repo-specific guidance for AI collaborators. For normative behavior, read the specification group under `docs/guide/`, starting with `docs/guide/specification.md`.
 
+Current direction: live execution moves to the existing Rust DDlog Runtime.
+`crates/archetype-ddlog` owns only schemas, attribution, publication and cut
+reads; it must not add an evaluator or scheduler. The Python runtime still
+uses its earlier Daft loop until the explicit bridge migration. Daft belongs
+outside the accepted target's live loop. See `docs/guide/ddlog-runtime.md`.
+Missions and Physical AI products are removed; X0 owns agent semantics.
+Retain generic simulation, history/forks, artifacts, inference and engine tests.
+
+
 ## Package ownership
 
 Choose the owning package before adding a type or behavior:
@@ -16,7 +25,7 @@ Choose the owning package before adding a type or behavior:
 | Offline whole-storage migration planning, transfer, verification, and receipts | `archetype.migration` |
 | Transport and authentication | `archetype.api` |
 | Concrete composition and process lifetime | `archetype.wiring` and `archetype.runtime_resources` |
-| Missions, Physical AI, or Research domain behavior | The owning distribution under `packages/archetype-<library>/src/archetype/<family>/` |
+| Research domain behavior | The owning distribution under `packages/archetype-<library>/src/archetype/<family>/` |
 | One library's trusted framework composition adapter | Its private `archetype.<family>._extension` module only |
 
 Ordinary modules in top-level families may import `archetype.core`, themselves,
@@ -60,9 +69,7 @@ does not require an application facade or service protocol.
 
 A reviewed family may own a capability-scoped resource adapter and workflows
 over declared lower-family ports without gaining framework composition
-authority. Agent Missions owns coding-agent state, processors, relations,
-sandbox resources, transcript/trajectory evidence, and Activity choreography
-under the separately installed `archetype.missions` namespace.
+authority.
 
 The accepted Activity migration distinguishes tick-time capability from
 between-tick durable work. A Resource is available while executing a tick;
@@ -72,8 +79,7 @@ later committed tick. `archetype.activities` owns generic delivery mechanics
 only and consumes the lower `archetype.storage.activity_catalog`; recovery
 meaning stays with the owning family/provider adapter. Application choreography
 belongs to the owning top-level family over declared lower-family ports.
-Hosted-episode choreography belongs to the separately installed
-`archetype.physical_ai` library; no application mirror is recreated. The
+The
 `AsyncResources`/WorldHost spike is frozen and must not be merged into this
 path. See `docs/guide/activities.md`.
 
@@ -98,13 +104,6 @@ archetype/
 │   │   ├── runtime/        # Supported trusted scripting handles
 │   │   ├── runtime_resources.py
 │   │   └── wiring.py       # Framework composition + extension installation
-│   ├── archetype-missions/src/archetype/missions/
-│   │   ├── _extension.py   # Private manifest/installation adapter
-│   │   ├── runtime.py      # Missions + MissionWorld typed adapters
-│   │   └── ...             # Coding agents, sandboxes, transcripts, trajectories
-│   ├── archetype-physical-ai/src/archetype/physical_ai/
-│   │   ├── _extension.py   # Private manifest/installation adapter
-│   │   └── ...             # Physical state, policies + hosted episodes
 │   └── archetype-research/src/archetype/research/
 │       ├── _extension.py   # Private manifest/installation adapter
 │       └── ...             # AutoResearch values, ledger + workflow
@@ -389,8 +388,6 @@ change, and report the exact validation that ran. See
 | `packages/archetype-ecs/src/archetype/artifacts/pipeline.py` | Cohesive reusable file-ingestion graph |
 | `packages/archetype-ecs/src/archetype/core/aio/async_world.py` | World runtime |
 | `packages/archetype-ecs/src/archetype/world_libraries/` | Trusted extension contracts and discovery |
-| `packages/archetype-missions/src/archetype/missions/_extension.py` | Missions manifest and installation |
-| `packages/archetype-physical-ai/src/archetype/physical_ai/_extension.py` | Physical-AI manifest and installation |
 | `packages/archetype-research/src/archetype/research/_extension.py` | Research manifest and installation |
 | `tests/app/test_runtime_contracts.py` | Executable runtime contracts |
 | `tests/core/test_no_legacy_sync_kernel.py` | Parallel sync-kernel removal and supported blocking-runtime boundary |

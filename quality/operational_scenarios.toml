@@ -133,27 +133,6 @@ artifact_policy = "redacted_receipt"
 artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["release"]
 
-[[scenario]]
-id = "example.06_trajectory_analysis"
-kind = "example"
-owner = "missions"
-owner_paths = ["packages/archetype-missions/src/archetype/missions"]
-source_path = "examples/06_trajectory_analysis.py"
-source_command = ["python", "examples/06_trajectory_analysis.py"]
-required_extras = []
-tier = 1
-applicability = ["source", "wheel"]
-timeout_seconds = 180
-prerequisites = []
-missing_prerequisite = "fail"
-semantic_oracle = { kind = "pytest", ref = "tests/integration/test_domain_example_receipts.py::test_trajectory_receipt_is_semantic_and_stable" }
-contracts = [
-  "missions.trajectory.runtime_service",
-]
-cleanup_policy = "isolated"
-artifact_policy = "receipt"
-artifact_schema = "archetype.operational-results/v1"
-required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
 id = "example.07_hooks"
@@ -175,25 +154,6 @@ artifact_policy = "receipt"
 artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
 
-[[scenario]]
-id = "example.08_htn_resolution"
-kind = "example"
-owner = "missions"
-owner_paths = ["packages/archetype-missions/src/archetype/missions/planning"]
-source_path = "examples/08_htn_resolution.py"
-source_command = ["python", "examples/08_htn_resolution.py"]
-required_extras = []
-tier = 1
-applicability = ["source", "wheel"]
-timeout_seconds = 180
-prerequisites = []
-missing_prerequisite = "fail"
-semantic_oracle = { kind = "pytest", ref = "tests/integration/test_domain_example_receipts.py::test_htn_receipt_pins_fanout_and_persisted_solutions" }
-contracts = ["core.processors.execution"]
-cleanup_policy = "isolated"
-artifact_policy = "receipt"
-artifact_schema = "archetype.operational-results/v1"
-required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
 id = "example.09_cloud_storage"
@@ -273,31 +233,6 @@ artifact_policy = "receipt"
 artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main"]
 
-[[scenario]]
-id = "example.11_coding_agent_mission.dry_run"
-kind = "example"
-owner = "missions"
-owner_paths = ["packages/archetype-missions/src/archetype/missions"]
-source_path = "examples/11_coding_agent_mission.py"
-source_command = [
-  "python",
-  "examples/11_coding_agent_mission.py",
-  "--dry-run",
-  "--backend",
-  "modal",
-]
-required_extras = ["coding-agent"]
-tier = 1
-applicability = ["source", "wheel"]
-timeout_seconds = 120
-prerequisites = []
-missing_prerequisite = "fail"
-semantic_oracle = { kind = "pytest", ref = "tests/integration/test_domain_example_receipts.py::test_coding_agent_dry_run_receipt_is_typed_and_starts_no_work" }
-contracts = ["missions.agent_v1.public_authoring"]
-cleanup_policy = "isolated"
-artifact_policy = "receipt"
-artifact_schema = "archetype.operational-results/v1"
-required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
 id = "example.11_graph_relationships"
@@ -365,7 +300,7 @@ required_cadence = ["pr", "main", "release"]
 [[scenario]]
 id = "example.14_biome_agent"
 kind = "example"
-owner = "missions"
+owner = "examples"
 owner_paths = ["examples/biome_agent"]
 source_path = "examples/14_biome_agent.py"
 source_command = ["pytest", "-q", "tests/infrastructure/test_biome_live.py::test_pinned_biome_episode"]
@@ -383,38 +318,12 @@ prerequisites = [
 ]
 missing_prerequisite = "not_run"
 semantic_oracle = { kind = "pytest", ref = "tests/infrastructure/test_biome_live.py::test_pinned_biome_episode" }
-contracts = ["missions.environment.pinned"]
+contracts = ["examples.biome.pinned_execution"]
 cleanup_policy = "isolated"
 artifact_policy = "receipt"
 artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["demand"]
 
-[[scenario]]
-id = "example.15_mission_factory_assets"
-kind = "example"
-owner = "missions"
-owner_paths = [
-  "packages/archetype-ecs/src/archetype/graph",
-  "packages/archetype-missions/src/archetype/missions",
-  "examples/mission_factory",
-]
-source_path = "examples/15_mission_factory_assets.py"
-source_command = ["python", "examples/15_mission_factory_assets.py"]
-required_extras = []
-tier = 1
-applicability = ["source", "wheel"]
-timeout_seconds = 300
-prerequisites = []
-missing_prerequisite = "fail"
-semantic_oracle = { kind = "pytest", ref = "tests/integration/test_domain_example_receipts.py::test_mission_factory_receipt_compiles_real_agent_authoring" }
-contracts = [
-  "graph.prefabs.copy_on_instantiate",
-  "missions.agent_v1.public_authoring",
-]
-cleanup_policy = "isolated"
-artifact_policy = "receipt"
-artifact_schema = "archetype.operational-results/v1"
-required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
 id = "dogfood.runtime.loopback"
@@ -537,40 +446,6 @@ artifact_policy = "receipt"
 artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
 
-[[scenario]]
-id = "dogfood.agent_mission.modal_activity_contracts"
-kind = "dogfood"
-owner = "missions"
-owner_paths = [
-  "packages/archetype-missions/src/archetype/missions",
-  "packages/archetype-ecs/src/archetype/runtime_resources.py",
-  "packages/archetype-ecs/src/archetype/wiring.py",
-  "tests/missions/test_modal_activity_executors.py",
-  "tests/missions/test_mission_author_world_integration.py",
-]
-source_path = "tests/missions/test_modal_activity_executors.py"
-source_command = [
-  "pytest",
-  "-q",
-  "tests/missions/test_modal_activity_executors.py",
-  "tests/missions/test_mission_author_world_integration.py",
-]
-required_extras = []
-tier = 1
-applicability = ["source", "wheel"]
-timeout_seconds = 300
-prerequisites = []
-missing_prerequisite = "fail"
-semantic_oracle = { kind = "pytest", ref = "tests/missions/test_modal_activity_executors.py::test_modal_critic_cold_restart_recovers_exact_receipt_with_one_start" }
-contracts = [
-  "missions.agent_v1.validator_gated",
-  "missions.agent_v1.exact_head_critic",
-  "missions.sandbox.cleanup_ownership",
-]
-cleanup_policy = "isolated"
-artifact_policy = "receipt"
-artifact_schema = "archetype.operational-results/v1"
-required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
 id = "dogfood.runtime.shutdown"
@@ -603,172 +478,9 @@ artifact_policy = "receipt"
 artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["release"]
 
-[[scenario]]
-id = "dogfood.agent_mission.modal_live"
-kind = "dogfood"
-owner = "missions"
-owner_paths = [
-  "packages/archetype-missions/src/archetype/missions",
-  "tests/infrastructure/test_modal_agent_mission_live.py",
-]
-source_path = "tests/infrastructure/test_modal_agent_mission_live.py"
-source_command = [
-  "pytest",
-  "-q",
-  "tests/infrastructure/test_modal_agent_mission_live.py",
-]
-required_extras = ["coding-agent"]
-tier = 6
-applicability = ["source", "wheel"]
-timeout_seconds = 1500
-prerequisites = [
-  "credential:MODAL_TOKEN_ID",
-  "credential:MODAL_TOKEN_SECRET",
-  "infrastructure:CODING_AGENT_MODAL_WORKSPACE",
-  "infrastructure:CODING_AGENT_MODAL_ENVIRONMENT",
-  "infrastructure:CODEX_AUTH_VOLUME",
-  "infrastructure:CODING_AGENT_GITHUB_SECRET",
-]
-missing_prerequisite = "not_run"
-semantic_oracle = { kind = "pytest", ref = "tests/infrastructure/test_modal_agent_mission_live.py" }
-contracts = [
-  "missions.environment.pinned",
-  "missions.sandbox.cleanup_ownership",
-]
-cleanup_policy = "provider"
-artifact_policy = "redacted_receipt"
-artifact_schema = "archetype.operational-results/v1"
-required_cadence = ["demand"]
 
-[[scenario]]
-id = "dogfood.physical_ai.hosted_episode"
-kind = "dogfood"
-owner = "physical_ai"
-owner_paths = [
-  "packages/archetype-physical-ai/src/archetype/physical_ai",
-  "packages/archetype-ecs/src/archetype/activities",
-  "packages/archetype-ecs/src/archetype/runtime",
-  "packages/archetype-ecs/src/archetype/wiring.py",
-]
-source_path = "tests/integration/test_hosted_physical_runtime.py"
-source_command = [
-  "pytest",
-  "-q",
-  "tests/integration/test_hosted_physical_runtime.py",
-]
-required_extras = []
-tier = 1
-applicability = ["source", "wheel"]
-timeout_seconds = 600
-prerequisites = []
-missing_prerequisite = "fail"
-semantic_oracle = { kind = "pytest", ref = "tests/integration/test_hosted_physical_runtime.py" }
-contracts = [
-  "physical_ai.workflow.evidence",
-]
-cleanup_policy = "isolated"
-artifact_policy = "receipt"
-artifact_schema = "archetype.operational-results/v1"
-required_cadence = ["release"]
 
-[[scenario]]
-id = "dogfood.physical_ai.modal_r2_live"
-kind = "dogfood"
-owner = "physical_ai"
-owner_paths = [
-  "packages/archetype-physical-ai/src/archetype/physical_ai",
-  "packages/archetype-ecs/src/archetype/activities",
-  "packages/archetype-ecs/src/archetype/runtime",
-  "packages/archetype-ecs/src/archetype/wiring.py",
-  "tests/infrastructure/test_modal_physical_r2_live.py",
-]
-source_path = "tests/infrastructure/test_modal_physical_r2_live.py"
-source_command = [
-  "pytest",
-  "-q",
-  "tests/infrastructure/test_modal_physical_r2_live.py",
-]
-required_extras = ["coding-agent"]
-tier = 6
-applicability = ["source", "wheel"]
-timeout_seconds = 900
-prerequisites = [
-  "credential:MODAL_TOKEN_ID",
-  "credential:MODAL_TOKEN_SECRET",
-  "credential:R2_ACCESS_KEY_ID",
-  "credential:R2_SECRET_ACCESS_KEY",
-  "infrastructure:CODING_AGENT_MODAL_WORKSPACE",
-  "infrastructure:CODING_AGENT_MODAL_ENVIRONMENT",
-  "infrastructure:R2_API_ENDPOINT",
-  "infrastructure:R2_BUCKET",
-]
-missing_prerequisite = "not_run"
-semantic_oracle = { kind = "pytest", ref = "tests/infrastructure/test_modal_physical_r2_live.py" }
-contracts = [
-  "physical_ai.workflow.evidence",
-  "world.run_identity.cold_resume",
-]
-cleanup_policy = "provider"
-artifact_policy = "redacted_receipt"
-artifact_schema = "archetype.operational-results/v1"
-required_cadence = ["release"]
 
-[[scenario]]
-id = "dogfood.sandbox.docker"
-kind = "dogfood"
-owner = "missions"
-owner_paths = [
-  "packages/archetype-missions/src/archetype/missions",
-  "packages/archetype-ecs/src/archetype/runtime",
-  "packages/archetype-ecs/src/archetype/commands",
-  "packages/archetype-ecs/src/archetype/world",
-  "packages/archetype-ecs/src/archetype/graph",
-  "packages/archetype-ecs/src/archetype/core/hooks.py",
-  "packages/archetype-ecs/src/archetype/wiring.py",
-  "examples/11_coding_agent_mission.py",
-  "tests/missions",
-  "tests/integration/test_docker_sandbox_parity.py",
-  "quality/operational_scenarios.toml",
-  "uv.lock",
-  ".github/workflows/sandbox-backend-parity.yml",
-]
-source_path = "tests/integration/test_docker_sandbox_parity.py"
-source_command = ["pytest", "-q", "tests/integration/test_docker_sandbox_parity.py"]
-required_extras = ["coding-agent"]
-tier = 5
-applicability = ["source", "wheel"]
-timeout_seconds = 1500
-prerequisites = ["binary:docker", "service:docker"]
-missing_prerequisite = "not_run"
-semantic_oracle = { kind = "pytest", ref = "tests/integration/test_docker_sandbox_parity.py" }
-contracts = [
-  "missions.sandbox.checkpoint_restore",
-]
-cleanup_policy = "provider"
-artifact_policy = "redacted_receipt"
-artifact_schema = "archetype.operational-results/v1"
-# The path-filtered Docker workflow is advisory PR substrate evidence. The
-# retained operational scenario becomes blocking only in the release profile.
-required_cadence = ["release"]
-
-[scenario.workflow]
-path = ".github/workflows/sandbox-backend-parity.yml"
-trigger_paths = [
-  "packages/archetype-missions/src/archetype/missions/**",
-  "packages/archetype-ecs/src/archetype/runtime/**",
-  "packages/archetype-ecs/src/archetype/runtime_resources.py",
-  "packages/archetype-ecs/src/archetype/commands/**",
-  "packages/archetype-ecs/src/archetype/world/**",
-  "packages/archetype-ecs/src/archetype/graph/**",
-  "packages/archetype-ecs/src/archetype/core/hooks.py",
-  "packages/archetype-ecs/src/archetype/wiring.py",
-  "examples/11_coding_agent_mission.py",
-  "tests/missions/**",
-  "tests/integration/test_docker_sandbox_parity.py",
-  "quality/operational_scenarios.toml",
-  "uv.lock",
-  ".github/workflows/sandbox-backend-parity.yml",
-]
 
 [[scenario]]
 id = "dogfood.storage.r2"
@@ -812,25 +524,3 @@ required_cadence = ["pr", "main", "release"]
 [scenario.workflow]
 path = ".github/workflows/python-tests.yml"
 trigger_paths = []
-
-[[scenario]]
-id = "dogfood.sandbox.apple_container"
-kind = "dogfood"
-owner = "missions"
-owner_paths = ["packages/archetype-missions/src/archetype/missions/sandboxes", "packages/archetype-ecs/src/archetype/runtime"]
-source_path = "tests/integration/test_apple_container_sandbox_parity.py"
-source_command = ["pytest", "-q", "tests/integration/test_apple_container_sandbox_parity.py"]
-required_extras = ["coding-agent"]
-tier = 6
-applicability = ["source", "wheel"]
-timeout_seconds = 1500
-prerequisites = ["binary:container", "platform:darwin", "service:apple-container"]
-missing_prerequisite = "not_run"
-semantic_oracle = { kind = "pytest", ref = "tests/integration/test_apple_container_sandbox_parity.py" }
-contracts = [
-  "missions.sandbox.checkpoint_restore",
-]
-cleanup_policy = "provider"
-artifact_policy = "redacted_receipt"
-artifact_schema = "archetype.operational-results/v1"
-required_cadence = ["demand"]

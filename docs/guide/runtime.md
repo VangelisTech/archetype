@@ -1,5 +1,9 @@
 # Runtime
 
+This is the retained Python runtime contract. Its execution loop still uses
+Daft. See the [DDlog migration](ddlog-runtime.md) for the native preview and
+remaining bridge and transport work.
+
 **Document type:** Normative.
 **Scope:** `packages/archetype-ecs/src/archetype/runtime/` — the trusted Python
 scripting boundary, plus typed adapters supplied by installed world libraries.
@@ -224,18 +228,7 @@ same experiment only after the outer call returns. Runtime shutdown therefore
 joins an admitted AutoResearch call before closing shared dependencies, without
 a research-owned task, owner reservation, or finalizer.
 
-Physical evaluation enters through
-`PhysicalAI(world).run_hosted_episode(...)`, which
-dispatches the exact `RunHostedEpisode` operation to the registered
-physical-AI handler. The world handle must retain explicit storage coordinates. The
-handler owns hosted Activity admission, remote Modal execution or
-reconciliation by stable operation identity, and durable result publication;
-the runtime does not run episodes or collect terminal rows itself. The typed
-world-library adapter is async, and the framework does not import Physical AI
-or add the operation to generic world handles. See
-[Physical AI](physical-ai.md) and [World Libraries](world-libraries.md).
-
-### R12 — Typed artifacts and transcript evidence
+### R12 — Typed artifacts
 
 `world.ingest_artifacts(*sources)` is the supported file-ingestion boundary.
 Each `ArtifactSource` names one exact file or Daft-readable glob and may supply
@@ -255,20 +248,7 @@ substrate reached through the artifacts-family view. The runtime neither
 inspects `daft.Catalog` nor exposes the storage service, family handlers, or
 process wiring.
 
-`MissionWorld(world).ingest_claude_transcript(source)` is the recommended coding-agent
-transcript boundary. `ClaudeTranscriptSource` carries local input configuration
-and stable project/session identity. The application workflow snapshots and
-redacts the file, parses only the sanitized copy, ingests that copy as an
-artifact, and appends normalized rows to the Iceberg transcript table. The
-returned `TranscriptIngestionResult` identifies the sanitized `ArtifactRef`,
-row count, trajectory linkage, and redaction outcome. The runtime does not open
-the source file, write
-narrative Components, or coordinate those steps itself. The Missions adapter
-is async. `MissionWorld(world).transcript_rows()` returns the normalized
-session and turn rows for the current run. Installing Missions does not add
-these methods to generic world handles.
-
-Artifact and transcript capabilities require the handle to retain explicit
+Artifact capabilities require the handle to retain explicit
 storage coordinates. A handle created with `runtime.attach(world_id)` without
 `storage=...` may still use live-world capabilities, but these storage-addressed
 methods reject before dispatch instead of recovering coordinates from
@@ -320,67 +300,12 @@ an explicit internal host composition injects one. Cross-runtime live-handle
 transfer is out of scope; durable identity and storage coordinates are the
 interchange boundary.
 
-### R16 — Agent Missions V1
-
-`Missions(runtime, name, config=..., storage=...)` returns an async Missions
-handle. It configures one mission-capable world with the
-built-in Components, graph view, transition processors, durable
-author-and-critic Activity binding, and injected Sandbox Backend plus
-coding-agent and critic drivers. The V1 workflow admits only the Modal sandbox backend
-for end-to-end missions; submission rejects any other configured backend
-deterministically before admission. The family-owned
-Sandbox Service retains the author Session and owns fresh candidate-scoped
-critic Sessions. Authors submit typed tasks and critic policies; they never
-wire that bundle themselves. A custom critic driver declares `driver_id`, and
-every submitted task policy must name that configured identity.
-
-Passing validators and publishing the exact head moves a task to `candidate`.
-The runtime returns terminal success only after a separate critic sandbox has
-verified the exact base/head/diff and a processor has accepted its
-identity-bound receipt. Blocking findings become the next author dispatch's
-durable repair input. Reviewer outages do not consume author dispatches;
-exhausted review budget raises while leaving the task pending review.
-
-The handle owns a strongly registered workflow reservation. Its first submit
-or run constructs and binds the internal mission service exactly once; later
-operations resolve that same owner without a parallel service registry.
-`Missions.accept()` records a durable `MissionRun` and returns its `run_id`
-before SubmitMission or RunMission complete. Closing the initiating coroutine
-does not cancel that run. `SubmittedMission` carries the exact durable World
-identity. Therefore a
-replacement process can recreate the handle with the same storage coordinates
-and call `run(submitted)` or `get_run(run_id)` directly: wiring binds the Activity projector before
-mutable World reconstruction, reinstalls process-local processors, resources,
-and hooks, and reconciles provider-bound work instead of replaying it. Closing the handle
-strictly stops and drains the reservation's exact-task admission before it
-joins supervised critic work and closes sandbox resources plus its exact
-mission-world cleanup without closing the parent runtime. Facade calls and the
-registered direct `SubmitMission`, `RunMission`, `RestoreMissionSandbox`,
-`AcceptMissionRun`, `GetMissionRun`, and `CancelMissionRun` handlers share that
-owner gate, beginning before first
-service construction or lookup. Therefore close drains work admitted through
-either ingress, while late direct work rejects before construction or provider
-effect. A failed cleanup
-retains the facade, service, world, and dependencies for retry. Workflow
-handles close before ordinary world handles during runtime teardown. Once
-exact-world cleanup finishes, a later mission-world close failure retries only
-the world-close stage rather than reusing the consumed cleanup lease.
-
-`Missions` imports no concrete application service. It dispatches
-`SubmitMission`, `RunMission`, `RestoreMissionSandbox`, `AcceptMissionRun`,
-`GetMissionRun`, and `CancelMissionRun`; wiring constructs
-the handler-side service with the same reservation. V1 is async-only, so sync
-parity is outside the 0.6 world-library contract permitted by R5.
-
 ## 3. Canonical surface
 
-Generic world operations below have sync parity. The installed Missions,
-Physical AI, and Research adapters shown here are async-only:
+Generic world operations below have sync parity. The installed Research
+adapter shown here is async-only:
 
 ```python
-from archetype.missions import AgentMissionConfig, AgentTask, MissionWorld, Missions
-from archetype.missions.trajectories import TrajectoryTurn
-from archetype.physical_ai import PhysicalAI
 from archetype.research import AutoResearchConfig, Research
 
 world = runtime.world(
@@ -393,24 +318,6 @@ world = runtime.world(
 )
 world = runtime.attach(world_id, storage=...)
 
-missions = Missions(
-    runtime,
-    "software-factory",
-    config=AgentMissionConfig(
-        sandbox_backend=my_backend,
-        sandbox_environment="provider-image@sha256:digest",
-    ),
-    storage=...,
-)
-submitted = await missions.submit(
-    repository="owner/repository",
-    branch="agent/change",
-    tasks=(AgentTask(...),),
-)
-mission_result = await missions.run(submitted)
-# Checkpoint references are evidence only. Workflow restore fails
-# explicitly until a checkpoint is bound into immutable Activity admission.
-
 eid = await world.spawn(Position(x=0), Velocity(dx=1))
 ids = await world.spawn_batch(Position(x=0), count=10_000)
 ids = await world.spawn_many([[Position(x=float(i))] for i in range(100)])
@@ -420,8 +327,6 @@ await world.add_components(eid, Health(hp=100))
 await world.remove_components(eid, Velocity)
 
 refs = await world.ingest_artifacts(ArtifactSource(...))
-mission_rows = await MissionWorld(world).query_trajectory(TrajectoryTurn)
-hosted = await PhysicalAI(world).run_hosted_episode([...], provider=...)
 
 await world.add_processor(MyProcessor())
 await world.remove_processor(MyProcessor)
@@ -471,12 +376,6 @@ packages/archetype-ecs/src/archetype/runtime/
   entrypoint.py    managed script decorator
   _config.py       scripting-boundary coercion
 
-packages/archetype-missions/src/archetype/missions/runtime.py
-  Missions and MissionWorld typed adapters
-
-packages/archetype-physical-ai/src/archetype/physical_ai/runtime.py
-  PhysicalAI typed adapter
-
 packages/archetype-research/src/archetype/research/runtime.py
   Research typed adapter
 ```
@@ -505,4 +404,3 @@ with ArchetypeRuntime.sync() as runtime:
 - [World Lifecycle](world-lifecycle.md)
 - [Service Protocols](service-protocols.md)
 - [Audit Log](audit-log.md)
-- [Agent Missions V1](agent-missions.md)

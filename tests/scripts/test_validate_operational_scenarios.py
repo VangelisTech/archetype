@@ -197,18 +197,10 @@ def test_external_rows_claim_only_the_cadences_and_contracts_their_jobs_enforce(
     rows = {row["id"]: row for row in load_scenarios()}
     generic_schema = "archetype.operational-results/v1"
 
-    docker = rows["dogfood.sandbox.docker"]
     r2 = rows["dogfood.storage.r2"]
-    apple = rows["dogfood.sandbox.apple_container"]
 
-    assert docker["required_cadence"] == ["release"]
     assert r2["required_cadence"] == ["pr", "main", "release"]
-    assert apple["required_cadence"] == ["demand"]
-    assert {docker["artifact_schema"], r2["artifact_schema"], apple["artifact_schema"]} == {
-        generic_schema
-    }
-    assert docker["contracts"] == ["missions.sandbox.checkpoint_restore"]
-    assert apple["contracts"] == ["missions.sandbox.checkpoint_restore"]
+    assert r2["artifact_schema"] == generic_schema
     assert r2["contracts"] == [
         "runtime.trust.actor_free",
         "world.fork.lineage",
@@ -242,13 +234,7 @@ def test_example_rows_claim_only_the_behavior_their_receipts_exercise() -> None:
         "world.run_identity.cold_resume",
         "query.cold_reads.correct",
     ]
-    assert rows["example.06_trajectory_analysis"]["contracts"] == [
-        "missions.trajectory.runtime_service"
-    ]
     assert rows["example.09_cloud_storage"]["contracts"] == ["runtime.trust.actor_free"]
-    assert rows["example.11_coding_agent_mission.dry_run"]["contracts"] == [
-        "missions.agent_v1.public_authoring"
-    ]
     for row in rows.values():
         assert row["artifact_schema"] == "archetype.operational-results/v1"
 

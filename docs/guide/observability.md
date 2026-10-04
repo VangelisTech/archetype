@@ -203,8 +203,6 @@ signal boundary.
 | Evaluation | No direct signal yet | Snapshot-pinned evaluation receipts |
 | Research | No direct signal yet | Persisted experiment, run, result, and branch-head rows plus the typed workflow result |
 | Audit | Logging only; no direct signal yet | Durable control-catalog outbox event; access evidence is advisory and Iceberg rows and their watermark are analytical projection state |
-| Missions and sandboxes | No direct signal yet | Typed transition rows, attempt state, checkpoints, and artifacts |
-| Physical-AI workflow, providers, and pure search | No direct signal yet | Persisted evaluation rows and report for the workflow; provider state and returned values at provider boundaries; returned proposals for pure search |
 
 For actor-aware operations, the commands-owned policy decision and the typed
 operation result or exception remain authoritative. Any later

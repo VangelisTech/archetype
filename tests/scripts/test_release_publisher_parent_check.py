@@ -19,14 +19,14 @@ ROOT = Path(__file__).resolve().parents[2]
 AUTOMATION_ACTOR = "github-actions[bot]"
 CHILD_RUN_ID = 201
 COMMIT = "a" * 40
-DISTRIBUTION = "archetype-missions"
+DISTRIBUTION = "archetype-research"
 PARENT_RUN_ATTEMPT = 2
 PARENT_RUN_ID = 101
 REGISTRY = "testpypi"
 REPOSITORY = "VangelisTech/archetype"
 TAG = "v0.6.0"
 TAG_OBJECT = "b" * 40
-WORKFLOW = "publish-archetype-missions.yml"
+WORKFLOW = "publish-archetype-research.yml"
 
 
 def _job(workflow: str, job_id: str) -> str:

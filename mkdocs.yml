@@ -1,5 +1,5 @@
 site_name: Archetype
-site_description: Dataframe-first simulations and agent workflows in Python
+site_description: Typed simulations, world history, and durable artifacts
 site_url: https://archetype.vangelis.tech/docs
 repo_url: https://github.com/VangelisTech/archetype
 repo_name: VangelisTech/archetype
@@ -53,6 +53,7 @@ copyright: Copyright &copy; 2026 Vangelis Tech
 nav:
   - Start:
       - index.md
+      - DDlog Migration and Preview: guide/ddlog-runtime.md
       - Install World Libraries: guide/world-libraries.md
       - Framework Quickstart: guide/quickstart.md
       - Choose an Example: guide/examples.md
@@ -108,24 +109,6 @@ nav:
           - Atomic Visibility: guide/atomic-visibility.md
   - Smol:
       - smol/index.md
-  - Missions:
-      - missions/index.md
-      - Agent Missions: guide/agent-missions.md
-      - Mission Activity Recovery: missions/recovery.md
-      - Trajectories: guide/trajectories.md
-      - Transcript Ingestion: missions/transcripts.md
-      - Mission Factory Assets: guide/mission-factory-assets.md
-      - Python API:
-          - Missions: reference/python/missions.md
-          - Transcripts: reference/python/transcripts.md
-      - REST API: reference/rest-api-missions.md
-  - Physical AI:
-      - physical-ai/index.md
-      - Physical AI: guide/physical-ai.md
-      - Python API:
-          - Core Surface: reference/python/physical-ai.md
-          - Optimization: reference/python/physical-ai-optimization.md
-          - Host Configuration: reference/python/physical-ai-host.md
   - Research:
       - research/index.md
       - AutoResearch: guide/autoresearch.md
@@ -148,7 +131,6 @@ nav:
           - Benchmark Runs:
               - Modal OpenCode Single-H200 (2026-07-18): guide/benchmark-runs/modal-opencode-single-h200-2026-07-18.md
           - Mutation Testing: guide/mutation-testing.md
-          - Version Inventory: reference/version-inventory.md
       - Core Internals:
           - Archetypes: guide/archetype.md
           - Systems: guide/system-execution.md

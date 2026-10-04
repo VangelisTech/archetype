@@ -1,8 +1,6 @@
 version = 4
 source_roots = [
   "packages/archetype-ecs/src",
-  "packages/archetype-missions/src",
-  "packages/archetype-physical-ai/src",
   "packages/archetype-research/src",
   "packages/archetype-smol/src",
 ]
@@ -12,19 +10,13 @@ types = [
   "ActivityCoordinator",
   "AuditLog",
   "CommandScheduler",
-  "MissionService",
   "RedactionService",
-  "SandboxService",
   "StorageService",
-  "TranscriptIngestionService",
-  "TrajectoryService",
   "WorldLifecycle",
   "WorldRegistry",
 ]
 composition_roots = [
   "archetype.wiring",
-  "archetype.missions._extension",
-  "archetype.physical_ai._extension",
   "archetype.research._extension",
 ]
 
@@ -54,35 +46,8 @@ common_family_imports = ["archetype.errors"]
 
 [world_library_policy]
 families = [
-  "archetype.missions",
-  "archetype.physical_ai",
   "archetype.research",
 ]
-
-[[world_library_adapter]]
-module = "archetype.missions._extension"
-family = "archetype.missions"
-role = "composition"
-
-[[world_library_adapter]]
-module = "archetype.missions.runtime"
-family = "archetype.missions"
-role = "runtime"
-
-[[world_library_adapter]]
-module = "archetype.missions.api"
-family = "archetype.missions"
-role = "api"
-
-[[world_library_adapter]]
-module = "archetype.physical_ai._extension"
-family = "archetype.physical_ai"
-role = "composition"
-
-[[world_library_adapter]]
-module = "archetype.physical_ai.runtime"
-family = "archetype.physical_ai"
-role = "runtime"
 
 [[world_library_adapter]]
 module = "archetype.research._extension"

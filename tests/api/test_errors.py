@@ -20,7 +20,6 @@ from archetype.errors import (
     ConflictError,
     PayloadRejectedError,
 )
-from archetype.missions.sandboxes import SandboxIdentity, SandboxTeardownError
 from archetype.redaction import SecretQuarantineError
 from archetype.storage.catalog import (
     CatalogConflictError,
@@ -115,24 +114,6 @@ def test_required_projection_failure_maps_to_a_bounded_retry_signal() -> None:
     assert (
         raised.value.detail == "Required projection is temporarily unavailable; retry the request"
     )
-    assert "private" not in raised.value.detail
-
-
-def test_sandbox_teardown_maps_to_a_bounded_retry_signal() -> None:
-    error = SandboxTeardownError(
-        SandboxIdentity(
-            provider="private-provider",
-            sandbox_id="private-sandbox-id",
-            environment="private-environment",
-        ),
-        RuntimeError("private provider teardown detail"),
-    )
-
-    with pytest.raises(HTTPException) as raised:
-        raise_api_error(error)
-
-    assert raised.value.status_code == 503
-    assert raised.value.detail == "Sandbox cleanup is temporarily unavailable"
     assert "private" not in raised.value.detail
 
 

@@ -8,14 +8,12 @@ world libraries.
 
 ## 1. Framework and library distributions
 
-Archetype ships one generic framework distribution and three first-party world
-libraries:
+Archetype ships one generic framework distribution and one first-party world
+library:
 
 | Distribution | Import namespace | Responsibility |
 |---|---|---|
 | `archetype-ecs` | `archetype` | ECS execution, worlds, storage, migration, commands, Activities, artifacts, evaluation, runtime, API, and CLI hosting |
-| `archetype-missions` | `archetype.missions` | Coding-agent missions, sandboxes, sessions, transcripts, and trajectory evidence |
-| `archetype-physical-ai` | `archetype.physical_ai` | Physical state, local policies, and hosted physical episodes |
 | `archetype-research` | `archetype.research` | Minimal world-library optimization and AutoResearch ledger workflow |
 
 The framework MUST install and start without any world library. A world library
@@ -49,15 +47,13 @@ Choose the smallest installation that owns the behavior your application uses:
     uv add archetype-ecs
 
     # One world library; each pulls in a compatible framework
-    uv add archetype-missions
-    uv add archetype-physical-ai
     uv add archetype-research
 
     # Every first-party world library
     uv add "archetype-ecs[all]"
 
     # A selective combination
-    uv add "archetype-ecs[missions,research]"
+    uv add "archetype-ecs[research]"
     ```
 
 === "pip"
@@ -67,24 +63,27 @@ Choose the smallest installation that owns the behavior your application uses:
     pip install archetype-ecs
 
     # One world library; each pulls in a compatible framework
-    pip install archetype-missions
-    pip install archetype-physical-ai
     pip install archetype-research
 
     # Every first-party world library
     pip install "archetype-ecs[all]"
 
     # A selective combination
-    pip install "archetype-ecs[missions,research]"
+    pip install "archetype-ecs[research]"
     ```
 
 <!-- markdownlint-enable MD046 -->
 
-The framework also exposes selective `missions`, `physical-ai`, and `research`
-extras, which may be combined, for example
-`archetype-ecs[missions,research]`. Provider-specific dependencies remain
-library extras: Missions exposes `modal`; Physical AI exposes `modal`, `sim`,
-and `all`.
+The `research` and `all` extras currently both select Research. Missions and
+Physical AI distributions and their extras have been removed. Upgraders must
+uninstall old `archetype-missions` and `archetype-physical-ai` wheels: discovery
+rejects their installed entry points before importing them. Existing consumers
+should retain a separate environment pinned to their previous release until
+they migrate. This checkout does not publish replacement packages.
+
+This page describes retained Python composition. The
+[DDlog migration](ddlog-runtime.md) has a separate native preview; it is not yet
+the Python runtime or transport implementation.
 
 Installing a library is sufficient for ordinary process composition. Its wheel
 publishes an entry point, and `ArchetypeRuntime` and the FastAPI host discover
@@ -145,9 +144,7 @@ async with ArchetypeRuntime() as runtime:
     )
 ```
 
-Missions uses a runtime-scoped `Missions` adapter because it owns workflow
-resources and may create its structural world. Physical AI and Research use
-world-scoped adapters. The generic `runtime.library(name, ...)` and
+Research uses a world-scoped adapter. The generic `runtime.library(name, ...)` and
 `world.library(name)` lookup exists for hosts that cannot statically import an
 optional library; ordinary application code SHOULD import the typed adapter.
 Both lookup forms and all current world-library adapters are async-only. The
@@ -167,14 +164,7 @@ explicit:
 
 - execution `EpisodeConfig`, `EpisodeResult`, and `RunEpisode` belong to
   `archetype.world`;
-- Claude session ingestion, transcript rows, `TrajectorySelection`, trajectory
-  query, and trajectory grading belong to `archetype.missions.trajectories`;
-- hosted physical episodes belong to `archetype.physical_ai`; and
 - dataset episode identity belongs to `archetype.evaluation`.
-
-A trajectory is a Missions-derived learning view over episode evidence, not a
-generic framework entity. Shared `episode_id` values permit joins without
-creating a package dependency or a new universal episode authority.
 
 ## 5. Native extensions
 
@@ -192,13 +182,13 @@ the discovery or lifecycle protocol for the library itself.
 
 ## 6. Packaging and release policy
 
-The repository is one uv workspace with one lock and five independently built
-projects: the framework, three world libraries, and the separate Smol teaching
+The repository is one uv workspace with one lock and three independently built
+projects: the framework, Research, and the separate Smol teaching
 engine. Published dependencies use normal version ranges; uv workspace source
 overrides are development-only. Every wheel MUST build with workspace sources
 disabled and pass an isolated install/import smoke test.
 
-The framework extras `missions`, `physical-ai`, `research`, and `all` are
+The framework extras `research` and `all` are
 installation conveniences. They add the corresponding distributions; they do
 not copy domain code into the framework wheel. The resulting dependency cycle
 in package metadata is intentional and benign: each library requires a
@@ -228,7 +218,7 @@ Required evidence includes:
 
 - base-only editable and wheel installs;
 - each library with the base, both editable and from wheels;
-- a full-stack install of all three first-party world libraries;
+- a full-stack install of the retained Research library;
 - exact operation inventories for each installation set;
 - base runtime and API startup with zero extensions;
 - deterministic manifest ordering independent of entry-point order;

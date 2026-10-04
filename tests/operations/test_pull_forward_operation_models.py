@@ -13,7 +13,6 @@ landed dispatcher.
 from __future__ import annotations
 
 import ast
-import json
 from collections.abc import Mapping
 from importlib import import_module
 from pathlib import Path
@@ -36,39 +35,6 @@ _MODEL_BOUNDARIES = (
     ("archetype.evaluation.models", "RunGraders", "run_graders"),
     ("archetype.evaluation.models", "Evaluate", "evaluate"),
     ("archetype.research.models", "AutoResearch", "autoresearch"),
-    (
-        "archetype.physical_ai.models",
-        "RunHostedEpisode",
-        "run_hosted_episode",
-    ),
-    (
-        "archetype.missions.trajectories.models",
-        "IngestClaudeTranscript",
-        "ingest_claude_transcript",
-    ),
-    (
-        "archetype.missions.trajectories.models",
-        "QueryTranscriptRows",
-        "query_transcript_rows",
-    ),
-    ("archetype.missions.trajectories.models", "QueryTrajectory", "query_trajectory"),
-    ("archetype.missions.trajectories.models", "GradeTrajectory", "grade_trajectory"),
-    ("archetype.missions.models", "SubmitMission", "submit_mission"),
-    ("archetype.missions.models", "RunMission", "run_mission"),
-    (
-        "archetype.missions.models",
-        "RestoreMissionSandbox",
-        "restore_mission_sandbox",
-    ),
-    ("archetype.missions.models", "AcceptMissionRun", "accept_mission_run"),
-    ("archetype.missions.models", "GetMissionRun", "get_mission_run"),
-    ("archetype.missions.models", "CancelMissionRun", "cancel_mission_run"),
-    (
-        "archetype.missions.models",
-        "GetMissionRunEvents",
-        "get_mission_run_events",
-    ),
-    ("archetype.missions.models", "ListMissionRuns", "list_mission_runs"),
 )
 _EXPECTED_LITERALS = {
     model_name: literal for _module_name, model_name, literal in _MODEL_BOUNDARIES
@@ -82,16 +48,6 @@ _ACTOR_AWARE_MODELS = frozenset(
     }
 )
 _TRUSTED_ONLY_MODELS = frozenset(_EXPECTED_LITERALS) - _ACTOR_AWARE_MODELS
-_MISSION_MODELS = frozenset(
-    {
-        "SubmitMission",
-        "RunMission",
-        "RestoreMissionSandbox",
-        "AcceptMissionRun",
-        "GetMissionRun",
-        "CancelMissionRun",
-    }
-)
 _SCHEDULER_FIELDS = frozenset(
     {
         "attempt",
@@ -124,19 +80,6 @@ class _ProbeOperation(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     operation: Literal["probe"] = "probe"
-
-
-class _MissionSummaryProbe(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    operation: Literal["submit_mission"] = "submit_mission"
-    owner_id: str
-    task_base_revision: str
-    candidate_diff: str
-    validator_output: str
-    critic_findings: str
-    provider_configuration: str
-    cleanup_state: str
 
 
 class _AllowPolicy:
@@ -372,18 +315,15 @@ def _forbidden_imports(source: str) -> set[str]:
     return imported
 
 
-def test_pull_forward_inventory_is_exactly_sixteen_models() -> None:
+def test_pull_forward_inventory_is_exactly_five_models() -> None:
     models = _canonical_models()
 
-    assert len(models) == 18
+    assert len(models) == 5
     assert set(models) == set(_EXPECTED_LITERALS)
     for module_name, model_name, literal in _MODEL_BOUNDARIES:
         model = models[model_name]
         assert model.__module__ == module_name
         assert model.model_fields["operation"].default == literal
-
-    physical_models = import_module("archetype.physical_ai.models")
-    assert not hasattr(physical_models, "SweepInstructions")
 
 
 def test_models_are_frozen_extra_forbid_and_contain_no_scheduler_fields() -> None:
@@ -418,41 +358,6 @@ def test_family_models_import_no_app_commands_runtime_api_cli_or_wiring() -> Non
         assert forbidden == set(), f"{model.__module__}: {sorted(forbidden)}"
 
 
-def test_supported_contract_aliases_preserve_object_identity() -> None:
-    identity_pairs = (
-        (
-            "archetype.physical_ai.manipulation",
-            "EnvClient",
-            "archetype.physical_ai.interfaces",
-            "EnvClient",
-        ),
-        (
-            "archetype.physical_ai.policy",
-            "PolicyClient",
-            "archetype.physical_ai.interfaces",
-            "PolicyClient",
-        ),
-    )
-
-    # Compatibility paths remain live while canonical destinations are
-    # verified independently.
-    old_values: dict[tuple[str, str], object] = {}
-    for old_module_name, old_name, _new_module_name, _new_name in identity_pairs:
-        old_module = import_module(old_module_name)
-        old_values[(old_module_name, old_name)] = getattr(old_module, old_name)
-    assert len(old_values) == len(identity_pairs)
-
-    errors: list[str] = []
-    for old_module_name, old_name, new_module_name, new_name in identity_pairs:
-        try:
-            new_value = getattr(import_module(new_module_name), new_name)
-        except (AttributeError, ImportError) as error:
-            errors.append(f"{new_module_name}.{new_name}: {type(error).__name__}")
-            continue
-        assert old_values[(old_module_name, old_name)] is new_value
-    assert errors == [], "supported identity moves are incomplete:\n- " + "\n- ".join(errors)
-
-
 @pytest.mark.asyncio
 async def test_pull_forward_specs_have_exact_immediate_availability_and_are_non_durable() -> None:
     probe_effects: list[str] = []
@@ -466,7 +371,7 @@ async def test_pull_forward_specs_have_exact_immediate_availability_and_are_non_
     specs_by_model = {spec.model.__name__: spec for spec in specs}
 
     assert len(_ACTOR_AWARE_MODELS) == 4
-    assert len(_TRUSTED_ONLY_MODELS) == 14
+    assert len(_TRUSTED_ONLY_MODELS) == 1
     assert set(specs_by_model) == set(_EXPECTED_LITERALS)
     for model_name, spec in specs_by_model.items():
         assert spec.name == _EXPECTED_LITERALS[model_name]
@@ -521,7 +426,7 @@ async def test_apply_as_reaches_exact_four_actor_aware_handlers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_as_rejects_other_nine_before_handler_provider_or_scheduler_effect() -> None:
+async def test_apply_as_rejects_trusted_only_before_handler_provider_or_scheduler_effect() -> None:
     await _assert_trusted_only_counterfactual()
     models = _canonical_models()
     effects: list[str] = []
@@ -533,13 +438,13 @@ async def test_apply_as_rejects_other_nine_before_handler_provider_or_scheduler_
         with pytest.raises(PermissionError, match="not available to untrusted"):
             await dispatcher.apply_as(actor, _operation_instance(models[model_name]))
 
-    assert len(_TRUSTED_ONLY_MODELS) == 14
+    assert len(_TRUSTED_ONLY_MODELS) == 1
     assert effects == []
     assert scheduler.calls == []
 
 
 @pytest.mark.asyncio
-async def test_defer_and_defer_as_reject_all_sixteen_before_handler_provider_or_scheduler_effect() -> (
+async def test_defer_and_defer_as_reject_all_five_before_handler_provider_or_scheduler_effect() -> (
     None
 ):
     await _assert_direct_only_counterfactual()
@@ -560,42 +465,3 @@ async def test_defer_and_defer_as_reject_all_sixteen_before_handler_provider_or_
 
     assert effects == []
     assert scheduler.calls == []
-
-
-def test_mission_summary_excludes_task_base_candidate_critic_provider_and_cleanup_data() -> None:
-    probe = _MissionSummaryProbe(
-        owner_id="owner-1",
-        task_base_revision="TASK_BASE_SENTINEL",
-        candidate_diff="CANDIDATE_SENTINEL",
-        validator_output="VALIDATOR_SENTINEL",
-        critic_findings="CRITIC_SENTINEL",
-        provider_configuration="PROVIDER_SENTINEL",
-        cleanup_state="CLEANUP_SENTINEL",
-    )
-    assert _safe_summary(probe) == {"operation": "submit_mission"}
-
-    models = _canonical_models(_MISSION_MODELS)
-    _registry, specs = _registered_specs(models, [])
-    forbidden_fragments = (
-        "TASK_BASE",
-        "CANDIDATE",
-        "VALIDATOR",
-        "CRITIC",
-        "PROVIDER",
-        "CLEANUP",
-    )
-
-    for spec in specs:
-        values: dict[str, object] = {
-            name: _LeakSentinel(name.upper())
-            for name in spec.model.model_fields
-            if name != "operation"
-        }
-        operation = cast("Any", spec.model).model_construct(
-            operation=spec.name,
-            **values,
-        )
-        summary = dict(spec.summarize(operation))
-        assert summary == {"operation": spec.name}
-        encoded = json.dumps(summary, sort_keys=True)
-        assert all(fragment not in encoded for fragment in forbidden_fragments)

@@ -16,12 +16,12 @@ from scripts.verify_publisher_dispatch import verify_publisher_dispatch
 _AUTOMATION_ACTOR = "github-actions[bot]"
 _COMMIT = "a" * 40
 _TAG_OBJECT = "b" * 40
-_DISTRIBUTION = "archetype-missions"
+_DISTRIBUTION = "archetype-research"
 _PARENT_RUN_ATTEMPT = 2
 _PARENT_RUN_ID = 101
 _REPOSITORY = "VangelisTech/archetype"
 _TAG = "v0.6.0"
-_WORKFLOW = "publish-archetype-missions.yml"
+_WORKFLOW = "publish-archetype-research.yml"
 
 
 def _run_ids() -> dict[str, int]:
@@ -155,10 +155,10 @@ def test_verify_publisher_dispatch_rejects_child_run_not_in_allowlist() -> None:
         ("expected_workflow", "unknown.yml", "not registered"),
         (
             "expected_workflow",
-            "publish-archetype-physical-ai.yml",
+            "publish-archetype-smol.yml",
             "distribution and workflow differ",
         ),
-        ("distribution", "archetype-physical-ai", "distribution and workflow differ"),
+        ("distribution", "archetype-smol", "distribution and workflow differ"),
     ],
 )
 def test_verify_publisher_dispatch_rejects_wrong_workflow_or_distribution(

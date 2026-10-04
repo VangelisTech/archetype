@@ -5,7 +5,7 @@
 The application layer composes workflows over the [core engine](core-architecture.md)
 and the storage/world families. The commands family owns exact governed entry,
 durable scheduling, policy, and audit projection. Domain families
-(missions, physical AI, research, …) own their components, processors, and
+(such as Research) own their components, processors, and
 workflows. The API layer exposes actor-aware dispatcher entry over HTTP.
 
 This page is the **map of that layer**. Normative ownership and dependency
@@ -29,7 +29,7 @@ graph TB
         World["world"]
         Cmd["commands"]
         Act["activities"]
-        Domains["missions · physical_ai · research · …"]
+        Domains["research"]
     end
 
     subgraph "Core"
@@ -59,7 +59,7 @@ concerns start at the dispatcher and the families above core.
 | **Deferred work** | `defer` / `defer_as` → scheduler → tick materialization |
 | **Activities** | Between-tick durable work admitted from one committed tick, observed on a later one |
 | **World lifecycle** | Registry, lifecycle, fork/resume/close through `archetype.world` |
-| **Product families** | Missions, physical AI, autoresearch, artifacts, evaluation, … |
+| **Product families** | Research, artifacts, evaluation |
 
 ## System architecture
 
@@ -77,21 +77,15 @@ graph TB
     end
 
     subgraph "Domain"
-        Missions["missions"]
-        Physical["physical_ai"]
         Research["research"]
     end
 
     Disp --> World
     Disp --> Cmd
     Disp --> Act
-    Disp --> Missions
-    Disp --> Physical
     Disp --> Research
     Wire --> Disp
     World --> Core["archetype.core"]
-    Missions --> Core
-    Physical --> Core
     Research --> Core
 ```
 
@@ -262,10 +256,7 @@ Start here:
 | Family | Poster |
 |---|---|
 | Activities | [Activities](activities.md) |
-| Agent Missions | [Agent Missions](agent-missions.md) |
-| Physical AI | [Physical AI](physical-ai.md) |
 | AutoResearch | [AutoResearch](autoresearch.md) |
-| Trajectories | [Trajectories](trajectories.md) |
 | Prefab libraries | [Prefab Libraries](prefab-libraries.md) |
 | Access control | [Command Gate](command-gate.md) |
 | HTTP hosting | [API Layer](api-layer.md) |
@@ -292,18 +283,15 @@ registered operations.
 - Governed entry, scheduler, policy, and audit: `packages/archetype-ecs/src/archetype/commands/`
 - Generic between-tick delivery: `packages/archetype-ecs/src/archetype/activities/`
 - Storage migration workflow: `packages/archetype-ecs/src/archetype/migration/`
-- Agent Mission workflow authority: `packages/archetype-missions/src/archetype/missions/`
-- Physical-AI models, state, views, and handlers: `packages/archetype-physical-ai/src/archetype/physical_ai/`
 - AutoResearch values, ledger, views, and workflow: `packages/archetype-research/src/archetype/research/`
 - Family protocols: `packages/archetype-ecs/src/archetype/<family>/interfaces.py` or another focused family module
 - World ports: `packages/archetype-ecs/src/archetype/world/interfaces.py`
 - Storage port: `packages/archetype-ecs/src/archetype/storage/interfaces.py`
 - Core interfaces: `packages/archetype-ecs/src/archetype/core/interfaces.py`
 
-The framework wheel is complete without a domain library. Agent Missions,
-Physical AI, and Research are separate distributions installed through their
-private trusted extension adapters; ordinary domain modules do not gain
-framework composition authority.
+The framework wheel is complete without a domain library. Research is installed
+through its private trusted extension adapter; ordinary domain modules do not
+gain framework composition authority.
 
 ## Next steps
 
@@ -311,4 +299,3 @@ framework composition authority.
 - [Architecture Overview](architecture.md) — mental model, Activities, authority
 - [Application Architecture](application-architecture.md) — normative rules
 - [World Libraries](world-libraries.md) — distribution and installation contract
-- [Agent Missions](agent-missions.md) — software-factory family poster

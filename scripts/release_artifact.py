@@ -17,26 +17,20 @@ from typing import Any
 from packaging.utils import canonicalize_name, parse_sdist_filename, parse_wheel_filename
 from packaging.version import InvalidVersion, Version
 
-SCHEMA = "archetype.release-artifact/v2"
+SCHEMA = "archetype.release-artifact/v3"
 WORLD_STACK_DISTRIBUTIONS = (
     "archetype-ecs",
-    "archetype-missions",
-    "archetype-physical-ai",
     "archetype-research",
 )
 DISTRIBUTIONS = (*WORLD_STACK_DISTRIBUTIONS, "archetype-smol")
 FRAMEWORK_DISTRIBUTION = "archetype-ecs"
 PUBLISHER_WORKFLOWS = {
     "archetype-ecs": "release.yml",
-    "archetype-missions": "publish-archetype-missions.yml",
-    "archetype-physical-ai": "publish-archetype-physical-ai.yml",
     "archetype-research": "publish-archetype-research.yml",
     "archetype-smol": "publish-archetype-smol.yml",
 }
 _PACKAGE_PREFIXES = {
     "archetype-ecs": "archetype_ecs",
-    "archetype-missions": "archetype_missions",
-    "archetype-physical-ai": "archetype_physical_ai",
     "archetype-research": "archetype_research",
     "archetype-smol": "archetype_smol",
 }
@@ -79,7 +73,7 @@ def _one(paths: list[Path], label: str) -> Path:
 
 
 def _distribution_files(dist: Path) -> dict[tuple[str, str], Path]:
-    """Return the exact five-wheel/five-sdist release matrix."""
+    """Return the exact current wheel/sdist release matrix."""
 
     artifacts: dict[tuple[str, str], Path] = {}
     for distribution in DISTRIBUTIONS:
@@ -173,7 +167,9 @@ def artifact_records(manifest: dict[str, Any]) -> dict[tuple[str, str], dict[str
     raw_records = manifest.get("artifacts")
     expected = {(distribution, kind) for distribution in DISTRIBUTIONS for kind in _KINDS}
     if not isinstance(raw_records, list) or len(raw_records) != len(expected):
-        raise ValueError("release artifact manifest must contain five wheel and five sdist records")
+        raise ValueError(
+            "release artifact manifest must contain three wheel and three sdist records"
+        )
 
     records: dict[tuple[str, str], dict[str, Any]] = {}
     for value in raw_records:

@@ -1,5 +1,10 @@
 # Application Architecture
 
+This specification describes the retained Python implementation. The
+[DDlog migration](ddlog-runtime.md) specifies the separate native preview and
+accepted replacement of the live Daft loop. This page does not claim that
+bridge or transport migration has landed.
+
 **Document type:** Normative.
 
 **Scope:** Supported boundaries, application-family ownership, dependency
@@ -143,9 +148,7 @@ any Activity history. Remote migration is deferred. See
 A reviewed family may own a capability-scoped `Resource` implementation or
 provider adapter when the protocol and lifecycle vocabulary belong to that
 family. It must not become process-global configuration or cross-family
-authority. `archetype.missions.sandboxes` is the concrete example: it executes
-mission requests, while the missions-family workflow owns composition and the
-processors own transitions.
+authority. The owning workflow retains composition and transition policy.
 
 A Resource is tick-time capability access whose process-local lifetime is not
 durable workflow truth. An Activity coordinates work admitted from one
@@ -178,21 +181,6 @@ symbol public. Supported names remain an explicit classification owned by
 [API Stability](api-stability.md); concrete services and process wiring remain
 internal.
 
-The separately distributed `archetype.missions` family consumes the lower
-framework families declared in `quality/architecture.d/missions.toml`, including
-`archetype.graph`. It owns mission/task Components, typed authoring and execution
-values, task relationships, DataFrame-first
-transition processors, reusable projections/resources, and coding-agent
-sandbox implementations. It also owns graph materialization,
-tick/external-I/O coordination through one author-and-critic Activity binding,
-observation staging, and result projection. Sandboxes are mission-family
-resources; they are not peer authorities. Ordinary family modules never import
-runtime, API, CLI, or composition code. Exact runtime/API adapters cross only
-their named host boundary, and only the private `_extension.py` adapter crosses
-the trusted composition boundary. Family-package
-exports are deliberate and do not promote a concrete application service to
-the `archetype` root.
-
 The current distribution and authority layout is:
 
 ```text
@@ -216,14 +204,6 @@ packages/archetype-ecs/src/archetype/
   runtime_resources.py explicit process-lifetime owner
   wiring.py          framework composition and enclosing installation transaction
 
-packages/archetype-missions/src/archetype/missions/
-  _extension.py      private Missions composition adapter
-  ...                coding missions, sandboxes, sessions, transcripts and trajectories
-
-packages/archetype-physical-ai/src/archetype/physical_ai/
-  _extension.py      private Physical-AI composition adapter
-  ...                physical state, policies, providers and hosted episodes
-
 packages/archetype-research/src/archetype/research/
   _extension.py      private Research composition adapter
   ...                AutoResearch values, ledger, views and workflow
@@ -239,42 +219,10 @@ bounded API keeps educational simplification from weakening production
 durability, concurrency, or lifecycle contracts.
 
 `activities/` is a top-level family over the storage-owned Activity catalog.
-Hosted whole-episode choreography is owned by `archetype.physical_ai`; no
-application mirror exists.
+Research owns AutoResearch values, ledger state, views, admission, and its
+free handler over declared world/storage ports. Removed product families do
+not retain framework adapters. The policy file is the executable package DAG.
 
-The mission-adjacent cleanup direction is recorded in
-[Agent Missions V1, section 9](agent-missions.md#9-family-direction-after-v1).
-Dataset evidence identity has moved into evaluation and the datasets umbrella
-is gone. HTN resolution now lives under `archetype.missions.planning`. The
-physical-AI Components, internal provider processors, genuine protocols,
-models, views, free handlers, and external-boundary helpers now live in the registered
-`archetype.physical_ai` family. Research
-values, ledger Components, views, pure runner decoder, experiment admission,
-and the directly awaited workflow handler live in `archetype.research`; there
-is no application research facade or service protocol. Typed trajectory
-schemas and pure transforms live under `archetype.missions.trajectories`; the
-mission trajectory service composes world-query functions with the evaluation
-family's pure grader runner. Physical evaluation values, provider protocols,
-pure instruction optimization, terminal views, and the hosted whole-episode
-workflow handlers all live under `archetype.physical_ai`.
-Hosted Activity handling retains those reusable contracts and keeps
-intent-to-Activity-to-observation choreography in `archetype.physical_ai`
-without a single-implementation facade protocol. Claude transcript parsing
-now lives under `archetype.missions.trajectories`;
-`archetype.missions.transcript_service` owns its
-redact-before-durability workflow and consumes the artifacts family directly.
-
-Physical execution providers are not installed into retryable ticks. The
-hosted whole-episode workflow admits committed episode intent as one durable
-Activity, executes or reconciles it against the remote Modal provider by
-stable operation identity, and publishes the complete result before its
-bounded reference is observed by a later tick. One world binds at most one
-hosted Modal provider namespace; composition rejects changing it, and the
-per-world hosted binding registers its required projector and closes through
-its registered process owner. The retired distributed per-step physical
-handler path — synchronous provider transfer into `RuntimeResources`,
-private evaluation worlds, and their sticky cleanup leases — is gone with the
-`evaluate_physical_task`/`sweep_physical_instructions` surface it served.
 The former
 production
 `archetype.experiments` umbrella is gone. The repository-root `experiments/`
@@ -377,8 +325,6 @@ or CLI boundary.
 | Commands | Exact registration, authorization policy, governed direct/deferred entry, durable admission, order, leasing, lock-held materialization, retry, settlement, dead letters, transactional outbox and analytical audit projection | Storage/control catalog plus exact world handlers |
 | Activities | Generic immutable admission, claims, attempts, leases, fences, provider-operation binding, bounded result references/digests, and later-receipt settlement; no family recovery policy | Storage-owned Activity catalog |
 | Research | AutoResearch values, ledger state, bounded persisted-control reads, experiment-keyed admission, and the directly awaited multi-run workflow | World registry/lifecycle and storage ports plus world simulation functions and explicit evaluator callbacks |
-| Physical AI | Reusable physical state, schemas, providers, views, pure instruction optimization, and the hosted whole-episode Activity workflow | World registry/lifecycle and storage ports plus world mutation/simulation/query functions; the hosted workflow also consumes Activities |
-| Missions | Graph materialization, committed-intent Activity composition, terminal projection, transcript ingestion, and trajectory query/evaluation composition. Family processors retain transition authority; Activity or trajectory evidence cannot advance tasks. | Consumes Activities, a structural mission world, family-owned sandbox resource, artifact-family handlers plus redaction/storage ports for transcripts, and world-query plus pure evaluation-grading functions for trajectory reads. |
 | Framework runtime/API adapters | Construct exact framework operations and select trusted or actor-aware dispatcher entry | Commands dispatcher plus framework models |
 | World-library runtime/API adapters | Construct that library's operations over the generic trusted or actor-aware host boundary | Their own family models plus their named framework adapter surface |
 | `RuntimeResources` | Process admission, supervised work, handle ownership, and phased retryable teardown | Dispatcher, audit projection, storage, and registered owners |
@@ -430,13 +376,9 @@ Durability is family-specific rather than one service-level flag:
 | Deferred command admission | Command ledger | `PENDING` record, order, payload version and principal/origin are durable |
 | Tick | Store plus commit coordinator | All tick rows are durable and the visibility manifest is published |
 | Deferred command outcome | Commit coordinator plus command ledger | Terminal applied outcomes settle atomically with the manifest that makes them visible |
-| Agent Mission dispatch and review | Required projector, Activity coordinator, family adapter, and later mission tick | The exact committed dispatch admits `(world_id, kind, activity_id)` before any sandbox request leaves the world; a bounded result is durable before staging; settlement requires Mission completeness evidence bound to that result reference/digest in the exact later receipt |
-| Agent Mission acceptance | Mission processors plus world tick | Revision-bound validation and exact-head publication first produce an immutable candidate; a separate critic sandbox stages a complete receipt bound to that candidate's base, head, diff, validator bundle, and policy; only a later task-decision tick accepts, repairs, or exhausts the task |
-| Hosted Physical-AI Activity | Physical-AI hosted workflow, Activity coordinator, durable Arrow/artifact publication, and later physical tick | The complete hosted result is durable by stable operation identity before its bounded reference is observed; a seeded simulator reuses that result rather than assuming GPU replay determinism |
 | Typed family rows | Owning family workflow plus `StorageService` and Iceberg | Storage resolves and stamps the durable world/run envelope, the registered schema accepts the rows, and one Iceberg append makes the selected rows visible |
 | Artifact ingestion | Artifacts-family handler plus `StorageService` | The published durable tick is selected before file effects; the immutable object and any media-specific rows are durable before the common `artifact_files` occurrence becomes visible |
 | Whole-storage migration | Migration workflow plus storage/artifacts administrative participants | Every local table and referenced object is read back, source stability is rechecked, exact control state is staged, destination Worlds activate last, and a fresh destination-only process verifies recovery |
-| Coding-agent transcript | Redaction, artifacts-family handler, and storage authority | Raw narrative never becomes durable; the sanitized artifact is indexed and its digest verified before normalized rows keyed to its `artifact_id` are appended |
 | Evaluation | Family handler plus `StorageService` and its control catalog | Subject and grader contract are pinned, one key-conditional result append is durable, and the evaluation lease is settled |
 | Audit | Transactional outbox plus projection | Authoritative event is durable; analytical Iceberg projection may lag |
 
@@ -445,16 +387,6 @@ the application execution lane and the physical app-table operation. The
 owning workflow still defines the logical unit, and a coordinator publishes
 tick visibility only after physical durability. `StorageService` does not
 decide what a tick, artifact, evaluation, or command outcome means.
-
-The landed Agent Missions V1 preservation baseline already separates authored
-green work from acceptance: successful revision-bound validators plus
-publication create an immutable candidate, and an independent critic reviews
-that exact candidate in a distinct sandbox. Blocking findings become durable
-repair input; missing, stale, malformed, wrong-head, or same-author evidence
-cannot accept. The mission service crosses its committed dispatch/review
-observation seams as described in
-[Agent Missions V1](agent-missions.md). The required committed-tick projector
-in section 13 is the current retryable seam for those intents.
 
 The durable scheduler/dispatcher belongs to the commands family. Both trusted
 runtime operations and actor-aware remote admission use it. Runtime or API
@@ -468,9 +400,6 @@ registration, schema comparison, execution, Iceberg writes, and conflict
 retry. The artifacts family's free handlers require explicit storage
 coordinates, verify the durable world/run and published head before file
 effects, and specialize that substrate for files and media metadata.
-Mission-owned `TranscriptIngestionService` composes those handlers and the
-storage port with redaction and the pure missions parser; it creates no third
-storage authority.
 Durable external material is described as an artifact, evidence object, typed
 dataset row, or evaluation receipt—never as a universal fact.
 
@@ -580,15 +509,6 @@ Runtime construction and API lifespan code may call the wiring transaction.
 Ordinary runtime and route modules retain only `RuntimeResources` or its
 dispatcher, never the concrete service graph.
 
-For Agent Missions V1, the private Missions adapter registers the exact
-submit/run/restore handlers during the enclosing framework installation
-transaction. The submit handler constructs `MissionService` exactly once inside the
-pre-reserved workflow owner, retains the combined author-and-critic Activity
-binding for that owner, and creates exact-world cleanup authority only after
-close begins. The family service installs the built-in processor/resource
-bundle and owns mission-world orchestration; the runtime handle neither
-imports nor retains the concrete service.
-
 Concrete services compose collaborators and never inherit another concrete
 service. Intentional inheritance is limited to components, processors,
 hook/event contracts, protocols/abstract extension contracts, and the
@@ -614,7 +534,7 @@ internal extension mode with no atomic-visibility or recovery guarantee. It is
 not a coequal public execution profile.
 
 A tick is a compute/commit/observation boundary, not a generic workflow-state
-transition. Mission, coding-agent, and physical-workflow transition policy
+transition. Domain-specific transition policy
 belongs to the workflow and its validators.
 
 ## 11. Static enforcement
@@ -675,18 +595,10 @@ co-located protocols are implemented. Runtime calls do not fabricate
 `ActorCtx`; API routes depend directly on the lifespan-owned dispatcher;
 concrete services and process wiring are not top-level exports.
 
-Agent Missions V1 is implemented by the separately installed
-`archetype.missions` library; its typed runtime adapter is
-`archetype.missions.Missions`. The
-top-level mission-family edge to `archetype.graph` is machine-declared and
-supports temporal `DependsOn` and `PartOfMission` entities plus previous-tick
-`GraphView` joins. Coding-agent and sandbox implementations remain subordinate
-resources within the mission family.
-
 `quality/architecture.toml` contains the scalar policy and family
 DAG. Per-family fragments under `quality/architecture.d/` register the
 top-level dispositions for `activities`, `artifacts`, `commands`, `evaluation`,
-`graph`, `migration`, `missions`, `physical_ai`, `projections`, `redaction`,
+`graph`, `migration`, `projections`, `redaction`,
 `research`, `storage`, and `world`.
 `scripts/check_architecture.py` enforces their package direction, protocol
 imports, concrete construction, concrete inheritance, and persistent
@@ -713,17 +625,6 @@ ledger Components, views, process-shared keyed admission type, and free
 handler. Its reviewed graph is `research → storage, world`; the former
 research facade and its service protocol were deleted without a compatibility
 facade.
-
-The trajectory, physical-AI, physical-workflow, ontology, HTN, and transcript
-stages have landed. `PhysicalAI` reaches physical workflows through exact
-dispatcher operations without adding domain methods to `ArchetypeRuntime`;
-their former raw-service bridges and all six Issue #589 architecture
-exceptions are gone. `MissionWorld` reaches transcript ingestion through a
-trusted Missions operation and writes only sanitized narrative to typed rows
-linked to the common artifact occurrence; its registration is not
-actor-aware. It does not implicitly spawn mission Components. The provisional
-`archetype.experiments` package and its two unsafe logging exceptions are gone.
-The architecture manifest currently has no owned migration exceptions.
 
 The storage-migration family is registered with exactly the `artifacts` and
 `storage` dependencies. Its local v1 administrative profile is offline,
@@ -775,15 +676,11 @@ dependency. `errors` is the exact common-family module; `runtime`, `api`,
 | `redaction` | none |
 | `evaluation` | `storage`, `world` |
 | `research` | `storage`, `world` |
-| `physical_ai` | `activities`, `storage`, `world` |
 | `graph` | none |
-| `missions` | `activities`, `artifacts`, `evaluation`, `graph`, `projections`, `redaction`, `storage`, `world` |
 | `projections` | `graph` |
 
 The Activity slice is landed: `activities -> storage` is a reviewed top-level
-edge registered in `quality/architecture.d/activities.toml`, and the
-physical-AI and mission consumers declare their `activities` edges in their
-own fragments.
+edge registered in `quality/architecture.d/activities.toml`.
 
 Every family may also import `archetype.core`, stable shared boundary-error
 bases from `archetype.errors`, itself, and third-party libraries. Another
@@ -796,11 +693,6 @@ Framework `runtime` and `api` consume commands plus framework-owned models and
 projections; policy-classified library runtime/API adapters consume their own
 family models plus the corresponding generic host surface. CLI remains an HTTP
 client except for server startup.
-
-The physical-AI hosted workflow exercises exactly the `activities`, `storage`,
-and `world` edges. Hosted episode reports remain family-owned terminal
-projections; the workflow does not import or delegate report authority to
-`evaluation`.
 
 The current package ownership is:
 
@@ -823,15 +715,6 @@ packages/archetype-ecs/src/archetype/
   cli/
   runtime_resources.py
   wiring.py      composes the framework, installs manifests, returns RuntimeResources
-
-packages/archetype-missions/src/archetype/missions/
-  _extension.py  private manifest and Missions composition adapter
-  coding_agents/ sandboxes/ sessions/ trajectories/
-  components, processors, relations, workflows, typed runtime adapter
-
-packages/archetype-physical-ai/src/archetype/physical_ai/
-  _extension.py  private manifest and Physical-AI composition adapter
-  physical state, policies, provider adapters, hosted episodes
 
 packages/archetype-research/src/archetype/research/
   _extension.py  private manifest and Research composition adapter
@@ -876,8 +759,7 @@ The generic post-commit seam is a manifest-bound committed-tick receipt plus a
 required projector/acknowledgment path outside `HookRegistry`. A receipt carries
 identity and a pinned visibility reference, never live frames. Required
 projection may be retried without rerunning the tick. Public `PostTick`
-observers cannot suppress or acknowledge it. Mission-specific dispatch and
-review intent are consumers of this seam, not special hook semantics. The
+observers cannot suppress or acknowledge it. Family-owned intent consumes this seam without special hook semantics. The
 Activity coordinator durably admits that intent after projection;
 workers claim outside the world lock and settle only against the later receipt
 that commits their factual observation.
@@ -895,16 +777,6 @@ on a later serialized call. Only successful finalization is idempotent. Private
 library adapters bind their process-owned handles into this owner; they do not
 create parallel lifetime containers.
 
-The complete `Missions.run()` operation is inside that admission and
-ownership boundary. Its dispatcher registration is direct-only unless the
-missions family explicitly supplies a portable durable encoding; calling the
-mission service directly is not a second entry path. Admission reserves the
-operation before task or provider construction can begin. Work admitted before
-shutdown may finish binding resources to that reservation, and shutdown waits
-for it; work arriving after admission closes cannot create a handle, task, or
-provider effect. Internal cleanup uses an exact-world, non-inheritable
-capability and cannot reopen public admission or operate on a sibling world.
-
 The runtime-resource boundary reports an incomplete shutdown as
 `RuntimeShutdownError` from `archetype.errors`. It identifies the failed
 dependency phase and retains the non-empty ordered causes from every
@@ -913,33 +785,6 @@ retained as an `asyncio.CancelledError` cause of this retryable boundary error:
 it does not mark the runtime closed, release ownership, or skip peer cleanup.
 A later successful `aclose()` completes normally; only calls after successful
 finalization are no-ops.
-
-Agent Missions keeps live sandboxes, provider processes, checkpoints,
-publication, supervision, and cleanup in explicit process owners. ECS
-Components and relations are the durable intent/evidence record, and
-processors alone decide readiness, priority, repair, acceptance, and terminal
-transitions. A required projector turns committed ECS intent into one durable
-Activity keyed by world, kind, and dispatch or review identity. The family
-adapter reconciles provider effects with that identity and fails closed on an
-ambiguous started outcome. Bounded observations return through a later tick,
-and the Activity settles only against matching result-digest completeness
-evidence in its exact receipt. Provider callbacks and Activity catalog state
-never decide task state.
-
-Planners emit typed, provider-neutral task-graph, dependency, priority,
-validator, critic, and artifact-policy proposals for validation and commit.
-They receive no live capability and cannot mutate a world, publish an
-artifact, or accept a task. Checkpoints, artifacts, transcripts, and episodes
-are first-class recovery/evidence references, but their existence has no
-implicit acceptance authority. Only an explicit typed policy may require
-their publication for a transition.
-
-Persistent behavioral evidence converges on `episode_id`: evidence rows are
-keyed by `episode_id` and `seq`, and a trajectory is a derived learning-facing
-DataFrame selected from episode evidence with no persistent identity. The
-contract is documented in [Mission Trajectories](trajectories.md). The
-episode-schema change was an intentional pre-1.0 v0.5 migration — no 0.4
-backfill, dual reads, or compatibility aliases.
 
 ### v0.5 migration oracle status
 

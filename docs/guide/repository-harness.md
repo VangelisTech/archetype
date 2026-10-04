@@ -21,35 +21,12 @@ not one runtime package.
 
 ## The harness inside a software factory
 
-An Agent Mission may invoke repository checks, but it does not absorb or own
-them. Mission validators name the exact harness commands that authorize one
-task transition. Changing those validators changes the factory's acceptance
-policy without moving pytest, architecture audits, or CI machinery into the
-missions family.
-
-This also makes expected failure useful evidence. A regression task can require
-a focused test to exit nonzero before an implementation task becomes ready;
-the later task can require that same test to pass. See
-[Agent Missions V1](agent-missions.md#repository-validators-are-authority)
-for the dogfooded protocol.
-
-A changed-path validator must not rely on `git status --porcelain`: an agent
-may commit before the validator runs. Mission validators receive the task's
-stable base SHA as `ARCHETYPE_TASK_BASE_REVISION`. A complete path inventory
-combines committed and untracked changes, for example:
-
-```bash
-test -n "$ARCHETYPE_TASK_BASE_REVISION" \
-  && git merge-base --is-ancestor "$ARCHETYPE_TASK_BASE_REVISION" HEAD \
-  || exit 1
-{
-  git diff --name-only "$ARCHETYPE_TASK_BASE_REVISION" --
-  git ls-files --others --exclude-standard
-} | sort -u
-```
-
-If the base is missing or no longer an ancestor, repository policy should fail
-closed rather than silently narrowing the inspected delta.
+External agents may invoke repository checks; the repository owns their meaning.
+A regression task can require a focused test to fail before implementation and
+pass afterward. A changed-path validator must compare with an explicit,
+verified base revision, since an agent may commit before validation. Include
+both committed changes and untracked files. Missing or unrelated base revisions
+must fail closed rather than silently narrowing the inspected delta.
 
 ## Evidence types
 
@@ -167,7 +144,7 @@ The evidence tiers become applicable incrementally:
 | 3 | Loopback server, real CLI, and durable command roundtrip | Wiring/dispatcher PR |
 | 4 | Process, race, crash, and leak evidence | Owning spine PR, main, release |
 | 5 | Remote storage and local container providers | Applicable PR and release |
-| 6 | Paid/external model, Modal Agent Mission, GPU, and Apple Container dogfood | Release candidate |
+| 6 | Paid/external model and native Biome evidence | Release candidate |
 
 The PR-0 inventory declares `main` and `release` obligations; it does not by
 itself prove that the current release workflow enforces them. Platform-split
@@ -177,19 +154,19 @@ the scenario and retains the resulting receipt.
 
 ### Release profile and publisher identities
 
-The operator-dispatched tag workflow builds the exact 0.6 distribution matrix
+The operator-dispatched tag workflow builds the current distribution matrix
 after the source profile: one wheel and one source distribution for each of
-`archetype-ecs`, `archetype-missions`, `archetype-physical-ai`, and
-`archetype-research`, plus the independent `archetype-smol` teaching engine.
-It validates all five wheels, package-smokes the four-package world stack and
-Smol independently, rebuilds all five source distributions through isolated
+`archetype-ecs`, `archetype-research`, and the independent
+`archetype-smol` teaching engine.
+It validates all three wheels, package-smokes the two-package world stack and
+Smol independently, rebuilds all three source distributions through isolated
 PEP 517, and repeats both probes against the rebuilt wheels. Credential-free
-release scenarios run against an isolated install of the exact four-wheel
-world stack; OpenAI, Docker, R2, live Biome, Apple Container, and Modal scenario
+release scenarios run against an isolated install of the exact two-wheel
+world stack; OpenAI, R2, and live Biome scenario
 lanes use that same stack. Publication is gated by an aggregate receipt check:
 every release-required scenario must have passed, every receipt must name the
-release commit and all four world-stack wheel digests, and no result may be
-`not_run`. The publish job uploads the recorded ten files without rebuilding
+release commit and both world-stack wheel digests, and no result may be
+`not_run`. The publish job uploads the recorded six files without rebuilding
 them.
 
 Before the first coordinated release, both registries need the complete OIDC
@@ -198,8 +175,6 @@ publisher matrix below. Every row uses repository `VangelisTech/archetype`.
 | Project | Workflow | TestPyPI environment | PyPI environment |
 |---|---|---|---|
 | `archetype-ecs` | `release.yml` | `release-testpypi` | `release-pypi` |
-| `archetype-missions` | `publish-archetype-missions.yml` | `release-testpypi` | `release-pypi` |
-| `archetype-physical-ai` | `publish-archetype-physical-ai.yml` | `release-testpypi` | `release-pypi` |
 | `archetype-research` | `publish-archetype-research.yml` | `release-testpypi` | `release-pypi` |
 | `archetype-smol` | `publish-archetype-smol.yml` | `release-testpypi` | `release-pypi` |
 
@@ -248,44 +223,19 @@ The workflow requires both `github.actor` and `github.triggering_actor` to be
 tag push does not start release work: the operator dispatches `release.yml` at
 the existing tag and supplies the same tag as its confirmation input.
 
-Operator-bound evidence is demand-cadence, not release-cadence. The three
-scenarios that need a live third-party credential or physical hardware —
-`dogfood.agent_mission.modal_live` (Codex device auth in the broker Volume),
-`example.14_biome_agent` (a logged-in Apple Silicon host with an active
-GUI/Metal session), and `dogfood.sandbox.apple_container` (macOS 26 with the
-`container` service) — carry `required_cadence = ["demand"]` in the scenario
-registry and run as local scripts, not CI jobs:
-
-```bash
-make operational-demand-modal   # Codex live mission; fails fast on stale auth
-make operational-demand-biome   # ARCHETYPE_BIOME_LIVE=1 on the qualifying Mac
-make operational-demand-apple   # Apple Container parity on macOS 26
-make codex-login                # one-hour device-auth window into the Volume
-```
-
-Each target verifies the exact release artifact manifest first and emits the
-same installed-wheel receipt shape at `demand` cadence, so a demand run is the
-same class of evidence — produced when the operator chooses, from the machine
-that actually qualifies, instead of holding a release hostage to a sleeping
-Mac or a silently expired interactive credential.
-`make operational-demand-modal` refuses to start a paid sandbox when
-`auth.json` in the broker Volume is stale (`scripts/check_codex_auth.py`);
-refresh it with `make codex-login`. The Biome scenario's guardian ownership,
-liveness-at-publication, and cleanup semantics are properties of the scenario
-itself and hold identically in a demand run: its registry row fail-closes
-unless the host is Darwin with `git`, `cmake`, `cargo`, and `pkg-config`
-available, and live execution is opted in explicitly with
-`ARCHETYPE_BIOME_LIVE=1`.
+The live Biome example runs at demand cadence on a logged-in Apple Silicon
+host with an active GUI/Metal session. Run `make operational-demand-biome`
+from that host. The target verifies the exact artifact manifest and emits an
+installed-wheel receipt. Its guardian, liveness-at-publication and cleanup
+checks remain mandatory. The registry requires Darwin, git, cmake, cargo and
+pkg-config, with explicit `ARCHETYPE_BIOME_LIVE=1` opt-in.
 
 The aggregate `release-evidence-gate` requires exactly the receipts of the
 release-cadence registry rows: the hermetic verification profile plus the
-OpenAI, Docker, Cloudflare R2, and Physical AI lanes. Each receipt must be
+OpenAI and Cloudflare R2 lanes. Each receipt must be
 passing installed-wheel evidence bound to the clean release commit and exact
-four-wheel artifact matrix, with closed cleanup and no failed or `not_run`
-result. The former `apple-evidence` release job, its organization runner-group
-admission, and the `release-apple-macos` environment approval are retired from
-the release path together with the Modal Agent Mission release lane and its
-static-credential single-flight constraint.
+two-wheel artifact matrix, with closed cleanup and no failed or `not_run`
+result.
 
 For each release, use this order:
 
@@ -295,27 +245,7 @@ git fetch origin main
 git tag -a v0.6.0 origin/main -m "Release v0.6.0"
 git push origin refs/tags/v0.6.0
 
-# 2. Before registering any runner, pin its group to the immutable tag.
-uv run python scripts/configure_release_runner_group.py v0.6.0
-
-# 3. In a fresh disposable runner directory, use the current organization-runner
-#    package and a one-hour registration token. The current macOS account is OK.
-export ARCHETYPE_RUNNER_TOKEN="$(
-  gh api --method POST orgs/VangelisTech/actions/runners/registration-token \
-    --jq .token
-)"
-./config.sh \
-  --url https://github.com/VangelisTech \
-  --token "$ARCHETYPE_RUNNER_TOKEN" \
-  --runnergroup archetype-release-macos \
-  --name archetype-release-macos \
-  --labels archetype-apple-container-macos-26 \
-  --ephemeral \
-  --unattended
-unset ARCHETYPE_RUNNER_TOKEN
-./run.sh
-
-# 4. From a second terminal, dispatch only at the same immutable tag.
+# 2. Dispatch only at the same immutable tag.
 gh workflow run release.yml \
   --repo VangelisTech/archetype \
   --ref v0.6.0 \
@@ -335,20 +265,12 @@ Release-lane authentication is explicit and provider-scoped:
 | Lane | Authentication path |
 |---|---|
 | OpenAI | The job receives only `OPENAI_API_KEY` from the Actions secret of the same name. |
-| Docker | The runner's local Docker context and daemon authorize the parity operation; the lane does not perform registry login. |
 | Cloudflare R2 | `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` authenticate the account, while `R2_API_ENDPOINT` and `R2_BUCKET` select the exact substrate. |
-| Physical AI (Modal + R2) | The same scoped Modal and R2 credentials run one T4-backed seeded episode. Modal owns provider execution and immutable result blobs; the Archetype World commits intent and observation evidence to a unique R2 prefix, then a fresh runtime cold-resumes and reconciles the same digest without replay. |
 | Biome | No cloud credential is accepted. The explicitly enabled release target builds and launches the pinned upstream Biome/Flecs sources on the logged-in Mac, and the live test proves the active GUI/Metal process, loopback REST readiness, native mission result, durable Archetype evidence, and cleanup. |
-| Apple Container | A one-job ephemeral, bare-metal Apple Silicon runner in the exact-workflow-restricted `archetype-release-macos` group supplies the local host authority. It may run under the operator's current macOS account and bears `self-hosted`, `macOS`, `ARM64`, and `archetype-apple-container-macos-26`. The job provisions Python 3.12 through `uv`, verifies macOS 26, and starts the local `container` service; it creates no macOS login or `/Users/runner` tool cache, and accepts no Apple cloud token. GitHub-hosted arm64 macOS runners are not substitutes because they do not expose the Virtualization.framework VM support required by Apple Container. |
-| Modal Agent Mission | `MODAL_TOKEN_ID` plus `MODAL_TOKEN_SECRET` authenticate the Modal control plane. Actions repository variable `CODING_AGENT_MODAL_PROFILE` becomes the SDK selector `MODAL_PROFILE`; `CODING_AGENT_MODAL_ENVIRONMENT` becomes both the Archetype selector and SDK selector `MODAL_ENVIRONMENT`, while the workspace and remaining Environment-scoped variables bind all named objects. `CODEX_AUTH_VOLUME` supplies the separately device-authenticated Codex `auth.json`. `CODING_AGENT_GITHUB_SECRET` names the Modal Secret resolved for the isolated publisher, but the paid live lane deliberately pushes to a provider-local bare remote and never attaches that secret or mutates GitHub. Deterministic broker contracts separately prove that only the exact GitHub push process can receive `GITHUB_TOKEN`. Modal Connect Tokens authenticate the two transient viewport URLs. |
 
 The operator-dispatched release workflow is serialized under one release
 concurrency group: one tag, one immutable artifact set, one publish sequence
-at a time. The Codex auth Volume constraint moved with the Modal Agent Mission
-lane to demand cadence; `make operational-demand-modal` remains single-flight
-against the shared broker Volume. Agent Mission provider details and operator
-setup are normative in
-[Agent Missions](agent-missions.md#authentication-paths-by-provider).
+at a time.
 
 `not_run` is never a pass, and a demand-cadence scenario is not a `not_run`:
 demand cadence is a declared registry decision about when evidence is
@@ -378,10 +300,8 @@ entry-point coverage and exact semantic binding.
 The generic `archetype.operational-results/v1` envelope records harness and
 tested-subject provenance, Python/package identity, duration, normalized
 semantics, log digests, and cleanup state. A more specific `artifact_schema`
-may claim only fields its executable validator enforces. The credential-free
-Agent Missions capability result is baseline eval evidence until the missions
-slice supplies the full candidate/critic operational-receipt schema; grader
-names alone are not that stronger receipt.
+may claim only fields its executable validator enforces. Grader names alone
+are not proof of a stronger receipt contract.
 
 ## Benchmark admission
 

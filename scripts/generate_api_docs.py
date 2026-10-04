@@ -20,7 +20,6 @@ from typing import Any
 
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs" / "reference"
 OUTPUT = DOCS_DIR / "rest-api.md"
-MISSIONS_OUTPUT = DOCS_DIR / "rest-api-missions.md"
 HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
 
 
@@ -35,15 +34,7 @@ class RestExtension:
     output: Path
 
 
-REST_EXTENSIONS: tuple[RestExtension, ...] = (
-    RestExtension(
-        "Agent Missions",
-        "archetype-missions",
-        "archetype.missions._extension",
-        "get_manifest",
-        MISSIONS_OUTPUT,
-    ),
-)
+REST_EXTENSIONS: tuple[RestExtension, ...] = ()
 
 
 def get_openapi_schema(*, world_libraries: tuple[Any, ...] = ()) -> dict[str, Any]:

@@ -72,76 +72,16 @@ authentication/authorization against an external identity provider is a
 future hardening slice. The trusted runtime has no actor context. See
 [Command Gate](command-gate.md).
 
-### Mission service principals
+### Service principal verifier
 
-Agent Missions defines a separate authentication seam for the forthcoming
-MissionRun control surface. It resolves an opaque bearer credential to a
-stable principal id, explicit `mission:*` capabilities, and an execution-profile
-allowlist. Developer role labels are never credentials on that seam. The
-provisioning document stores either the name of an environment variable holding
-the credential or its SHA-256 verifier; it does not store a plaintext credential.
-Missing, malformed, unknown, expired, and revoked credentials fail closed.
-
-This contract does not add a parallel mission-control router. A REST route may
-be published only when it can construct the exact Missions operation and enter
-the governed actor-aware boundary. Authentication does not mint a run id, and
-a successful profile check is not a `202 Accepted` MissionRun. The durable
-MissionRun owner remains the sole authority for run identity, ownership grants,
-lifecycle, and pinned profile identity.
-
-When the Missions library is installed, startup on a non-loopback bind
-requires a configured principal directory. An undeclared bind host is treated
-as non-loopback: `archetype serve` declares `ARCHETYPE_BIND_HOST` from its
-`--host` option, while a bare `uvicorn archetype.api.app:create_app --factory`
-launch declares nothing and therefore fails closed. Loopback development
-outside `archetype serve` opts in explicitly with
-`ARCHETYPE_BIND_HOST=127.0.0.1`. Existing ECS developer routes otherwise
-retain the deliberate v0.6 behavior above.
-
-### MissionRun control surface
-
-The durable MissionRun lifecycle is exposed as a small agent-safe REST
-surface under `/v1/mission-runs`:
-
-| Endpoint | Method | What it does |
-|---|---|---|
-| `/v1/mission-runs` | POST | Accept one durable run for a verified principal (`202`) |
-| `/v1/mission-runs` | GET | Bounded newest-first page of the caller's own runs |
-| `/v1/mission-runs/{run_id}` | GET | Bounded run status projection |
-| `/v1/mission-runs/{run_id}/events` | GET | Ordered durable events, `?after=<cursor>&limit=<n>` |
-| `/v1/mission-runs/{run_id}/result` | GET | One immutable terminal result (`425` while open) |
-| `/v1/mission-runs/{run_id}/cancel` | POST | Durably record cancellation intent (`202`, idempotent) |
-
-Submission requires an `Idempotency-Key` header and a body carrying only
-`profile_id`, repository coordinates, mission name, and an explicit bounded
-task DAG with command validators. The same principal, key, and canonical
-request digest return the original run; a changed digest under the same key
-is a `409` conflict, and both survive an API-process restart. Route handlers
-authenticate the verified principal, authorize capability, ownership, and
-profile policy, then dispatch the exact registered `accept_mission_run`,
-`get_mission_run`, `get_mission_run_events`, and `cancel_mission_run`
-operations. They never open a runtime handle, construct Mission components,
-start background tasks, or own recovery — supervision and recovery stay with
-the missions-owned MissionRun lifecycle.
-
-Events carry a deterministic `(run_id, cursor)` identity, a schema version,
-a timestamp, a phase/type, and a sanitized bounded payload appended in the
-same transaction as the durable transition, so `after` replay across
-reconnects has no gaps, reordering, or duplicated logical events. Cancel
-records intent durably before reporting acceptance; `cancelling` stays
-distinct from `cancelled`, and completion races resolve to the committed
-execution fact. Client disconnect is never cancellation.
-
-Executing a REST-accepted run requires host composition: the execution
-profile bound through the `world_library_configs` wiring input resolves the
-exact pinned `(profile_id, version, digest)` to its trusted
-`AgentMissionConfig` factory. An unbound host still accepts, observes, and
-cancels runs; supervision records an honest `failed` run instead of
-fabricating provider work. Reason text — provider exception text and
-caller-supplied cancel reasons alike — is redacted through the composed
-redaction service before it becomes a durable fact, every projection stays
-bounded, and terminal task facts cap their commit lists, so provider errors
-cannot leak credential-shaped content to any `mission:read` principal.
+The internal `PrincipalDirectory` utility validates explicitly provisioned
+credentials and opaque capability strings from `ARCHETYPE_PRINCIPALS_PATH`.
+A transport must check its own exact capability and ownership policy.
+The existing developer ECS routes continue to use their documented
+`ActorCtx` dependency; installing a directory does not silently change those
+routes. The generic DDlog API/MCP transport remains a
+[migration milestone](ddlog-runtime.md), with authentication required before
+dispatcher entry.
 
 ## Route Structure
 

@@ -10,8 +10,8 @@ is code, a policy, a prompt, or another world-library configuration.
 
 It is a separately installed [application-layer](app-overview.md) loop.
 Experiments and runs are ordinary components in a world; scoring stays in user
-code. Coding-agent sessions, transcripts, and trajectories remain owned by
-[Agent Missions](agent-missions.md).
+code. Agent memory, prompt, tool, and budget semantics remain outside the
+framework; X0 owns those application concerns.
 
 **Document type:** Contract and user guide.
 
@@ -98,8 +98,7 @@ with the same tools as any other simulation state. It owns the reusable ledger
 schema, configuration and result values, storage-backed views, experiment
 admission, and directly awaited free workflow handler. Its reviewed family
 edges are `research → storage, world`;
-there is no application research facade, service protocol, or missions-owned
-research state.
+there is no application research facade or service protocol.
 
 | Component | Role |
 |---|---|
@@ -112,13 +111,8 @@ The library deliberately does not define what "better" means. `Result.outputs_js
 
 ### Coding-agent evidence is not Research state
 
-Repository sessions, VM and harness identity, workspaces, transcripts,
-trajectories, and produced commits belong to Agent Missions. Research may use a
-Missions-backed evaluator or store a bounded evidence reference in an opaque
-result, but it does not ingest coding-agent session registries or duplicate
-their schema. This keeps the minimal optimization loop useful without Missions
-and lets a richer software-research application compose the two libraries
-above their public adapters.
+Research stores bounded application evidence references; it does not own
+coding-agent sessions, transcripts, repository workspaces, or their schemas.
 
 ## The Loop
 
@@ -210,11 +204,6 @@ async with ArchetypeRuntime() as runtime:
 `prepare_candidate` receives a `ResearchCandidateContext` with deterministic
 experiment, iteration, and run identities. Returning `None` evaluates the
 original base world. Candidate worlds remain caller-owned.
-The transient callback value is distinct from the persisted
-`archetype.missions.Candidate` review subject: it has no
-candidate/head/diff/validator/critic receipt identity and does not share the
-mission component schema or relations.
-
 Because the lab world is an ordinary world, the experiment itself is forkable:
 fork the lab at any tick and replay "what if a different run had advanced the
 head." Contract tests:
@@ -285,36 +274,8 @@ Modeling experiments as ECS state means:
 
 Experiment state gets the same operational properties as any other simulation in Archetype, without a parallel storage layer.
 
-## LIBERO on the ledger
-
-The same lab-world pattern extends to robotics benchmarks. The external
-`everettVT/robot-evals` harness supplies LIBERO environment and policy
-providers to Archetype's typed [Physical AI](physical-ai.md) runtime workflow:
-
-- **One control-plane world per task, N trial entities** keyed by `env_key`. The env
-  client batches by `env_key`, so one tick steps every live trial at once; finished
-  trials freeze on the ledger (`done` latches). Every trial's episode evidence is
-  addressable by the single `(world_id, run_id)` and sliced by `ManipTask`.
-- Termination is the value-based "all entities done" contract
-  (`EpisodeConfig(terminal_component=ManipStatus, terminal_field="done")`) — no
-  hand-rolled episode loop.
-- Success and episode length are **projected from raw `ManipStatus` rows by the
-  physical-AI handler**, not computed in the driver, so there is no summary
-  component to drift from the ledger. (The old `eval_driver.py` /
-  `EvalTrialResult` stack had exactly that drift problem and was removed.)
-- In robot-evals, `src/robot_evals/in_process.py` runs LIBERO envs in-process,
-  and `src/robot_evals/in_process_policy.py` colocates a VLA policy with the
-  env. Archetype owns the provider-neutral world/episode/ledger workflow.
-
-The [robot-evals extraction record](../reports/2026-07-16-robot-evals-extraction.md)
-preserves the historical boundary and retained Archetype interfaces. The large benchmark sweeps are **user-triggered actions**
-(GPU cost); never run them in CI.
-
 ## References
 
 - Autonomous optimization and branch-frontier research workflows
 - `packages/archetype-research/src/archetype/research/` — research values, ledger Components, views, and free workflow handler
-- [Agent Missions](agent-missions.md) — coding-agent sessions, transcripts, trajectories, and repository evidence
-- `packages/archetype-physical-ai/src/archetype/physical_ai/` — supported models, state, views, provider contracts, free workflow handlers, and their internal provider processors
-- `everettVT/robot-evals` — external LIBERO harness, GPU entrypoints, and run ledgers
 - `docs/reports/2026-07-16-robot-evals-extraction.md` — historical extraction boundary

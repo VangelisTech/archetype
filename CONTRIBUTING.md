@@ -35,7 +35,7 @@ and `pr-gate.yml`).
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
 | Generic durable authority and framework orchestration | The owning framework family under `packages/archetype-ecs/src/archetype/` |
-| Missions, Physical AI, or Research behavior | The owning world-library distribution under `packages/archetype-<library>/` |
+| Research behavior | The owning world-library distribution under `packages/archetype-<library>/` |
 | A library's trusted framework composition adapter | Its private `archetype.<family>._extension` module only |
 | Transport and authentication | `archetype.api` |
 | Concrete composition and process lifetime | `archetype.wiring` and `archetype.runtime_resources` |
@@ -102,7 +102,7 @@ Every target below is a `.PHONY` rule. Run `make help` for the quick version.
 
 | Target | What it does | Purpose |
 |--------|-------------|---------|
-| `make test` | `pytest -q -n auto` with all five package source roots | Fast test run, no coverage |
+| `make test` | `pytest -q -n auto` with all three package source roots | Fast test run, no coverage |
 | `make test-cov` | `pytest --cov --cov-branch --cov-fail-under=70` with all package roots | Tests with 70% branch coverage gate |
 | `make test-all` | `pytest -v --tb=short` with all package roots | Verbose test run |
 
@@ -110,11 +110,12 @@ Every target below is a `.PHONY` rule. Run `make help` for the quick version.
 
 | Target | Steps | Purpose |
 |--------|-------|---------|
-| `make ci` | `make static` + `make test` + `make package-smoke` | **The required PR profile. Run before every push.** |
+| `make ci` | `make static` + `make test` + `make package-smoke` + `make ddlog-check` | **The required PR profile. Run before every push.** |
 
 `make ci` is the single command that must pass for any PR to merge. It runs
-the same three targets as the required GitHub Actions jobs: `Static` owns the
-static target, while `Tests (3.12)` owns both tests and the distribution smoke.
+the same four targets as GitHub Actions: `Static` owns the static target,
+`Tests (3.12)` owns tests and the distribution smoke, and `DDlog storage`
+checks the native preview crate.
 
 ### Build & Release
 
@@ -122,13 +123,13 @@ static target, while `Tests (3.12)` owns both tests and the distribution smoke.
 |--------|---------|---------|
 | `make version` | reads `packages/archetype-ecs/pyproject.toml` | Print current release-line version |
 | `make lock-check` | `uv lock --check` | Verify lockfile is in sync |
-| `make build` | `uv build --all-packages --no-sources` | Build all five sdists and wheels into `dist/` |
-| `make release-artifact` | build + wheel/sdist smoke + immutable manifest | Record the exact five-wheel/five-sdist matrix |
+| `make build` | `uv build --all-packages --no-sources` | Build all three sdists and wheels into `dist/` |
+| `make release-artifact` | build + wheel/sdist smoke + immutable manifest | Record the exact three-wheel/three-sdist matrix |
 | `make verify-release-artifact` | verify `dist/` against `release-artifact.json` | Reject changed, missing, or extra release artifacts |
 | `make verify-release` | full source profile + installed release-artifact evidence | Run the release verification profile |
 | `make release-check` | sync development dependencies + `verify-release` | Prepare and verify a manual release candidate |
-| `make verify-test-index` | exact-byte query + six isolated TestPyPI installs | Verify a TestPyPI rehearsal |
-| `make verify-published` | exact-byte query + six isolated PyPI installs | Verify the published release |
+| `make verify-test-index` | exact-byte query + four isolated TestPyPI installs | Verify a TestPyPI rehearsal |
+| `make verify-published` | exact-byte query + four isolated PyPI installs | Verify the published release |
 
 Publication is intentionally available only through the hosted release workflow. Its
 environment-scoped OIDC identities produce the provenance required by the same
@@ -157,12 +158,13 @@ publication.
 
 ### `python-tests.yml` (CI) — on push to main + PRs
 
-The primary CI workflow intentionally contains two required jobs:
+The primary CI workflow contains two required jobs and a native preview check:
 
 | Job | What it runs | Required to merge? |
 |-----|--------------|-------------------|
 | `Static` | `make static` | **Yes** |
 | `Tests (3.12)` | `make test` + `make package-smoke` | **Yes** |
+| `DDlog storage` | Rust format, Clippy, and storage tests | Branch protection is unchanged |
 
 Concurrency: grouped by `ci-${{ github.ref }}`, cancels in-progress runs on
 the same branch.
@@ -179,22 +181,22 @@ Release workflow with the same tag as its input. The workflow authorizes the rel
 operator, requires the tag commit to be on `main`, and verifies that the tag agrees
 with the package version.
 
-The release profile builds five wheels and five sdists once, package-smokes the
-four-package world stack and independent Smol wheel, rebuilds every sdist and
+The release profile builds three wheels and three sdists once, package-smokes the
+two-package world stack and independent Smol wheel, rebuilds every sdist and
 repeats both probes, records every digest, and runs installed-artifact evidence.
-The external-provider and
-Apple lanes download that same matrix; Python 3.13 compatibility runs alongside them.
-The operational evidence gate requires every release receipt to name all four
+The OpenAI and Cloudflare R2 lanes download that same matrix; Python 3.13
+compatibility runs alongside them. Live Biome runs at demand cadence.
+The operational evidence gate requires every release receipt to name both
 world-stack wheel digests; Smol has a separate installed-wheel behavior probe.
 
 Publication then proceeds as one fail-closed chain. An unprivileged coordinator
-rejects conflicting TestPyPI files, dispatches the four package-specific child
+rejects conflicting TestPyPI files, dispatches the two package-specific child
 workflows, and records their exact run identities. The ECS publisher remains in
 `release.yml`; each child publishes only its own original two-file artifact. The
-coordinator waits for all five OIDC publishers before isolated environments install
+coordinator waits for all three OIDC publishers before isolated environments install
 the base, each selective library, and the full stack from TestPyPI. The same preflight,
-five-publisher upload, exact-byte index verification, and six-shape install matrix run
-against PyPI. The GitHub Release is created only after PyPI serves all ten attested
+three-publisher upload, exact-byte index verification, and four-shape install matrix run
+against PyPI. The GitHub Release is created only after PyPI serves all six attested
 files and the registry-installed matrix passes. Exact matching partial uploads are
 resumable; an existing filename with different bytes fails before any publishing job
 receives an OIDC token. A matching pre-existing file is accepted only when the registry
@@ -209,8 +211,8 @@ The exact canonical `vMAJOR.MINOR.PATCH` tag, including an annotated tag's peele
 commit, must still resolve to the workflow's original `GITHUB_SHA`. This narrows the
 final mutable-ref window without exposing the publish token to checked-out code.
 
-Before the first five-project release, register pending Trusted Publishers for the
-four new project names on both PyPI and TestPyPI. This preconfigures their OIDC
+Before the first release of the current three-project set, register pending Trusted Publishers for the
+two separate library and teaching project names on both PyPI and TestPyPI. This preconfigures their OIDC
 identities; it does not reserve or claim the names. Each new name remains claimable
 until the first successful OIDC publication creates the project on that registry.
 Every row uses repository `VangelisTech/archetype` and must be registered once with
@@ -219,8 +221,6 @@ Every row uses repository `VangelisTech/archetype` and must be registered once w
 | Project | Trusted Publisher workflow |
 |---|---|
 | `archetype-ecs` | `release.yml` |
-| `archetype-missions` | `publish-archetype-missions.yml` |
-| `archetype-physical-ai` | `publish-archetype-physical-ai.yml` |
 | `archetype-research` | `publish-archetype-research.yml` |
 | `archetype-smol` | `publish-archetype-smol.yml` |
 
@@ -279,7 +279,7 @@ what to run locally to reproduce a CI failure.
 | `link-check` | `lychee` (via `make docs-lint`) | Requires lychee installed locally |
 | `build` | `make docs` | Generates references before building |
 | Release `test` | `make test-all` | Uses `pytest -v --tb=short` |
-| Release `build` | `make build` | Builds all five sdists and wheels without workspace source overrides |
+| Release `build` | `make build` | Builds all three sdists and wheels without workspace source overrides |
 
 ## Pre-commit Hooks
 
@@ -319,12 +319,6 @@ packages/
     runtime/          # Generic supported scripting API.
     api/              # Domain-free REST host.
     cli/              # Domain-free HTTP client and server startup.
-  archetype-missions/src/archetype/missions/
-    _extension.py     # Private trusted composition adapter.
-    ...               # Coding agents, sandboxes, transcripts, trajectories.
-  archetype-physical-ai/src/archetype/physical_ai/
-    _extension.py     # Private trusted composition adapter.
-    ...               # Physical state, policies, hosted episodes.
   archetype-research/src/archetype/research/
     _extension.py     # Private trusted composition adapter.
     ...               # AutoResearch values, ledger, and workflow.
@@ -341,7 +335,7 @@ docs/       # MkDocs site — deployed at archetype.vangelis.tech/docs
 ```
 
 The checkout is one uv workspace and one lockfile, but release artifacts are
-five independently installable distributions. See
+three independently installable distributions. See
 [World Libraries](docs/guide/world-libraries.md) before adding a domain package,
 manifest contribution, adapter, or compatibility alias.
 

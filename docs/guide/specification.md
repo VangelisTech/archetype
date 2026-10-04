@@ -2,6 +2,13 @@
 
 This page is the entry point for Archetype's contract documents.
 
+The [DDlog migration](ddlog-runtime.md) is the accepted live-execution target
+and defines the implemented Rust preview. The Python contracts below describe
+the retained 0.6 implementation, including its existing Daft loop; the bridge
+and generic DDlog API/MCP are not yet implemented. Agent memory, prompt, tool,
+and budget semantics belong to X0. Missions and Physical AI products have
+been removed from current packaging and composition.
+
 It does two things:
 
 1. names the current sources of truth for Archetype contracts
@@ -28,7 +35,6 @@ The current contract set is split across design docs and executable tests.
 | [Storage Migration](storage-migration.md) | Local whole-storage administration | Offline Iceberg-to-Iceberg and SQLite-to-SQLite migration, empty-destination activation, Artifact relocation, exact identity preservation, and cold verification. |
 | [Activities](activities.md) | Work between committed states | Resource/Activity boundary, post-commit admission, fenced attempts, provider reconciliation, result references, and later-receipt settlement. |
 | [Artifacts](artifacts.md) | External-artifact ingestion | Family-owned file/media scans and handlers over explicit durable coordinates, storage-owned typed Iceberg tables, occurrence identity, and content-addressed objects. |
-| [Agent Missions V1](agent-missions.md) | Coding-agent software factory | Typed task graphs, revision-bound validators, immutable candidates, independent exact-head critic receipts, durable repair findings, and terminal mission rollup. |
 | [Dataset and Evaluation Ontology](dataset-eval-ontology.md) | Dataset/eval identity and vocabulary | Dataset-vs-runtime coordinates, trial/episode cardinality, typed-ingestion ownership, and grader composition. |
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
 | [Repository Harness](repository-harness.md) | Executable evidence | Focused tests, contract matrices, repository scenarios, benchmarks, static audits, and mutation probes. |
@@ -100,7 +106,6 @@ This specification covers:
   committed ticks
 - typed external artifacts and dataset/evaluation identity
 - offline whole-storage identity migration and destination-only verification
-- typed coding-agent task graphs, committed dispatch, and validator-gated transitions
 - deterministic installation of compatible, separately distributed world libraries
 
 This specification does not authorize direct edits to `packages/archetype-ecs/src/archetype/core/`.

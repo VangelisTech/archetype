@@ -33,19 +33,6 @@ _PULL_FORWARD_MODELS = (
     ("archetype.evaluation.models", "RunGraders"),
     ("archetype.evaluation.models", "Evaluate"),
     ("archetype.research.models", "AutoResearch"),
-    ("archetype.physical_ai.models", "RunHostedEpisode"),
-    ("archetype.missions.trajectories.models", "IngestClaudeTranscript"),
-    ("archetype.missions.trajectories.models", "QueryTranscriptRows"),
-    ("archetype.missions.trajectories.models", "QueryTrajectory"),
-    ("archetype.missions.trajectories.models", "GradeTrajectory"),
-    ("archetype.missions.models", "SubmitMission"),
-    ("archetype.missions.models", "RunMission"),
-    ("archetype.missions.models", "RestoreMissionSandbox"),
-    ("archetype.missions.models", "AcceptMissionRun"),
-    ("archetype.missions.models", "GetMissionRun"),
-    ("archetype.missions.models", "CancelMissionRun"),
-    ("archetype.missions.models", "GetMissionRunEvents"),
-    ("archetype.missions.models", "ListMissionRuns"),
 )
 _ACTOR_AWARE = frozenset(
     {
@@ -57,20 +44,7 @@ _ACTOR_AWARE = frozenset(
 )
 _TRUSTED_ONLY = frozenset(
     {
-        "grade_trajectory",
-        "ingest_claude_transcript",
-        "query_trajectory",
-        "query_transcript_rows",
-        "restore_mission_sandbox",
         "run_graders",
-        "run_mission",
-        "submit_mission",
-        "accept_mission_run",
-        "get_mission_run",
-        "cancel_mission_run",
-        "get_mission_run_events",
-        "list_mission_runs",
-        "run_hosted_episode",
     }
 )
 _DELETED_MODULES = (
@@ -151,22 +125,9 @@ _WORLD_TOKEN_COSTS = {
 _PULL_FORWARD_SCOPES = {
     "autoresearch": "live_world",
     "evaluate": "durable_world",
-    "grade_trajectory": "durable_world",
     "ingest_artifacts": "durable_world",
-    "ingest_claude_transcript": "live_world",
     "query_artifacts": "durable_world",
-    "query_trajectory": "durable_world",
-    "query_transcript_rows": "durable_world",
-    "restore_mission_sandbox": "application",
     "run_graders": "application",
-    "run_mission": "application",
-    "submit_mission": "application",
-    "accept_mission_run": "application",
-    "get_mission_run": "application",
-    "cancel_mission_run": "application",
-    "get_mission_run_events": "application",
-    "list_mission_runs": "application",
-    "run_hosted_episode": "live_world",
 }
 
 
@@ -196,15 +157,9 @@ def _operation_name(model: type[BaseModel]) -> str:
 
 
 def _world_library_manifests() -> tuple[Any, ...]:
-    from archetype.missions._extension import get_manifest as missions_manifest
-    from archetype.physical_ai._extension import get_manifest as physical_ai_manifest
     from archetype.research._extension import get_manifest as research_manifest
 
-    return (
-        missions_manifest(),
-        physical_ai_manifest(),
-        research_manifest(),
-    )
+    return (research_manifest(),)
 
 
 def _config(
@@ -417,7 +372,7 @@ async def test_registry_contains_framework_plus_resolved_library_specs_exactly_o
     tmp_path: Path,
 ) -> None:
     expected = _expected_models()
-    assert len(expected) == 51
+    assert len(expected) == 38
     duplicate_counterfactual = (
         (_operation_name(expected[0]), expected[0]),
         (_operation_name(expected[0]), expected[0]),
@@ -433,19 +388,13 @@ async def test_registry_contains_framework_plus_resolved_library_specs_exactly_o
         world_libraries=manifests,
     ) as resources:
         actual = _inventory(resources)
-        assert len(actual) == 51
+        assert len(actual) == 38
         assert _inventory_defects(actual, expected) == (set(), set(), set(), set())
         assert set(actual) == {(_operation_name(model), model) for model in expected}
         assert tuple(manifest.name for manifest in resources.world_library_manifests) == (
-            "missions",
-            "physical-ai",
             "research",
         )
-        assert tuple(resources.world_libraries) == (
-            "missions",
-            "physical-ai",
-            "research",
-        )
+        assert tuple(resources.world_libraries) == ("research",)
 
         specs = {spec.name: spec for spec in _specs(resources)}
         assert set(_WORLD_TOKEN_COSTS) == {
@@ -806,7 +755,7 @@ async def test_no_runtime_or_api_operation_can_fall_back_to_a_legacy_bridge(
     ) as resources:
         pull_forward = set(_pull_forward_types())
         specs = tuple(spec for spec in _specs(resources) if spec.model in pull_forward)
-        assert len(specs) == 18
+        assert len(specs) == 5
         assert all(callable(spec.handler) for spec in specs)
 
 
@@ -816,13 +765,13 @@ def _pull_forward_specs(resources: Any) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_pull_forward_registration_has_exact_four_actor_aware_and_fourteen_trusted_only_specs(
+async def test_pull_forward_registration_has_exact_four_actor_aware_and_one_trusted_only_specs(
     tmp_path: Path,
 ) -> None:
     assert len(_ACTOR_AWARE) == 4
-    assert len(_TRUSTED_ONLY) == 14
+    assert len(_TRUSTED_ONLY) == 1
     assert _ACTOR_AWARE.isdisjoint(_TRUSTED_ONLY)
-    assert len(_ACTOR_AWARE | _TRUSTED_ONLY) == 18
+    assert len(_ACTOR_AWARE | _TRUSTED_ONLY) == 5
     bad = {
         "one": SimpleNamespace(trusted=True, untrusted=True, durable=object()),
         "two": SimpleNamespace(trusted=False, untrusted=False, durable=None),
@@ -1123,7 +1072,7 @@ async def test_nondurable_pull_forward_rejections_have_no_provider_or_scheduler_
 
             assert trap.reads == []
             assert scheduler.calls == []
-            assert len(access_rows) == 32
+            assert len(access_rows) == 6
             assert all(getattr(row, "outcome", None) == "rejected" for row in access_rows)
         finally:
             dispatcher._policy = original_policy

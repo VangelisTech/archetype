@@ -20,29 +20,21 @@ from typing import Any
 
 _WORLD_STACK_DISTRIBUTIONS = (
     "archetype-ecs",
-    "archetype-missions",
-    "archetype-physical-ai",
     "archetype-research",
 )
 _DISTRIBUTIONS = (*_WORLD_STACK_DISTRIBUTIONS, "archetype-smol")
 _PACKAGE_PREFIXES = {
     "archetype-ecs": "archetype_ecs",
-    "archetype-missions": "archetype_missions",
-    "archetype-physical-ai": "archetype_physical_ai",
     "archetype-research": "archetype_research",
     "archetype-smol": "archetype_smol",
 }
 _LIBRARY_IMPORTS = {
-    "missions": "archetype.missions",
-    "physical-ai": "archetype.physical_ai",
     "research": "archetype.research",
 }
 _OPERATION_COUNTS = {
     "base": 37,
-    "missions": 49,
-    "physical-ai": 38,
     "research": 38,
-    "all": 51,
+    "all": 38,
 }
 
 
@@ -115,8 +107,6 @@ def _validate_wheel_contents(
 
     root_init = "archetype/__init__.py"
     family_prefixes = {
-        "missions": "archetype/missions/",
-        "physical-ai": "archetype/physical_ai/",
         "research": "archetype/research/",
         "smol": "archetype/smol/",
     }
@@ -133,7 +123,7 @@ def _validate_wheel_contents(
                 "framework wheel contains separately distributed package code: "
                 f"{leaked_families[:5]}"
             )
-        for library in ("missions", "physical-ai", "research"):
+        for library in ("research",):
             requirement = f'Requires-Dist: archetype-{library}<0.7,>=0.6; extra == "all"'
             if requirement not in metadata:
                 raise RuntimeError(
@@ -175,10 +165,6 @@ def _validate_wheel_contents(
                 + ", ".join(first_party_requirements)
             )
         return metadata_version
-    if distribution == "archetype-missions" and (
-        "archetype/missions/sandboxes/versions.toml" not in names
-    ):
-        raise RuntimeError("Missions wheel is missing its pinned version inventory")
     return metadata_version
 
 
@@ -252,8 +238,6 @@ def _run_matrix(
     framework = str(wheels["archetype-ecs"].resolve())
     selected = {
         "base": [framework],
-        "missions": [framework, str(wheels["archetype-missions"].resolve())],
-        "physical-ai": [framework, str(wheels["archetype-physical-ai"].resolve())],
         "research": [framework, str(wheels["archetype-research"].resolve())],
         # Every lane names the exact local artifacts under test. The framework
         # METADATA assertion above separately proves that its ``all`` extra
@@ -263,10 +247,8 @@ def _run_matrix(
     }[matrix]
     expected_libraries = {
         "base": [],
-        "missions": ["missions"],
-        "physical-ai": ["physical-ai"],
         "research": ["research"],
-        "all": ["missions", "physical-ai", "research"],
+        "all": ["research"],
     }[matrix]
 
     clean_env = _clean_subprocess_environment()
@@ -325,6 +307,8 @@ for name, module in imports.items():
     if name in expected:
         assert version("archetype-" + name) == release_version
 assert importlib.util.find_spec("archetype.episodes") is None
+assert importlib.util.find_spec("archetype.missions") is None
+assert importlib.util.find_spec("archetype.physical_ai") is None
 assert importlib.util.find_spec("archetype.smol") is None
 resources = build_runtime_resources(RuntimeBootstrapConfig.from_env())
 try:
@@ -340,15 +324,9 @@ mission_paths = sorted(
     for path in app.openapi()["paths"]
     if "/missions" in path or "/tasks/" in path
 )
-assert len(mission_paths) == (3 if "missions" in expected else 0), mission_paths
+assert mission_paths == [], mission_paths
 console_scripts = {{point.name: point for point in entry_points(group="console_scripts")}}
-if "missions" in expected:
-    mcp_point = console_scripts["archetype-missions-mcp"]
-    assert mcp_point.value == "archetype.missions.mcp.server:main", mcp_point.value
-    assert callable(mcp_point.load())
-    assert (Path(sys.executable).parent / "archetype-missions-mcp").exists()
-else:
-    assert "archetype-missions-mcp" not in console_scripts, sorted(console_scripts)
+assert "archetype-missions-mcp" not in console_scripts, sorted(console_scripts)
 print(json.dumps({{"matrix": {matrix!r}, "libraries": expected, "operations": operation_count, "module": str(package_root)}}))
 """
     process = subprocess.run(

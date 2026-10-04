@@ -378,7 +378,3 @@ source, assets, or the derived executable. The bootstrap patches only its
 disposable local checkout to register the Archetype-owned bridge and produce
 a private executable for the evidence run. Obtain permission or a declared
 upstream license before distributing that derived build or any copied asset.
-
-For a package-owned example that compiles framework prefab graphs into Agent
-Missions authoring values, continue with the
-[Mission Factory Asset Bible](mission-factory-assets.md).

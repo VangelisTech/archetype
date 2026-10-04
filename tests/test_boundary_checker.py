@@ -29,9 +29,6 @@ _API_COMPOSITION_SURFACE = next(
 _API_ROUTES_SURFACE = next(
     surface for surface in _POLICY.import_surfaces if surface.name == "api-routes"
 )
-_MISSIONS_API_SURFACE = next(
-    surface for surface in _POLICY.import_surfaces if surface.name == "missions-api-router"
-)
 
 
 def _write(tmp_path: Path, body: str) -> Path:
@@ -76,14 +73,9 @@ def test_policy_loads_surface_dependencies_and_owner_types_from_data():
         "archetype.wiring",
         "archetype.world_libraries",
     } <= _API_COMPOSITION_SURFACE.allowed_dependencies
-    assert _MISSIONS_API_SURFACE.targets == (
-        "packages/archetype-missions/src/archetype/missions/api.py",
-    )
-    assert "archetype.missions.components" in _MISSIONS_API_SURFACE.allowed_dependencies
-    assert "archetype.missions.service" in _MISSIONS_API_SURFACE.forbidden_dependencies
     assert "WorldLifecycle" in _POLICY.public_api.forbidden_owner_types
-    assert "MissionService" in _POLICY.public_api.forbidden_owner_types
-    assert "mission_service" in _POLICY.public_api.forbidden_parameter_names
+    assert "StorageService" in _POLICY.public_api.forbidden_owner_types
+    assert "storage_service" in _POLICY.public_api.forbidden_parameter_names
 
     architecture = tomllib.loads(
         (_ROOT / "quality" / "architecture.toml").read_text(encoding="utf-8")
@@ -142,9 +134,9 @@ def test_architecture_owner_registry_drives_type_and_parameter_checks(tmp_path: 
         tmp_path,
         "from archetype._api import public_api\n"
         "@public_api\n"
-        "def typed(owner: 'MissionService'): ...\n"
+        "def typed(owner: 'StorageService'): ...\n"
         "@public_api\n"
-        "def named(mission_service): ...\n",
+        "def named(storage_service): ...\n",
     )
 
     violations = checker._public_api_violations(path, _POLICY.public_api, root=tmp_path)
@@ -177,7 +169,7 @@ def test_api_scope_blocks_world_family_behavior_imports(tmp_path):
 
 
 def test_api_scope_rejects_unapproved_application_imports(tmp_path):
-    path = _write(tmp_path, "from archetype.app.missions.service import MissionService\n")
+    path = _write(tmp_path, "from archetype.app.missions.service import StorageService\n")
     violations = checker._import_violations(path, _API_ROUTES_SURFACE, root=tmp_path)
     assert len(violations) == 1
 
@@ -367,10 +359,6 @@ def test_public_api_class_constructor_is_checked(tmp_path):
 def test_workspace_source_module_identity_covers_each_distribution() -> None:
     targets = {
         "packages/archetype-ecs/src/archetype/api/app.py": "archetype.api.app",
-        "packages/archetype-missions/src/archetype/missions/api.py": "archetype.missions.api",
-        "packages/archetype-physical-ai/src/archetype/physical_ai/runtime.py": (
-            "archetype.physical_ai.runtime"
-        ),
         "packages/archetype-research/src/archetype/research/runtime.py": (
             "archetype.research.runtime"
         ),
@@ -379,12 +367,3 @@ def test_workspace_source_module_identity_covers_each_distribution() -> None:
 
     for relative, expected in targets.items():
         assert checker._source_module(_ROOT / relative, _ROOT) == (expected, False)
-
-
-def test_missions_router_surface_rejects_workflow_service_import(tmp_path: Path) -> None:
-    path = _write(tmp_path, "from archetype.missions.service import MissionService\n")
-
-    violations = checker._import_violations(path, _MISSIONS_API_SURFACE, root=tmp_path)
-
-    assert len(violations) == 1
-    assert "imports forbidden archetype.missions.service" in violations[0]

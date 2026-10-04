@@ -9,13 +9,6 @@ construction-injected lower-family ports described here.
 public/internal classification, wiring, and enforcement. This document owns the
 purpose and active mapping of each family port.
 
-Agent Missions V1 uses the family-owned concrete `MissionService`,
-`TrajectoryService`, `TranscriptIngestionService`, `SandboxService`,
-`SandboxBackend`, `SandboxSession`, coding-agent harness, exact-head critic
-harness, and combined Activity binding. Their former application-layer facade
-and protocol mirrors are deleted; the concrete workflows remain private to the
-separately installed Missions distribution.
-
 The top-level `archetype.commands` family deliberately owns concrete
 `OperationRegistry`, `CommandDispatcher`, `Policy`, `CommandScheduler`, and
 `AuditLog` machinery rather than the deleted application-family scheduler and
@@ -57,8 +50,6 @@ artifacts.handlers + artifacts.views -> iStorageService
 migration.workflow
   -> iStorageService + storage.MigrationControlCatalog
   -> artifacts migration participant + composition-supplied cold verifier
-missions.TranscriptIngestionService
-  -> artifacts.handlers + redaction structural port + iStorageService
 iWorldLifecycle    -> iWorldRegistry + iStorageService
 iWorldLifecycle    -> iWorldActivationOwner (private cleanup-only creation)
 CommandDispatcher  -> OperationRegistry + Policy + CommandScheduler
@@ -67,41 +58,25 @@ CommandScheduler   -> storage control catalog
                    -> world.handlers lock-held materialization
 research.handlers  -> iWorldRegistry + iWorldLifecycle + iStorageService
                    -> world simulation + exact owned-world cleanup
-physical_ai.hosted_workflow
-  -> iWorldRegistry + hosted Activity binding
-  -> archetype.world mutation/simulation
 AuditLog           -> iStorageService + CommandScheduler outbox callbacks
 
-missions.Missions -> CommandDispatcher -> registered mission handler
-registered mission handler -> reservation-owned missions.MissionService
-missions.MissionService
-  -> missions.SandboxService -> missions.SandboxBackend
-  -> missions.CodingAgentHarness -> missions.SandboxSession
-  -> missions.CriticHarness -> missions.CriticDriver
-                            -> missions.SandboxSession
 ```
 
 `archetype.wiring` composes the domain-free framework, resolves manifests, and
 returns `RuntimeResources`. Each world library's private `_extension.py`
 adapter constructs that library's internals and registers only its declared
-handlers over the bounded framework context. Agent Missions reaches its
-workflow only through those handlers and its exact pre-reserved owner.
+handlers over the bounded framework context.
 
 ## 3. Active mapping
 
 | Port | Implementation | Principal consumers | Responsibility |
 |---|---|---|---|
-| `iStorageService` | `StorageService` | world, commands, artifacts, evaluation, Missions transcripts/trajectories, Research, Physical AI, migration | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, app-table catalog/read/write/retry authority, and pinned table-transfer evidence |
-| `iWorldRegistry` | `WorldRegistry` | lifecycle, mutation, simulation, research, physical AI | Live identity, storage coordinates, exact-world synchronization, retryable close ownership, and committed-receipt retention |
-| `iWorldLifecycle` | `WorldLifecycle` | framework wiring plus installer-bound Research and Physical-AI handlers | Managed construction, durable discovery, readonly open, fenced mutable resume, fork, and close |
-| `iWorldCleanup` | `WorldCleanup` | reservation-owned mission cleanup | Exact-world, close-lease-bound retained updates, teardown staging, commit, and finish |
+| `iStorageService` | `StorageService` | world, commands, artifacts, evaluation, Research, migration | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, app-table catalog/read/write/retry authority, and pinned table-transfer evidence |
+| `iWorldRegistry` | `WorldRegistry` | lifecycle, mutation, simulation, research | Live identity, storage coordinates, exact-world synchronization, retryable close ownership, and committed-receipt retention |
+| `iWorldLifecycle` | `WorldLifecycle` | framework wiring plus installer-bound Research handlers | Managed construction, durable discovery, readonly open, fenced mutable resume, fork, and close |
+| `iWorldCleanup` | `WorldCleanup` | reservation-owned world cleanup | Exact-world, close-lease-bound retained updates, teardown staging, commit, and finish |
 | `MigrationControlCatalog` | local `SqliteControlCatalog` | local v1 storage migration | Versioned exact control export, immutable-plan reservation, hidden staging, fence-floor import, World activation last, and receipt completion |
 | `ColdMigrationVerifier` | composition-supplied fresh destination verifier | local v1 storage migration | Reopen destination-only resources and return bounded discovery, table, Artifact, resume, fence, and later-tick evidence |
-| Structural `MissionRedactor` / `TranscriptRedactor` | canonical `archetype.redaction.RedactionService` | mission execution and transcript ingestion | Provider-neutral pre-durability scanning, deterministic redaction, safe receipts, and quarantine |
-| Family resource service `missions.SandboxService` | `missions.SandboxService` | `MissionService` | Select a configured backend and acquire, reuse, close, and shut down mission-keyed sessions; no task-transition authority |
-| Family resource port `missions.SandboxBackend` | configured Apple Container, Docker, or Modal adapter | `missions.SandboxService` | Create or restore provider-owned isolated sessions |
-| Family resource port `missions.SandboxSession` | provider session adapter | `CodingAgentHarness`, `CriticHarness`, `missions.SandboxService` | Expose capability, process, status, checkpoint, and close operations for one live sandbox |
-| Family resource port `missions.CriticDriver` | admitted Modal `CodexAppServerCriticDriver`; capability-only `CodexCriticDriver`; or configured adapter | `CriticHarness` | Invoke one independent structured review with model capability but no Git publication capability |
 
 ### Commands-owned machinery
 
@@ -118,11 +93,6 @@ The research family deliberately has no application service port.
 the world/storage ports, exact cleanup callback, and one process-shared
 `AutoResearchAdmissions` instance by the private
 `archetype.research._extension` installer.
-The physical-AI family likewise has no application service port. Its private
-`archetype.physical_ai._extension` installer registers the one hosted-episode
-handler and constructs world-scoped Activity bindings over bounded framework
-capabilities, retaining their lifetime through `RuntimeResources`.
-
 ## 4. Boundary rules
 
 ### Runtime and API adapters
@@ -192,24 +162,8 @@ remote endpoints and any Activity history fail closed. See
 
 There is no artifact claim, lease, receipt, reconciliation protocol, generic
 ingestion facade, or live-registry fallback around that path.
-Provider checkpoints remain sandbox recovery objects rather than artifact
-workflow stages. Agent Missions does not implicitly crawl a sandbox after a
-task decision: a provider export must first select and sanitize declared files,
-then submit valid `ArtifactSource` values through the registered artifact
-operation. Future live-event,
-OTel, and proxy exporters consume the same redaction port; they do not fork
-scanner policy.
-
-`TranscriptIngestionService` is a family-owned workflow, not another storage
-authority. It snapshots and redacts through
-the canonical `RedactionService` through a narrow structural port, parses with
-the pure missions-family adapter, redacts normalized rows, publishes the
-sanitized snapshot through the artifacts-family handler, verifies its digest,
-and appends normalized rows through `iStorageService`.
-Raw narrative never crosses a durability boundary.
-Each ingestion is a new artifact occurrence; normalized row identity is scoped
-to that source artifact. Commands-owned `AuditLog` is an analytical
-projection/read component, not the authority for command outcome.
+Providers must select and sanitize declared files before submitting
+`ArtifactSource` values. Exporters consume the canonical redaction port.
 
 AutoResearch follows the same free-handler direction without becoming a
 durable workflow. The exact `AutoResearch` model carries live callbacks, so
@@ -220,93 +174,6 @@ bypasses it and receives invocation-unique rollout names. The dispatcher
 awaits the outer handler synchronously inside its existing process admission,
 and inner world/storage work calls owning families directly. Research creates
 no service facade, recursive dispatch, detached task, or second lifetime owner.
-
-### Agent Missions V1
-
-`archetype.missions` owns the complete reusable coding-agent capability:
-`SandboxService`, the `SandboxBackend` and `SandboxSession` protocols, sandbox
-value contracts, coding and critic harness values, Components, relations, and
-processors.
-The configured backend creates a provider-owned session; `SandboxService`
-selects that backend and single-flights acquisition by a `SandboxKey`. Modal is
-the supported end-to-end Mission backend. Apple Container and Docker remain
-sandbox capabilities but Mission submission rejects them before admission
-until they have equivalent fail-closed Activity adapters.
-
-`MissionService` is the family-owned workflow. It composes a structural mission
-world with the built-in Components, processors, relationships, graph view, one
-combined author-and-critic Activity binding, both repository harnesses, and the
-sandbox service. Each committed tick is read through the exact required
-projector. Author dispatches and exact candidate reviews are admitted directly
-into the generic coordinator, executed or reconciled outside the world lock,
-staged for a later tick, and settled only by an exact receipt bound to the
-recorded Activity result reference and digest. A dispatch or review ID alone is
-insufficient. Sandbox providers and processors do not acquire Activity
-transition authority.
-
-Graph materialization records each authored `TaskValidator`. The harness then
-prepares the repository, runs the coding agent and those validator commands,
-performs Git publication, and returns observations that the service records as
-`AgentExecution`, `ValidationResult`, `Commit`, and `FrictionLog`
-Components and relations. Complete passing exact-revision evidence plus one
-published final head becomes a `Candidate`, not acceptance. After that
-candidate commits, `CriticHarness` verifies the remote subject in a fresh
-sandbox, invokes `CriticDriver`, and returns
-bounded findings and a receipt. Critic sandboxes receive no publication secret,
-the configured driver's declared identity must match the task policy, they are
-never checkpointed, and they close after their evidence is durable. Close
-failure is surfaced and retryable across `run()` calls; cancellation propagates
-without discarding cleanup ownership. Critic execution facts carry the observed
-sandbox status and whether acquisition succeeded, so unavailable synthetic
-identities remain durable failures rather than fabricated healthy lifecycles.
-
-The sandbox identity is staged immediately after acquisition; bounded
-`SandboxEvent` callbacks expose it synchronously for live,
-non-authoritative operator updates. Validator success is derived from expected
-and actual return codes; neither the harness, sandbox, nor service decides task
-state. Processors alone create candidate state, validate exact independent
-receipt bindings, accept or repair a task, exhaust its author budget, unlock
-dependent tasks, and roll terminal task states up to the mission. Reviewer
-infrastructure failure consumes only its bounded review budget and leaves the
-candidate pending.
-
-The registered submit handler takes the backend configured by
-`AgentMissionConfig`, constructs `SandboxService`, and constructs
-`MissionService` once inside the pre-reserved workflow owner. It injects that
-owner with the combined Activity binding plus a narrow exact-world cleanup factory.
-`Missions` supplies only supported configuration and exact operations;
-it never receives the service. No Component, processor, relation, harness
-value, or sandbox implementation moves into process composition.
-
-See [Agent Missions V1](agent-missions.md).
-
-### Physical AI
-
-The public distributed surface is one exact trusted-only direct operation,
-`RunHostedEpisode`, on a `RuntimeWorld`. Its public values live in
-`archetype.physical_ai.models`, and its provider configuration identifies one
-exact Modal namespace.
-
-`archetype.physical_ai.hosted_workflow` commits intent, invokes the
-world-scoped Activity worker outside the World lock, and commits the complete
-observation in a later tick. The family-owned binding supplies exact-receipt
-projection, provider reconciliation, content-addressed values, and observation
-staging. `RuntimeResources` owns that binding and worker; world-owned required
-projection fans out deterministically by consumer name when multiple Activity
-families share a World.
-
-No public operation installs remote environment or policy clients in a tick.
-The `EnvClient` and `PolicyClient` protocols remain internal support for
-explicit in-process processor composition. Pure in-memory paths such as the
-MuJoCo cart-pole processor remain supported examples; distributed execution
-crosses only the whole-episode Activity boundary.
-
-Modal permanent-start evidence and the first complete provider result are
-authoritative. Lease expiry does not authorize replay. Exact recovery returns
-the existing result, confirmed absence requires the provider retry guard, and
-unknown start state fails closed.
-
-See [Physical AI](physical-ai.md) and [Activities](activities.md).
 
 ## 5. Values crossing family ports
 
@@ -336,10 +203,7 @@ application evaluation facade or live-registry fallback. The
 research family completed #585 and #652: supported values, ledger Components,
 the runner decoder, storage-backed views, experiment admission, and the free
 workflow handler live under `archetype.research`. There is no research service
-mirror. The trajectory split completed
-issue #586: schemas, authoring values, and structural transforms live under
-`archetype.missions.trajectories`; `TrajectoryService` composes durable query
-with the evaluation family's pure grader runner.
+mirror.
 
 The migration family owns invocation-scoped endpoint bindings plus
 credential-free immutable plans, ordered orchestration, retry convergence,
@@ -349,21 +213,11 @@ These contracts preserve the direction `migration -> artifacts -> storage`
 plus the direct `migration -> storage` edge without promoting endpoint
 capabilities or credentials into persistent values.
 
-The physical-AI family owns the hosted operation, request and observation
-values, provider recovery, content contracts, and free workflow over declared
-world and storage ports. The former app mirror, direct per-step distributed
-operations, compatibility shim, `iPhysicalAIService`, and root application
-command-envelope boundary are gone.
-
 The root policy and its `quality/architecture.d/` fragments currently carry no
 migration exceptions; no wildcard compatibility package is implied.
 Redaction, audit, command, world, and other authority-specific models remain
 with their owning families unless a focused specification classifies an
 individual value as a reusable family contract.
-
-Agent Missions is the implemented example: Components, processors, relations,
-authoring and coding-harness values, sandbox resources, graph materialization,
-and cross-boundary workflow composition live under `archetype.missions`.
 
 ## 6. Construction and shutdown
 
@@ -380,9 +234,8 @@ RuntimeResources
 ```
 
 Runtime retains `RuntimeResources`; API lifespan retains the same process
-owner and dependency injection exposes only its dispatcher. Mission handlers
-construct and resolve `MissionService` inside the exact workflow reservation.
-Neither concrete services nor process wiring are exposed to mission authors.
+owner and dependency injection exposes only its dispatcher. Concrete services
+and process wiring remain internal.
 
 Shutdown stops and drains dispatcher admission, joins supervised work, closes
 workflow then world handles, flushes the audit projection, and finally closes
@@ -406,4 +259,3 @@ owned storage. Failed phases retain exact ownership for retry.
 - [Execution Hierarchy](execution-hierarchy.md)
 - [Artifacts](artifacts.md)
 - [Storage Migration](storage-migration.md)
-- [Agent Missions V1](agent-missions.md)

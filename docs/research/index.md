@@ -11,9 +11,8 @@ Research is the minimal AutoResearch world library. It owns candidates,
 evaluators, experiment identity, ledger state, views, admission, and the
 directly awaited optimization workflow.
 
-Coding-agent sessions, transcripts, and trajectory schemas remain Missions
-behavior. Research may retain bounded external evidence without importing or
-duplicating another library.
+Agent memory, prompts, tools, and budgets belong to X0. Research may retain
+bounded external evidence without importing or duplicating an agent runtime.
 
 ## Start
 

@@ -59,22 +59,12 @@ def _manifest() -> dict[str, object]:
 
 def test_registry_matrix_pins_every_selected_distribution() -> None:
     assert _requirements("base", "0.6.0") == ("archetype-ecs==0.6.0",)
-    assert _requirements("missions", "0.6.0") == (
-        "archetype-ecs==0.6.0",
-        "archetype-missions==0.6.0",
-    )
-    assert _requirements("physical-ai", "0.6.0") == (
-        "archetype-ecs==0.6.0",
-        "archetype-physical-ai==0.6.0",
-    )
     assert _requirements("research", "0.6.0") == (
         "archetype-ecs==0.6.0",
         "archetype-research==0.6.0",
     )
     assert _requirements("all", "0.6.0") == (
         "archetype-ecs==0.6.0",
-        "archetype-missions==0.6.0",
-        "archetype-physical-ai==0.6.0",
         "archetype-research==0.6.0",
     )
     assert _requirements("smol", "0.6.0") == ("archetype-smol==0.6.0",)
@@ -139,7 +129,6 @@ def test_registry_probe_rejects_split_compatibility_facades() -> None:
 
     assert "assert not any(hasattr(archetype, name)" in probe
     assert '"__getattr__" not in ArchetypeRuntime.__dict__' in probe
-    assert 'not hasattr(importlib.import_module("archetype.missions"), "RuntimeMissions")' in probe
     assert 'not hasattr(research, "CandidateContext")' in probe
     assert 'find_spec("archetype.artifacts.contracts") is None' in probe
     assert '"library" not in SyncRuntimeWorld.__dict__' in probe

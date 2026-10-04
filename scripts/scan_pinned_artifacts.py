@@ -4,9 +4,6 @@
 
 """Query OSV for known vulnerabilities in the pinned execution inventory.
 
-The daily security audit runs this against
-``packages/archetype-missions/src/archetype/missions/sandboxes/versions.toml`` so advisory coverage includes
-the pinned coding-agent CLIs and SDKs, not only the Python dependency graph.
 The script is stdlib-only: it parses the inventory directly and reports one
 machine-readable result per scannable artifact. Artifacts without an OSV
 ecosystem (installers, container images) are listed as unscannable evidence
@@ -22,22 +19,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
-INVENTORY = (
-    ROOT
-    / "packages"
-    / "archetype-missions"
-    / "src"
-    / "archetype"
-    / "missions"
-    / "sandboxes"
-    / "versions.toml"
-)
 OSV_ENDPOINT = "https://api.osv.dev/v1/querybatch"
 _ECOSYSTEMS = {"npm-package": "npm", "python-package": "PyPI"}
 
 
-def load_pinned_artifacts(path: Path = INVENTORY) -> list[dict[str, Any]]:
+def load_pinned_artifacts(path: Path) -> list[dict[str, Any]]:
     with path.open("rb") as stream:
         payload = tomllib.load(stream)
     rows = payload.get("artifact")
@@ -120,7 +106,7 @@ def scan(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--inventory", type=Path, default=INVENTORY)
+    parser.add_argument("--inventory", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--endpoint", default=OSV_ENDPOINT)
     parser.add_argument("--timeout", type=float, default=30.0)

@@ -50,3 +50,16 @@ jobs:
       - run: uv sync --all-packages --all-extras --group dev
       - run: make test
       - run: make package-smoke
+
+  ddlog-storage:
+    name: DDlog storage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+      - run: cargo +1.95.0 fmt -p archetype-ddlog -- --check
+      - run: cargo +1.95.0 clippy -p archetype-ddlog --all-targets --locked -- -D warnings
+      - run: cargo +1.95.0 test -p archetype-ddlog --locked
+      # Native integration is explicit local evidence until a reviewed DDlog
+      # toolchain image is available. Default tests cannot stand in for it.

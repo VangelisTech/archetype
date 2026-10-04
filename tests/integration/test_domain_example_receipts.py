@@ -34,113 +34,11 @@ def _load_example(filename: str) -> ModuleType:
     return module
 
 
-trajectory = _load_example("06_trajectory_analysis.py")
-htn = _load_example("08_htn_resolution.py")
 cloud_storage = _load_example("09_cloud_storage.py")
 autoresearch = _load_example("10_autoresearch.py")
-coding_agent_mission = _load_example("11_coding_agent_mission.py")
 graph_relationships = _load_example("11_graph_relationships.py")
 prefabs = _load_example("12_prefabs.py")
 biome_rts = _load_example("13_biome_rts.py")
-mission_factory = _load_example("15_mission_factory_assets.py")
-
-
-@pytest.mark.asyncio
-async def test_trajectory_receipt_is_semantic_and_stable(tmp_path: Path) -> None:
-    result = await captured_receipt_or_run(
-        trajectory.run_demo,
-        str(tmp_path / "trajectory"),
-    )
-
-    assert result == {
-        "episode_id": "episode-cache-1",
-        "roles": ["user", "assistant"],
-        "grade": {"samples": 1, "total_reward": -1.0},
-    }
-
-
-@pytest.mark.asyncio
-async def test_htn_receipt_pins_fanout_and_persisted_solutions(tmp_path: Path) -> None:
-    result = await captured_receipt_or_run(
-        htn.run_demo,
-        str(tmp_path / "htn"),
-    )
-
-    assert result["solutions"] == [
-        {
-            "plan_id": "r.0.0.0.0.0",
-            "operations": [
-                "read_code",
-                "write_failing_test",
-                "edit_code",
-                "run_tests",
-                "open_pr",
-            ],
-            "depth": 5,
-        },
-        {
-            "plan_id": "r.0.0.1.0.0",
-            "operations": [
-                "read_code",
-                "edit_code_direct",
-                "run_tests",
-                "open_pr",
-            ],
-            "depth": 5,
-        },
-    ]
-    assert result["persisted_solutions"] == [
-        {
-            "plan_id": "r.0.0.0.0.0",
-            "plan_length": 5,
-            "final_state": [
-                "code_edited",
-                "issue_open",
-                "pr_open",
-                "test_written",
-                "tests_pass",
-                "understood",
-            ],
-        },
-        {
-            "plan_id": "r.0.0.1.0.0",
-            "plan_length": 4,
-            "final_state": [
-                "code_edited",
-                "issue_open",
-                "pr_open",
-                "tests_pass",
-                "understood",
-            ],
-        },
-    ]
-    assert [
-        (
-            item["tick"],
-            item["live"],
-            item["solved"],
-            item["expansions"],
-            item["frontier"],
-        )
-        for item in result["tick_trace"]
-    ] == [
-        (0, 1, 0, 0, {"": 1}),
-        (1, 1, 0, 1, {"resolve_issue": 1}),
-        (2, 1, 0, 0, {"": 1}),
-        (3, 1, 0, 1, {"understand": 1}),
-        (4, 1, 0, 0, {"": 1}),
-        (5, 1, 0, 0, {"read_code": 1}),
-        (6, 1, 0, 1, {"fix": 1}),
-        (7, 2, 0, 0, {"": 2}),
-        (8, 2, 0, 0, {"edit_code_direct": 1, "write_failing_test": 1}),
-        (9, 2, 0, 1, {"edit_code": 1, "verify": 1}),
-        (10, 2, 0, 1, {"": 1, "verify": 1}),
-        (11, 2, 0, 0, {"": 1, "run_tests": 1}),
-        (12, 2, 0, 1, {"run_tests": 1, "ship": 1}),
-        (13, 2, 0, 1, {"": 1, "ship": 1}),
-        (14, 1, 1, 0, {"": 1}),
-        (15, 0, 2, 0, {}),
-    ]
 
 
 @pytest.mark.asyncio
@@ -202,54 +100,6 @@ async def test_autoresearch_receipt_pins_improvement_and_ledger_order(tmp_path: 
             {"run_id": "knob-tuning-demo:iter3", "status": "succeeded"},
         ],
         "ledger_tick": 8,
-    }
-
-
-@pytest.mark.asyncio
-async def test_coding_agent_dry_run_receipt_is_typed_and_starts_no_work(
-    tmp_path: Path,
-) -> None:
-    result = await captured_receipt_or_run(
-        coding_agent_mission.run_demo,
-        str(tmp_path / "mission-authoring"),
-    )
-
-    assert result == {
-        "mode": "dry_run",
-        "repository": "VangelisTech/archetype",
-        "backend": "modal",
-        "backend_type": "ModalSandboxBackend",
-        "environment_is_pinned": True,
-        "tasks": [
-            {
-                "name": "regression",
-                "depends_on": [],
-                "validators": [
-                    {"name": "regression_is_red", "expected_returncode": 1},
-                    {"name": "regression_file_only", "expected_returncode": 0},
-                ],
-            },
-            {
-                "name": "implementation",
-                "depends_on": ["regression"],
-                "validators": [
-                    {"name": "focused_contract", "expected_returncode": 0},
-                    {"name": "architecture", "expected_returncode": 0},
-                    {"name": "lazy_audit", "expected_returncode": 0},
-                    {"name": "ruff", "expected_returncode": 0},
-                    {"name": "diff_check", "expected_returncode": 0},
-                ],
-            },
-        ],
-        "task_paths": {
-            "implementation": {
-                "path": "packages/archetype-ecs/src/archetype/world/query.py",
-            },
-            "regression": {
-                "path": "tests/world/test_query_schema_evolution.py",
-            },
-        },
-        "external_work_started": False,
     }
 
 
@@ -336,59 +186,4 @@ async def test_biome_receipt_pins_composed_scene_outcome(tmp_path: Path) -> None
             "lineage_recorded": True,
         },
         "cascade_deleted_count": 4,
-    }
-
-
-@pytest.mark.asyncio
-async def test_mission_factory_receipt_compiles_real_agent_authoring(tmp_path: Path) -> None:
-    result = await captured_receipt_or_run(
-        mission_factory.run_demo,
-        str(tmp_path / "mission-factory"),
-    )
-
-    assert result == {
-        "library": "mission_factory",
-        "visual_assets": [
-            "agent_unit",
-            "agent_workcell",
-            "artifact_depot",
-            "critic_gate",
-            "dependency_conduit",
-            "evidence_capsule",
-            "mission_core",
-            "publication_uplink",
-            "validator_gate",
-        ],
-        "line": "bugfix_line",
-        "copied_entities": 18,
-        "tasks": [
-            {
-                "name": "reproduction",
-                "depends_on": [],
-                "validators": ["regression_is_red", "regression_diff_check"],
-                "max_dispatches": 2,
-            },
-            {
-                "name": "implementation",
-                "depends_on": ["reproduction"],
-                "validators": [
-                    "focused_contract",
-                    "architecture",
-                    "implementation_diff_check",
-                ],
-                "max_dispatches": 3,
-            },
-        ],
-        "relation_rules": ["DependsOn", "Guards"],
-        "model_contract": {
-            "format": ["glb"],
-            "status": ["brief"],
-            "coordinate_system": ["y_up"],
-            "origin": ["ground_center"],
-        },
-        "protected_interactions": [
-            "checkpoint.restore",
-            "mission.submit",
-            "terminal.takeover",
-        ],
     }

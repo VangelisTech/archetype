@@ -26,40 +26,10 @@ from archetype.api.app import create_app
 from archetype.api.deps import get_dispatcher
 from archetype.artifacts.models import ArtifactSource, IngestArtifacts, QueryArtifacts
 from archetype.commands.models import AccessSummary, ActorCtx, DeferredItem, DurableOptions
-from archetype.core.config import StorageConfig
+from archetype.core.component import Component
 from archetype.errors import RuntimeShutdownError
 from archetype.evaluation.contracts import GraderContract
 from archetype.evaluation.models import Evaluate, RunGraders
-from archetype.missions.components import Mission
-from archetype.missions.contracts import (
-    AgentMissionConfig,
-    AgentTask,
-    CommandValidator,
-    SubmittedMission,
-)
-from archetype.missions.models import (
-    AcceptMissionRun,
-    CancelMissionRun,
-    GetMissionRun,
-    RestoreMissionSandbox,
-    RunMission,
-    SubmitMission,
-)
-from archetype.missions.runtime import Missions, MissionWorld
-from archetype.missions.sandboxes import CheckpointRef
-from archetype.missions.trajectories import ClaudeTranscriptSource, TrajectorySelection
-from archetype.missions.trajectories.models import (
-    GradeTrajectory,
-    IngestClaudeTranscript,
-    QueryTrajectory,
-    QueryTranscriptRows,
-)
-from archetype.physical_ai.models import (
-    HostedEpisodeRequest,
-    ModalHostedEpisodeConfig,
-    RunHostedEpisode,
-)
-from archetype.physical_ai.runtime import PhysicalAI
 from archetype.research.models import AutoResearch, AutoResearchConfig
 from archetype.research.runtime import Research
 from archetype.runtime_resources import RuntimeCloseState, RuntimeResources
@@ -77,17 +47,6 @@ _PULL_FORWARD_MODELS: tuple[type[BaseModel], ...] = (
     RunGraders,
     Evaluate,
     AutoResearch,
-    RunHostedEpisode,
-    IngestClaudeTranscript,
-    QueryTranscriptRows,
-    QueryTrajectory,
-    GradeTrajectory,
-    SubmitMission,
-    RunMission,
-    RestoreMissionSandbox,
-    AcceptMissionRun,
-    GetMissionRun,
-    CancelMissionRun,
 )
 _ACTOR_AWARE_NAMES = frozenset(
     {
@@ -178,7 +137,7 @@ def test_shipped_server_cli_receipt_is_complete_bounded_and_redacted(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_trusted_runtime_reaches_all_sixteen_models_and_reserved_spawn(
+async def test_trusted_runtime_reaches_all_workflow_models_and_reserved_spawn(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -190,20 +149,20 @@ async def test_trusted_runtime_reaches_all_sixteen_models_and_reserved_spawn(
     world = runtime.world("runtime-loopback-reserved", storage=tmp_path / "reserved-store")
     reservation = world._reservation
     assert reservation is not None
+
+    class Marker(Component):
+        name: str = ""
+
     captured: list[BaseModel] = []
     actor_calls: list[ActorCtx] = []
     try:
         (entity_id,) = await world.reserve_ids(1)
         await world.spawn_reserved(
             entity_id,
-            Mission(
-                name="runtime-loopback",
-                repository="local",
-                branch="main",
-            ),
+            Marker(name="runtime-loopback"),
         )
         await world.step()
-        rows = (await world.query(Mission, entity_ids=[entity_id])).collect().to_pylist()
+        rows = (await world.query(Marker, entity_ids=[entity_id])).collect().to_pylist()
         assert len(rows) == 1
         assert rows[0]["entity_id"] == entity_id
 
@@ -212,14 +171,6 @@ async def test_trusted_runtime_reaches_all_sixteen_models_and_reserved_spawn(
         results: dict[str, object] = {
             str(model.model_fields["operation"].default): object() for model in _PULL_FORWARD_MODELS
         }
-        submitted = SubmittedMission(
-            mission_id=17,
-            task_ids=(("implementation", 18),),
-            episode_id="mission-episode-loopback",
-            repository="repo",
-            branch="branch",
-        )
-        results["submit_mission"] = submitted
 
         def handler_for(name: str):
             async def handler(operation: BaseModel) -> object:
@@ -242,15 +193,6 @@ async def test_trusted_runtime_reaches_all_sixteen_models_and_reserved_spawn(
         monkeypatch.setattr(dispatcher, "apply_as", forbidden_apply_as)
 
         artifact = ArtifactSource(source_uri=str(tmp_path / "artifact.txt"))
-        transcript = ClaudeTranscriptSource(
-            tmp_path / "session.jsonl",
-            project="runtime-loopback",
-            session_id="session",
-        )
-        storage = StorageConfig(
-            uri=str(tmp_path / "pull-forward-store"),
-            namespace="runtime_loopback_pull_forward",
-        )
 
         def grader(_frame: object) -> object:
             return object()
@@ -273,30 +215,11 @@ async def test_trusted_runtime_reaches_all_sixteen_models_and_reserved_spawn(
             max_iterations=1,
             num_episodes=1,
         )
-        physical = HostedEpisodeRequest(
-            trial_id=0,
-            suite="suite",
-            task_id=1,
-            seed=1,
-            instruction="reach",
-            max_transitions=1,
-            environment_id="environment@v1",
-            policy_id="policy@v1",
-        )
-        provider = ModalHostedEpisodeConfig(
-            workspace_name="workspace",
-            environment_name="environment",
-            app_name="app",
-            function_name="function",
-            result_dict_name="results",
-            result_volume_name="values",
-        )
-        selection = TrajectorySelection(episode_ids=("episode-1",))
         await world.ingest_artifacts(artifact)
         await world.artifacts()
-        await world.grade(Mission, graders=(grader,))
+        await world.grade(Marker, graders=(grader,))
         await world.evaluate(
-            Mission,
+            Marker,
             contract=contract,
             grader=grader,
             evaluation_id="evaluation-1",
@@ -307,68 +230,7 @@ async def test_trusted_runtime_reaches_all_sixteen_models_and_reserved_spawn(
             prepare_candidate=prepare_candidate,
             lab_world_id="lab-world",
         )
-        await PhysicalAI(world).run_hosted_episode(
-            [physical],
-            provider=provider,
-            activity_id="activity-1",
-        )
-        mission_world = MissionWorld(world)
-        await mission_world.ingest_claude_transcript(transcript)
-        await mission_world.transcript_rows()
-        await mission_world.query_trajectory(Mission, selection=selection)
-        await mission_world.grade_trajectory(
-            Mission,
-            graders=(grader,),
-            selection=selection,
-        )
-
-        mission_config = AgentMissionConfig(
-            sandbox_backend=cast(Any, object()),
-            sandbox_environment="runtime-loopback:v1",
-        )
-        missions = Missions(
-            runtime,
-            "runtime-loopback-mission",
-            config=mission_config,
-            storage=storage,
-        )
-        task = AgentTask(
-            "implementation",
-            "Implement the requested change.",
-            (
-                CommandValidator(
-                    "tests",
-                    ("pytest", "-q"),
-                ),
-            ),
-        )
-        checkpoint = CheckpointRef(
-            provider="runtime-loopback",
-            checkpoint_id="checkpoint-1",
-            uri="runtime-loopback://checkpoint-1",
-            created_at_ms=1,
-        )
-        assert (
-            await missions.submit(
-                repository="repo",
-                branch="branch",
-                tasks=(task,),
-            )
-            is submitted
-        )
-        await missions.run(submitted, max_ticks=1)
-        await missions.restore_sandbox(submitted, checkpoint)
-        await missions.accept(
-            repository="repo",
-            branch="branch",
-            tasks=(task,),
-            principal="agent:runtime-loopback",
-            idempotency_key="mission-run-1",
-        )
-        await missions.get_run("run-1")
-        await missions.cancel_run("run-1", reason="stop")
-
-        assert len(captured) == 16
+        assert len(captured) == len(_PULL_FORWARD_MODELS)
         assert {type(operation) for operation in captured} == set(_PULL_FORWARD_MODELS)
         assert all(
             sum(type(operation) is model for operation in captured) == 1

@@ -50,11 +50,9 @@ family ports, and `service.py` for family workflow authority. A top-level
 location does not make every symbol public; supported exports remain explicit
 under [API Stability](api-stability.md).
 
-For example, `archetype.missions` consumes its declared lower families. It
-contains mission/task Components, relations, transition processors, authoring
-values, capability-scoped sandbox resources, and the family workflow. Package
-placement alone does not add a symbol to the `archetype` root facade. See
-[Agent Missions V1](agent-missions.md#3-architecture-and-ownership).
+For example, `archetype.research` consumes its declared world/storage ports
+and owns its values, ledger, views, and workflow. Package placement alone does
+not add a symbol to the framework facade. See [World libraries](world-libraries.md).
 
 ## Source of Truth
 

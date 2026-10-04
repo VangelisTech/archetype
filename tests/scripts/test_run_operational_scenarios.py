@@ -125,8 +125,6 @@ def test_source_quickstart_records_semantics_provenance_and_cleanup(tmp_path: Pa
         ROOT / "packages" / "archetype-ecs" / "src"
     )
     assert set(result["package"]["world_libraries"]) == {
-        "archetype.missions",
-        "archetype.physical_ai",
         "archetype.research",
     }
     assert result["package"]["tested_subject"] == {
@@ -1359,11 +1357,7 @@ def test_distinct_source_environment_and_probe_bind_to_tested_checkout(
         "__version__ = 'baseline-test'\n",
         encoding="utf-8",
     )
-    for package, module in (
-        ("archetype-missions", "missions"),
-        ("archetype-physical-ai", "physical_ai"),
-        ("archetype-research", "research"),
-    ):
+    for package, module in (("archetype-research", "research"),):
         library = tested_checkout / "packages" / package / "src" / "archetype" / module
         library.mkdir(parents=True)
         (library / "__init__.py").write_text("value = 1\n", encoding="utf-8")
@@ -1432,8 +1426,6 @@ def test_tested_subject_relationship_and_distinct_wheel_location_are_explicit(
 def _write_first_party_wheel_set(directory: Path) -> dict[str, Path]:
     wheels = {
         "archetype-ecs": directory / "archetype_ecs-0.6.0-py3-none-any.whl",
-        "archetype-missions": directory / "archetype_missions-0.6.0-py3-none-any.whl",
-        "archetype-physical-ai": directory / "archetype_physical_ai-0.6.0-py3-none-any.whl",
         "archetype-research": directory / "archetype_research-0.6.0-py3-none-any.whl",
     }
     directory.mkdir(parents=True, exist_ok=True)
@@ -1442,7 +1434,7 @@ def _write_first_party_wheel_set(directory: Path) -> dict[str, Path]:
     return wheels
 
 
-def test_wheel_mode_installs_and_records_the_exact_four_artifact_set(
+def test_wheel_mode_installs_and_records_the_exact_two_artifact_set(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1546,12 +1538,6 @@ def test_wheel_probe_rejects_leakage_from_any_world_library_source_root(
         "version": "0.6.0",
         "path": str(environment / "lib" / "archetype" / "__init__.py"),
         "library_paths": {
-            "archetype.missions": str(
-                environment / "lib" / "archetype" / "missions" / "__init__.py"
-            ),
-            "archetype.physical_ai": str(
-                environment / "lib" / "archetype" / "physical_ai" / "__init__.py"
-            ),
             "archetype.research": str(research_source),
         },
         "sys_path": [],
@@ -1578,22 +1564,7 @@ def test_wheel_probe_rejects_leakage_from_any_world_library_source_root(
         )
 
 
-def test_external_service_prerequisites_enable_dedicated_test_lanes() -> None:
-    docker = _scenario_environment(
-        {},
-        {"prerequisites": ["service:docker"]},
-    )
-    apple = _scenario_environment(
-        {},
-        {"prerequisites": ["service:apple-container"]},
-    )
-    modal = _scenario_environment(
-        {},
-        {
-            "id": "dogfood.agent_mission.modal_live",
-            "prerequisites": ["credential:MODAL_TOKEN_ID"],
-        },
-    )
+def test_biome_scenario_enables_process_lease_guardian() -> None:
     biome = _scenario_environment(
         {},
         {
@@ -1602,9 +1573,6 @@ def test_external_service_prerequisites_enable_dedicated_test_lanes() -> None:
         },
     )
 
-    assert docker["ARCHETYPE_DOCKER_SANDBOX_PARITY"] == "1"
-    assert apple["ARCHETYPE_APPLE_CONTAINER_SANDBOX_PARITY"] == "1"
-    assert modal["ARCHETYPE_MODAL_AGENT_MISSION_LIVE"] == "1"
     assert biome[operational_runner._PROCESS_LEASE_GUARDIAN_ENV] == "1"
 
 

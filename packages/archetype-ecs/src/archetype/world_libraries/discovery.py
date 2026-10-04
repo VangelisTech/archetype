@@ -10,11 +10,21 @@ from importlib import metadata
 from typing import Any
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from archetype.world_libraries.models import WorldLibraryManifest
 
 WORLD_LIBRARY_ENTRY_POINT_GROUP = "archetype.world_libraries"
+_REMOVED_DISTRIBUTIONS = frozenset({"archetype-missions", "archetype-physical-ai"})
+
+
+def _reject_removed_distribution(distribution: str) -> None:
+    if _normalized(distribution) in _REMOVED_DISTRIBUTIONS:
+        raise ValueError(
+            f"{distribution} was removed from Archetype; uninstall the old distribution "
+            "from this environment before starting the current runtime"
+        )
 
 
 def discover_world_libraries(
@@ -34,6 +44,9 @@ def discover_world_libraries(
         ),
     )
     for entry_point in ordered:
+        # An installed old wheel must not run its trusted Python import merely
+        # because upgrading the framework left its entry point behind.
+        _reject_removed_distribution(str(getattr(entry_point.dist, "name", "") or ""))
         loaded = entry_point.load()
         candidate = loaded() if callable(loaded) and not isinstance(loaded, type) else loaded
         if not isinstance(candidate, WorldLibraryManifest):
@@ -81,6 +94,7 @@ def resolve_world_libraries(
     for manifest in resolved:
         if not isinstance(manifest, WorldLibraryManifest):
             raise TypeError("world_libraries must contain WorldLibraryManifest values")
+        _reject_removed_distribution(manifest.distribution)
     ordered = tuple(sorted(resolved, key=lambda value: value.name))
     _validate_unique(ordered)
     if framework_version is not None:
@@ -140,7 +154,7 @@ def _validate_compatibility(
 
 
 def _normalized(value: str) -> str:
-    return value.lower().replace("_", "-").replace(".", "-")
+    return canonicalize_name(value)
 
 
 __all__ = [

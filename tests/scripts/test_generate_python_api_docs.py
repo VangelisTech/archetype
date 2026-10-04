@@ -15,29 +15,12 @@ from scripts.generate_python_api_docs import (
 )
 
 WORLD_LIBRARY_EXPORTS = {
-    "AgentMissionConfig",
-    "AgentTask",
     "AutoResearchConfig",
     "AutoResearchResult",
     "CandidatePreparer",
-    "CommandValidator",
-    "CriticPolicy",
-    "EvaluationResult",
     "Evaluator",
-    "HostedEpisodeObservation",
-    "HostedEpisodeRequest",
-    "MissionResult",
-    "MissionWorld",
-    "Missions",
-    "ModalHostedEpisodeConfig",
-    "PhysicalAI",
-    "PhysicalAIExtensionConfig",
     "Research",
-    "RepositoryPublicationPolicy",
     "ResearchCandidateContext",
-    "SubmittedMission",
-    "MissionRun",
-    "TaskResult",
 }
 
 
@@ -63,15 +46,7 @@ def test_world_library_exports_are_documented_without_entering_framework_all() -
         "archetype.research",
         "AutoResearchConfig",
     )
-    assert locations["HostedEpisodeRequest"] == (
-        "archetype.physical_ai",
-        "HostedEpisodeRequest",
-    )
     assert locations["IterationResult"] == ("archetype.research", "IterationResult")
-
-    missions = (PAGES_DIR / "missions.md").read_text(encoding="utf-8")
-    for name in ("CriticPolicy", "RepositoryPublicationPolicy", "TaskResult"):
-        assert f"::: archetype.missions.{name}" in missions
 
     reference = (PAGES_DIR.parent / "python-api.md").read_text(encoding="utf-8")
     assert "`CandidateContext`" not in reference
@@ -103,21 +78,6 @@ def test_research_and_framework_evaluation_have_distinct_owners() -> None:
     assert "::: archetype.research.Research" not in evaluation
 
 
-def test_physical_ai_provider_factory_signature_is_documented() -> None:
-    reference = (PAGES_DIR / "physical-ai-host.md").read_text(encoding="utf-8")
-
-    for name in (
-        "HostedEpisodeProvider",
-        "HostedEpisodeProviderResult",
-        "HostedEpisodeRetryGuard",
-        "HostedEpisodeReconciliation",
-        "HostedEpisodeRecovered",
-        "HostedEpisodeConfirmedAbsent",
-        "HostedEpisodeRecoveryUnknown",
-    ):
-        assert f"::: archetype.physical_ai.hosted_activity_contracts.{name}" in reference
-
-
 def test_world_library_facade_exports_have_exact_stability_tiers() -> None:
     import importlib
 
@@ -131,6 +91,6 @@ def test_world_library_facade_exports_have_exact_stability_tiers() -> None:
 
     reference = (PAGES_DIR.parent / "python-api.md").read_text(encoding="utf-8")
     assert "## World-library facade classifications" in reference
-    assert "### `archetype.missions`" in reference
-    assert "**Recommended:** `Missions`, `MissionWorld`" in reference
-    assert "**Extension:** `MISSION_COMPONENTS`" in reference
+    assert "### `archetype.research`" in reference
+    assert "`Research`" in reference
+    assert "archetype.missions" not in reference

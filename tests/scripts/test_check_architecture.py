@@ -1716,28 +1716,12 @@ def test_repository_classifies_smol_as_an_independent_engine() -> None:
     assert set(independence["forbidden"]) == {"archetype.core", "archetype.errors"}
 
 
-def test_repository_storage_capability_rule_keeps_canonical_owner() -> None:
+def test_removed_domain_storage_exceptions_are_absent() -> None:
     policy = checker._load_policy(checker.DEFAULT_POLICY)
-    storage_rules = [
-        rule
-        for rule in policy["capability_rule"]
-        if str(rule.get("name", "")).startswith("storage-execution-authority")
-    ]
-
-    assert {rule["consumer"] for rule in storage_rules} == {
-        "archetype.missions.activity_world",
-        "archetype.missions.critic_activity_world",
-    }
-    for rule in storage_rules:
-        assert rule["owner"] == "archetype.storage.service"
-        assert set(rule["owned_attributes"]) == {
-            "collect",
-            "write_iceberg",
-            "current_catalog",
-            "create_table",
-            "create_table_if_not_exists",
-        }
-        assert rule["mediated_attributes"]["to_pylist"] == "materialize"
+    assert not any(
+        str(rule.get("consumer", "")).startswith(("archetype.missions", "archetype.physical_ai"))
+        for rule in policy.get("capability_rule", [])
+    )
 
 
 def test_workspace_source_roots_are_unioned_and_duplicate_modules_fail_closed(
