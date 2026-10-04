@@ -151,9 +151,19 @@ aiohttp = "2026-07-24T00:00:00Z"
 h2 = "2026-08-04T00:00:00Z"
 hpack = "2026-06-24T00:00:00Z"
 pymdown-extensions = "2026-07-03T00:00:00Z"
-pypdf = "2026-08-07T00:00:00Z"
+pypdf = "2026-09-17T00:00:00Z"
 setuptools = "2026-07-05T00:00:00Z"
 pillow = "2026-07-02T00:00:00Z"
+# Minimum fixes for the 2026-10-04 lock audit, admitted only through the day
+# after each fixed release: anyio 4.14.2, Material 9.7.7, pypdf 6.19.0 above,
+# soupsieve 2.9, urllib3 2.8.0, and virtualenv 21.7.13. The latter requires
+# python-discovery >=1.6; admit its minimum 1.6.0 release separately.
+anyio = "2026-07-13T00:00:00Z"
+mkdocs-material = "2026-07-18T00:00:00Z"
+soupsieve = "2026-07-20T00:00:00Z"
+urllib3 = "2026-09-16T00:00:00Z"
+virtualenv = "2026-09-19T00:00:00Z"
+python-discovery = "2026-08-29T00:00:00Z"
 
 [tool.uv.workspace]
 members = ["packages/archetype-ecs", "packages/archetype-research", "packages/archetype-smol"]
