@@ -15,7 +15,7 @@ arrow-cast = "59.2"
 arrow-schema = "59.2"
 base64 = "0.22.1"
 bytes = "1"
-ddlog-runtime = { git = "https://github.com/everettVT/ddlog-runtime", rev = "48ea5115e827253df753466b6ecd60bfff813d50" }
+ddlog-runtime = { git = "https://github.com/everettVT/ddlog-runtime", rev = "98374a8e7b3bd1662aad6d6601479a24cf0de320" }
 futures = "0.3"
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "4d83bc77dc10cff851a3ef427c451ff977bc3643" }
 iceberg-catalog-sql = { git = "https://github.com/apache/iceberg-rust", rev = "4d83bc77dc10cff851a3ef427c451ff977bc3643" }

@@ -28,6 +28,9 @@ pub struct PublishedContext {
 /// Callers cannot deserialize unverified hosted evidence into a draft.
 pub struct ContextDraft(PublishedContext);
 impl ContextDraft {
+    pub fn context(&self) -> &PublishedContext {
+        &self.0
+    }
     pub fn artifact_collection(world: String, run: String) -> Result<Self> {
         Self::new(world, run, ContextOrigin::ArtifactCollection)
     }
@@ -193,14 +196,19 @@ impl CutStore {
         Ok(context)
     }
     pub async fn context_at(&self, world: &str, run: &str) -> Result<PublishedContext> {
-        let store = self.read_scope().await?;
-        let _guard = store.publication.lock().await;
-        store.context_inner(world, run).await?.ok_or_else(|| {
+        self.lookup_context(world, run).await?.ok_or_else(|| {
             bounds::fault(
                 bounds::FaultCode::InvalidRequest,
                 "Unknown published context",
             )
         })
+    }
+    /// Optional published visibility; retained preparation is checked separately
+    /// by scope admission and never represented as permission to allocate.
+    pub async fn lookup_context(&self, world: &str, run: &str) -> Result<Option<PublishedContext>> {
+        let store = self.read_scope().await?;
+        let _guard = store.publication.lock().await;
+        store.context_inner(world, run).await
     }
     pub(super) async fn context_inner(
         &self,
@@ -239,6 +247,38 @@ impl CutStore {
             return Ok(Some(context));
         }
         self.prepared_context(world, run)
+    }
+    /// Reject an already claimed scope before a host asks its native owner to
+    /// allocate a world. Publication still rechecks compatibility atomically;
+    /// this preflight neither reserves the scope nor substitutes for that check.
+    pub async fn preflight_unclaimed_scope(&self, world: &str, run: &str) -> Result<()> {
+        origin::Scope {
+            world: world.into(),
+            run: run.into(),
+        }
+        .validate()?;
+        let store = self.read_scope().await?;
+        ensure!(
+            store.context_claim(world, run).await?.is_none(),
+            "Scope already has a context claim"
+        );
+        ensure!(
+            store.origin(world, run)?.is_none(),
+            "Scope already has a fork origin"
+        );
+        ensure!(
+            store.history_inner(world, run).await?.is_empty(),
+            "Scope already has cuts"
+        );
+        let prefix = format!("{world}.{run}.");
+        for entry in fs::read_dir(store.root.join("cuts"))? {
+            store.budget.items(1)?;
+            ensure!(
+                !entry?.file_name().to_string_lossy().starts_with(&prefix),
+                "Scope already has pending publication"
+            );
+        }
+        Ok(())
     }
     pub(crate) async fn check_context_cut(&self, cut: &FrozenCut) -> Result<()> {
         if let Some(context) = self.context_claim(&cut.world, &cut.run).await? {

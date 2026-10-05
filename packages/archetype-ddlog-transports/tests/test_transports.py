@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx2
-from archetype_ddlog_preview.ingress import ContextResource, Grant, Ingress
+from archetype_ddlog_preview.ingress import ContextResource, Grant, Ingress, ProgramResource
 from archetype_ddlog_preview.wire import MAX_REQUEST_BYTES
 from archetype_ddlog_transports import MCP_BODY_LIMIT, create_app
 from mcp import ClientSession
@@ -92,6 +92,51 @@ async def mcp(client, raw):
 
 
 class TransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_program_composition_all_refs_and_creation_have_http_mcp_parity(self):
+        from test_logical_ingress import Backend as LogicalBackend
+        from test_logical_ingress import composition, leaf
+
+        names = ("pipeline", "first", "second")
+        backend = LogicalBackend()
+        ingress = Ingress(
+            backend,
+            verifier=directory(),
+            resources=tuple(ProgramResource(n) for n in names),
+            grants=tuple(Grant("agent", n, CAPS) for n in names if n != "second"),
+        )
+
+        class NoLookup:
+            def __getitem__(self, key):
+                raise AssertionError("Unauthorized program lookup")
+
+        ingress._resources = NoLookup()
+        raw = request(
+            "program_compose",
+            {"request_key": "compose", "description": "Pipeline", "composition": composition()},
+            "pipeline",
+        )
+        async with local(ingress) as http, session(http) as client:
+            response = await http.post("/invoke", content=raw)
+            self.assertEqual(response.status_code, 403)
+            self.assertEqual(await mcp(client, raw), response.json())
+        self.assertEqual(backend.calls, [])
+        ingress = Ingress(
+            backend,
+            verifier=directory(),
+            resources=(ProgramResource("first"),),
+            grants=(Grant("agent", "first", CAPS),),
+        )
+        raw = request(
+            "program_create",
+            {"request_key": "publish", "description": "First", "definition": leaf()},
+            "first",
+        )
+        async with local(ingress) as http, session(http) as client:
+            response = await http.post("/invoke", content=raw)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(await mcp(client, raw), response.json())
+            self.assertEqual(response.json()["value"]["phase"], "published")
+
     async def test_context_source_grants_have_http_mcp_parity(self):
         context = ContextResource("context", "alpha", "run_a", source_resource="alpha")
         ingress = Ingress(

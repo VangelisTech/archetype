@@ -3,66 +3,41 @@
 from __future__ import annotations
 
 import json
-import re
-import unicodedata
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
+
+from .programs import Composition, LeafProgram, ProgramReference
+from .values import (
+    MAX_CELLS as MAX_CELLS,
+)
+from .values import (
+    MAX_STRING_BYTES as MAX_STRING_BYTES,
+)
+from .values import (
+    decimal as decimal,
+)
+from .values import (
+    digest as digest,
+)
+from .values import (
+    fields as fields,
+)
+from .values import (
+    identifier as identifier,
+)
+from .values import (
+    optional_digest as optional_digest,
+)
+from .values import (
+    string_cell as string_cell,
+)
+from .values import (
+    unsigned as unsigned,
+)
 
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024
 MAX_CHANGES = 256
-MAX_CELLS = 64
-MAX_STRING_BYTES = 4096
-
-
-def fields(value: Any, names: str) -> dict[str, Any]:
-    if type(value) is not dict or set(value) != set(names.split()):
-        raise ValueError("Unexpected object fields")
-    return value
-
-
-def identifier(value: Any) -> str:
-    if type(value) is not str or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}", value):
-        raise ValueError("Invalid identifier")
-    return value
-
-
-def digest(value: Any) -> str:
-    if type(value) is not str or not re.fullmatch(r"[0-9a-f]{64}", value):
-        raise ValueError("Invalid digest")
-    return value
-
-
-def optional_digest(value: Any) -> str | None:
-    return None if value is None else digest(value)
-
-
-def decimal(value: Any, *, signed: bool = False) -> int:
-    # Strings prevent a JavaScript parser from rounding before validation.
-    pattern = r"(?:0|[1-9][0-9]*|-[1-9][0-9]*)" if signed else r"(?:0|[1-9][0-9]*)"
-    if type(value) is not str or len(value) > 20 or not re.fullmatch(pattern, value):
-        raise ValueError("Expected canonical decimal string")
-    result = int(value)
-    lower, upper = (-(2**63), 2**63) if signed else (0, 2**64)
-    if not lower <= result < upper:
-        raise ValueError("Integer outside exact range")
-    return result
-
-
-def unsigned(value: Any) -> str:
-    if type(value) is not int or not 0 <= value < 2**64:
-        raise ValueError("Invalid native unsigned integer")
-    return str(value)
-
-
-def string_cell(value: Any) -> str:
-    if (
-        type(value) is not str
-        or len(value.encode("utf-8")) > MAX_STRING_BYTES
-        or any(unicodedata.category(c) == "Cc" for c in value)
-    ):
-        raise ValueError("Invalid string cell")
-    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +133,45 @@ class Start:
 @dataclass(frozen=True, slots=True)
 class Stop:
     name: ClassVar[str] = "stop"
+
+
+@dataclass(frozen=True, slots=True)
+class Create:
+    name: ClassVar[str] = "create"
+    request_key: str
+    label: str
+    program: ProgramReference
+
+
+@dataclass(frozen=True, slots=True)
+class Resolve:
+    name: ClassVar[str] = "resolve"
+
+
+@dataclass(frozen=True, slots=True)
+class ProgramCreate:
+    name: ClassVar[str] = "program_create"
+    request_key: str
+    description: str
+    definition: LeafProgram
+
+
+@dataclass(frozen=True, slots=True)
+class ProgramCompose:
+    name: ClassVar[str] = "program_compose"
+    request_key: str
+    description: str
+    composition: Composition
+
+
+@dataclass(frozen=True, slots=True)
+class ProgramResolve:
+    name: ClassVar[str] = "program_resolve"
+
+
+@dataclass(frozen=True, slots=True)
+class ProgramDescribe:
+    name: ClassVar[str] = "program_describe"
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,6 +274,12 @@ type Operation = (
     | PublishContext
     | ReadContext
     | ContextArtifacts
+    | Create
+    | Resolve
+    | ProgramCreate
+    | ProgramCompose
+    | ProgramResolve
+    | ProgramDescribe
 )
 
 CAPABILITIES: dict[type[Operation], str] = {
@@ -276,7 +296,26 @@ CAPABILITIES: dict[type[Operation], str] = {
     PublishContext: "artifacts:publish",
     ReadContext: "artifacts:read",
     ContextArtifacts: "artifacts:read",
+    Create: "simulation:create",
+    Resolve: "simulation:read",
+    ProgramCreate: "programs:create",
+    ProgramCompose: "programs:create",
+    ProgramResolve: "programs:read",
+    ProgramDescribe: "programs:read",
 }
+
+
+def requirements(request: Request) -> tuple[tuple[str, str], ...]:
+    """Complete grant set derived only from the closed request, before lookup."""
+    op = request.operation
+    required = [(request.resource, CAPABILITIES[type(op)])]
+    if isinstance(op, (Fork, PublishContext)) and op.source_resource is not None:
+        required.append((op.source_resource, CAPABILITIES[type(op)]))
+    if isinstance(op, Create):
+        required.append((op.program.resource, "programs:read"))
+    if isinstance(op, ProgramCompose):
+        required.extend((ref.resource, "programs:read") for ref in op.composition.references())
+    return tuple(required)
 
 
 def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -311,13 +350,41 @@ class Request:
         if type(row["version"]) is not int or row["version"] != 1:
             raise ValueError("Unknown contract version")
         resource, name, args = identifier(row["resource"]), row["operation"], row["arguments"]
-        simple = {"status": Status, "start": Start, "stop": Stop}
+        simple = {
+            "status": Status,
+            "start": Start,
+            "stop": Stop,
+            "resolve": Resolve,
+            "program_resolve": ProgramResolve,
+            "program_describe": ProgramDescribe,
+        }
         if type(name) is not str:
             raise ValueError("Invalid operation")
         operation: Operation
         if name in simple:
             fields(args, "")
             operation = simple[name]()
+        elif name == "create":
+            fields(args, "request_key label program")
+            operation = Create(
+                identifier(args["request_key"]),
+                string_cell(args["label"]),
+                ProgramReference.decode(args["program"]),
+            )
+        elif name == "program_create":
+            fields(args, "request_key description definition")
+            operation = ProgramCreate(
+                identifier(args["request_key"]),
+                string_cell(args["description"]),
+                LeafProgram.decode(args["definition"]),
+            )
+        elif name == "program_compose":
+            fields(args, "request_key description composition")
+            operation = ProgramCompose(
+                identifier(args["request_key"]),
+                string_cell(args["description"]),
+                Composition.decode(args["composition"]),
+            )
         elif name == "admission_status":
             fields(args, "generation admission_key")
             operation = AdmissionStatus(

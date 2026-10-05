@@ -30,7 +30,7 @@ dependencies; this preview does not claim an extracted authentication wheel.
 
 `Ingress.invoke(credential, raw_json_bytes)` authenticates each call, decodes an
 exact operation, checks both the principal's capability and its explicit
-resource grant, then resolves configuration. Denied or unknown resources share
+resource grants for the destination and every protected reference, then resolves configuration. Denied or unknown resources share
 the same denial result and cause no native lookup. No default principal, role
 label, wildcard grant, permission inheritance, or caller-supplied actor exists.
 Credentials are out-of-band and never passed to native work or responses.
@@ -43,7 +43,7 @@ validation for transport authentication/context only. It authorizes no operation
 
 Resource bindings retain native world, analytical world/run, component
 declarations and allowed input predicate schemas. Native-world and analytical
-world/run aliases must be unique within each resource kind. Separate
+world/run aliases must be unique across legacy and logical execution resources. Separate
 [context resources](ddlog-published-contexts.md) pin a collection or exact hosted
 publication source; hosted publication requires both exact grants. Configured declarations come from trusted
 `Host.bind`; configuration alone is not native validation. Ingress checks
@@ -63,6 +63,11 @@ checks before information is lost. Version 1 has exactly four envelope fields:
 
 | Operation | Exact arguments | Required capability |
 | --- | --- | --- |
+| `create` | `request_key`, `label`, exact `program` | `simulation:create` on destination and `programs:read` on program |
+| `resolve` | none | `simulation:read` |
+| `program_create` | `request_key`, `description`, closed leaf `definition` | `programs:create` |
+| `program_compose` | `request_key`, `description`, closed `composition` | `programs:create` on destination and `programs:read` on every node program |
+| `program_resolve`, `program_describe` | none | `programs:read` |
 | `status` | none | `simulation:read` |
 | `admission_status` | `generation`, `admission_key` | `simulation:read` |
 | `start`, `stop` | none | `simulation:control` |
@@ -80,14 +85,39 @@ Every capability also requires an exact `(principal_id, resource)` grant.
 `start` can invoke the operator's existing compiler driver. `stop` controls only
 that configured world; neither operation controls the shared process. Grant
 these and restore separately from read/submit. No operation takes a native ID,
-program definition, driver, path, storage config, binding or component schema.
-Registration, world creation, binding, host construction/close and raw requests
-remain trusted local operations. Inventory, history, component reads, step/run
+driver, path, storage config, binding or component schema.
+Raw registration, binding, host construction/close and raw requests
+remain trusted local operations. Global inventory, history, component reads, step/run
 and artifact registration are absent.
 
+`ProgramResource(name)` authorizes a logical registry destination. Leaf definitions
+contain exactly `rules`, `schemas`, `inputs`, and `outputs`; schema entries contain
+`name`, `input`, and `fields`. Source is capped at 32 KiB, schema declarations at
+128, and public inputs/outputs at 64. Every declared input must appear in the
+input interface. Composition contains exactly bounded `nodes`, `inputs`,
+`bindings`, and `outputs`; node references contain `resource`, `processor_id`,
+and exact `sha256:` version. All reference grants precede the first lookup, then
+the retained logical program must match each exact pin before publication.
+Raw nested composition definitions cannot bypass that reference contract.
+
+`LogicalResource(name, world, run, components, inputs)` configures an inert
+execution destination. The native manager retains its reservation and identity;
+Python keeps no birth ledger. `create` validates declarations, reserves through
+that manager, publishes and reads back its hosted context, then acknowledges
+native readiness. Generation remains zero and no compiler starts. Exact retries
+adopt the same identity; changed payloads or occupied aliases conflict. `resolve`
+recovers from retained authority without a native ID or original request key.
+Public replies expose logical destination, exact program pin, request digest,
+context readiness and lifecycle facts. Pending context/origin phases do not
+imply absence or permission to allocate again. See [logical creation](ddlog-logical-creation.md).
+
 A [historical fork](ddlog-historical-forks.md) requires exact grants on both
-resources before either lookup. Its configured destination has `native_world=None`;
-subsequent operations resolve its immutable child identity from CutStore.
+resources before either lookup. A legacy configured destination has `native_world=None`;
+subsequent operations resolve its immutable child identity from CutStore. A
+`LogicalResource` destination uses the same native reservation/materializer as
+fresh creation, publishes its context before origin and restore, and resolves
+the exact retained reservation on cold retry. Ready lineage requires the
+verified analytical origin; losing that origin fails closed.
 Results expose lineage readiness separately from native lifecycle.
 
 All signed Int64 cells and unsigned 64-bit control values use canonical decimal
@@ -170,6 +200,10 @@ known-apply failure states, and cancellation retaining capacity and drain.
 One focused integration uses the existing C ABI library and real local Iceberg
 with an explicitly simulated native driver, exercising the separate admission,
 publication, confirmation and restore operations. It is not native acceptance.
+`test_logical_ingress.py` adds complete protected-reference grants, exact-pin
+association, declaration validation, cold identity and cancellation contracts.
+`test_logical_binding.py` tests concurrent native creation and the deterministic
+context-before-origin recovery window through the C ABI and real Iceberg.
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=packages/archetype-ddlog-preview/src \

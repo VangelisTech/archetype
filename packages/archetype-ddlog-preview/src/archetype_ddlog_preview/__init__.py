@@ -13,6 +13,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .programs import Composition, LeafProgram, ProgramReference
+from .values import identifier, string_cell
+
 __all__ = ["Host", "NativeError", "ProtocolError", "ConstructionCleanupError"]
 
 
@@ -233,6 +236,120 @@ class Host:
 
     def register(self, name: str, definition: dict[str, Any]) -> dict[str, Any]:
         return self.request("register", request={"name": name, "definition": definition})
+
+    def publish_program(
+        self,
+        resource: str,
+        *,
+        request_key: str,
+        description: str,
+        definition: LeafProgram | Composition,
+    ) -> dict[str, Any]:
+        """Reconcile one registry-owned logical publication and its exact pin."""
+        identifier(resource)
+        identifier(request_key)
+        string_cell(description)
+        if type(definition) not in (LeafProgram, Composition):
+            raise ValueError("Expected immutable typed program declaration")
+        if isinstance(definition, Composition):
+            for ref in definition.references():
+                retained = self.resolve_program(ref.resource)
+                if (
+                    retained["resource"] != ref.resource
+                    or retained["processor"] != ref.pin()
+                    or retained["phase"] != "published"
+                ):
+                    raise ValueError("Reference differs from logical program")
+        return self.request(
+            "logical",
+            request={
+                "op": "program_publish",
+                "request": {
+                    "resource": resource,
+                    "request_key": request_key,
+                    "description": description,
+                    "definition": definition.native(),
+                    "git_provenance": None,
+                    "lowering_version": 2,
+                },
+            },
+        )
+
+    def resolve_program(self, resource: str) -> dict[str, Any]:
+        return self.request(
+            "logical", request={"op": "program_resolve", "resource": identifier(resource)}
+        )
+
+    def describe_program(self, resource: str) -> dict[str, Any]:
+        return self.request(
+            "logical", request={"op": "program_describe", "resource": identifier(resource)}
+        )
+
+    def list_programs(
+        self, *, limit: int = 32, after: str | None = None, include_archived: bool = False
+    ) -> dict[str, Any]:
+        """Trusted bounded registry inventory, including non-logical definitions."""
+        if type(limit) is not int or not 1 <= limit <= 100 or type(include_archived) is not bool:
+            raise ValueError("Invalid program listing bounds")
+        if after is not None:
+            identifier(after)
+        return self.request(
+            "logical",
+            request={
+                "op": "program_list",
+                "limit": limit,
+                "after": after,
+                "include_archived": include_archived,
+            },
+        )
+
+    def create_logical(
+        self,
+        resource: str,
+        *,
+        world: str,
+        run: str,
+        request_key: str,
+        label: str,
+        program: ProgramReference,
+        components: list[dict[str, Any]],
+        inputs: dict[str, list[str]],
+    ) -> dict[str, Any]:
+        """Reserve, publish context, and acknowledge one native-owned birth.
+
+        Input type names here are native declaration names (int/string).
+        Creation does not start a compiler or submit any live inputs.
+        """
+        if type(program) is not ProgramReference:
+            raise ValueError("Expected exact logical program reference")
+        return self.request(
+            "logical",
+            request={
+                "op": "world_create",
+                "destination": {
+                    "resource": identifier(resource),
+                    "world": identifier(world),
+                    "run": identifier(run),
+                },
+                "request_key": identifier(request_key),
+                "label": string_cell(label),
+                "program": program.native(),
+                "declarations": {"components": components, "inputs": inputs},
+            },
+        )
+
+    def resolve_logical(self, resource: str, *, world: str, run: str) -> dict[str, Any]:
+        return self.request(
+            "logical",
+            request={
+                "op": "world_resolve",
+                "destination": {
+                    "resource": identifier(resource),
+                    "world": identifier(world),
+                    "run": identifier(run),
+                },
+            },
+        )
 
     def create(self, label: str, processor: dict[str, str], outputs: list[str]) -> str:
         """Create a native policy world; bind analytical scope separately."""

@@ -1,7 +1,12 @@
 # DDlog Python preview
 
+Logical program publication and world birth now use the retained registry and
+manager through [logical creation](ddlog-logical-creation.md), including exact
+retry and cold resolution. The [shared ingress](ddlog-ingress-preview.md)
+provides the same bounded operations to local HTTP and MCP adapters.
+
 Status: local, trusted, opt-in Python binding over DDlog Runtime
-`48ea5115e827253df753466b6ecd60bfff813d50` and the
+`98374a8e7b3bd1662aad6d6601479a24cf0de320` and the
 [hosted cut publisher](ddlog-hosted-publisher.md). This is a separately installed
 preview, not a drop-in replacement for `ArchetypeRuntime`. The retained 0.6
 runtime still uses its existing engine. A separate local

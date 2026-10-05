@@ -40,6 +40,48 @@ impl ForkOrigin {
     }
 }
 impl CutStore {
+    /// Called only with a native-reserved fork and its verified complete draft.
+    /// Unlike legacy admission, this permits context publication before origin.
+    pub(crate) async fn check_logical_fork_context(
+        &self,
+        origin: &ForkOrigin,
+        draft: &super::contexts::ContextDraft,
+    ) -> Result<()> {
+        self.validate_origin(origin)?;
+        let dest = origin.destination()?;
+        let source = origin.source_scope()?;
+        self.check_new_origin_depth(&source)?;
+        ensure!(
+            draft.context().world == dest.world && draft.context().run == dest.run,
+            "Logical fork context scope mismatch"
+        );
+        if let Some(context) = self.context_claim(&dest.world, &dest.run).await? {
+            ensure!(
+                &context == draft.context(),
+                "Logical fork context differs from retained reservation"
+            );
+        }
+        if let Some(existing) = self.origin(&dest.world, &dest.run)? {
+            ensure!(
+                &existing == origin,
+                "Logical fork origin differs from reservation"
+            );
+        } else {
+            ensure!(
+                self.history_inner(&dest.world, &dest.run).await?.is_empty(),
+                "Fork destination already has cuts"
+            );
+            let prefix = format!("{}.{}.", dest.world, dest.run);
+            for entry in fs::read_dir(self.root.join("cuts"))? {
+                self.budget.items(1)?;
+                ensure!(
+                    !entry?.file_name().to_string_lossy().starts_with(&prefix),
+                    "Fork destination has pending publication"
+                );
+            }
+        }
+        Ok(())
+    }
     fn check_new_origin_depth(&self, source: &Scope) -> Result<()> {
         let mut scope = source.clone();
         let mut depth = 1u64;

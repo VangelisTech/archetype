@@ -7,11 +7,12 @@ use anyhow::{Result, anyhow, ensure};
 use ddlog_runtime::{
     Schema,
     instance::public_relations,
-    registry::{ProcessorDefinition, ProcessorReference},
+    registry::{ProcessorDefinition, ProcessorReference, ProcessorRegistry},
     worlds::{
         AdmissionQuery, AdmitInputs, BoundCheckpointRestore, BoundaryAdmission, BoundaryKey,
-        ExternalPublicationPolicy, ExternalReceipt, ForkRequest, ForkReservation, FrozenBlob,
-        FrozenBlobRead, FrozenManifest, PublicationBinding, WorldDefinition, WorldManager,
+        CreationRequest, CreationReservation, ExternalPublicationPolicy, ExternalReceipt,
+        ForkRequest, ForkReservation, FrozenBlob, FrozenBlobRead, FrozenManifest,
+        LogicalDestination, PublicationBinding, WorldDefinition, WorldManager,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -60,6 +61,65 @@ pub struct HostedCutAdapter {
     native_program: Value,
     policy: ExternalPublicationPolicy,
     program: String,
+}
+
+/// Validated declaration, independent of an allocated native world. It owns no
+/// execution or durable state and can only bind the exact retained program.
+pub struct HostedDeclaration {
+    processor: ProcessorReference,
+    schemas: BTreeMap<String, ComponentSchema>,
+    native_program: Value,
+    policy: ExternalPublicationPolicy,
+    program: String,
+}
+impl HostedDeclaration {
+    pub fn validate_inputs(&self, inputs: &BTreeMap<String, Vec<String>>) -> Result<()> {
+        validate_inputs(&self.native_program, inputs)
+    }
+    pub fn bind(self, scope: HostedScope) -> Result<HostedCutAdapter> {
+        ensure!(
+            crate::identifier(&scope.world)
+                && crate::identifier(&scope.run)
+                && !scope.native_world.is_empty(),
+            "Invalid analytical scope"
+        );
+        Ok(HostedCutAdapter {
+            scope,
+            processor: self.processor,
+            schemas: self.schemas,
+            native_program: self.native_program,
+            policy: self.policy,
+            program: self.program,
+        })
+    }
+}
+fn validate_inputs(native: &Value, inputs: &BTreeMap<String, Vec<String>>) -> Result<()> {
+    let expected: BTreeMap<String, Vec<String>> = native["public_relations"]
+        .as_array()
+        .ok_or_else(|| anyhow!("Missing native relations"))?
+        .iter()
+        .filter(|r| r["input"] == true)
+        .map(|r| {
+            Ok((
+                r["name"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("Invalid native relation"))?
+                    .into(),
+                serde_json::from_value(r["fields"].clone())?,
+            ))
+        })
+        .collect::<Result<_>>()?;
+    ensure!(
+        inputs == &expected
+            && inputs.len() <= 64
+            && inputs.values().all(|fields| !fields.is_empty()
+                && fields.len() <= 64
+                && fields
+                    .iter()
+                    .all(|kind| matches!(kind.as_str(), "int" | "string"))),
+        "Input declarations differ from the exact program"
+    );
+    Ok(())
 }
 
 /// Complete immutable declaration evidence for storage-only cold verification.
@@ -188,6 +248,9 @@ fn program_digest(native: &Value, schemas: &BTreeMap<String, ComponentSchema>) -
 }
 
 impl HostedCutAdapter {
+    pub fn validate_inputs(&self, inputs: &BTreeMap<String, Vec<String>>) -> Result<()> {
+        validate_inputs(&self.native_program, inputs)
+    }
     pub fn context_draft(&self) -> Result<crate::store::contexts::ContextDraft> {
         crate::store::contexts::ContextDraft::hosted(HostedEvidence {
             scope: self.scope.clone(),
@@ -213,12 +276,25 @@ impl HostedCutAdapter {
             .status(&scope.native_world)
             .map_err(|e| anyhow!(e))?;
         let definition: WorldDefinition = serde_json::from_value(status["definition"].clone())?;
+        Self::preflight(
+            &manager.registry().map_err(|e| anyhow!(e))?,
+            definition,
+            components,
+        )?
+        .bind(scope)
+    }
+    /// Validate the exact retained program and all persistent declarations
+    /// before the native owner allocates a destination.
+    pub fn preflight(
+        registry: &ProcessorRegistry,
+        definition: WorldDefinition,
+        components: Vec<Component>,
+    ) -> Result<HostedDeclaration> {
         let policy = publication_policy(&components);
         ensure!(
             definition.external_publication.as_ref() == Some(&policy),
             "Hosted publication policy mismatch"
         );
-        let registry = manager.registry().map_err(|e| anyhow!(e))?;
         let mut record = registry
             .get(
                 &definition.processor.processor_id,
@@ -266,8 +342,7 @@ impl HostedCutAdapter {
             "Invalid component inventory"
         );
         let program = program_digest(&native_program, &schemas)?;
-        Ok(Self {
-            scope,
+        Ok(HostedDeclaration {
             processor: definition.processor,
             schemas,
             native_program,
@@ -362,6 +437,23 @@ impl HostedCutAdapter {
         destination: Scope,
         label: String,
     ) -> Result<PreparedFork> {
+        let mut prepared = self
+            .prepare_fork_source(store, source, request_key, destination, label)
+            .await?;
+        prepared.check_new_destination(store).await?;
+        Ok(prepared)
+    }
+    /// Verify the source without claiming the destination. Logical creation
+    /// checks a new destination before reserve, or reconciles the exact retained
+    /// reservation before accepting a context-before-origin retry.
+    pub async fn prepare_fork_source(
+        &self,
+        store: &CutStore,
+        source: &CutReceipt,
+        request_key: String,
+        destination: Scope,
+        label: String,
+    ) -> Result<PreparedFork> {
         let store = store.read_scope().await?;
         destination.validate()?;
         let source_scope = Scope {
@@ -371,9 +463,6 @@ impl HostedCutAdapter {
         ensure!(destination != source_scope, "Cannot fork onto source scope");
         let cut = self.scoped_cut(&store, source).await?;
         let external = external_receipt(&cut, source)?;
-        store
-            .check_fork_destination(&destination, &request_key, source, &source_scope)
-            .await?;
         let request = ForkRequest {
             request_key,
             destination: json!(destination),
@@ -394,6 +483,7 @@ impl HostedCutAdapter {
             source: source.clone(),
             external,
             request,
+            destination_checked: false,
         })
     }
     pub async fn verify_origin(&self, store: &CutStore) -> Result<ForkOrigin> {
@@ -611,13 +701,73 @@ pub struct PreparedFork {
     source: CutReceipt,
     external: ExternalReceipt,
     request: ForkRequest,
+    destination_checked: bool,
 }
 impl PreparedFork {
+    pub async fn check_new_destination(&mut self, store: &CutStore) -> Result<()> {
+        let store = store.read_scope().await?;
+        store
+            .check_fork_destination(
+                &serde_json::from_value(self.request.destination.clone())?,
+                &self.request.request_key,
+                &self.source,
+                &serde_json::from_value(self.request.source_context.clone())?,
+            )
+            .await?;
+        self.destination_checked = true;
+        Ok(())
+    }
+    pub fn reserve_logical(
+        &self,
+        manager: &mut WorldManager,
+        destination: LogicalDestination,
+        binding: Value,
+    ) -> Result<(CreationReservation, ReservedFork)> {
+        self.adapter.check_owner(manager)?;
+        ensure!(
+            self.destination_checked
+                || manager
+                    .lookup_creation(&destination)
+                    .map_err(|e| anyhow!(e))?
+                    .is_some(),
+            "New logical fork requires storage destination preflight"
+        );
+        ensure!(
+            json!({"world":destination.world,"run":destination.run}) == self.request.destination,
+            "Logical fork destination differs from verified source request"
+        );
+        let reservation = manager
+            .reserve_creation(CreationRequest {
+                request_key: self.request.request_key.clone(),
+                destination: destination.clone(),
+                definition: self.request.definition.clone(),
+                binding,
+                fork: Some(Box::new(self.request.clone())),
+            })
+            .map_err(|e| anyhow!(e))?;
+        let fork = manager
+            .resolve_creation(&destination)
+            .map_err(|e| anyhow!(e))?
+            .fork
+            .ok_or_else(|| anyhow!("Logical reservation has no fork source"))?;
+        Ok((reservation, self.reserved(manager, fork)?))
+    }
     pub fn reserve(&self, manager: &mut WorldManager) -> Result<ReservedFork> {
+        ensure!(
+            self.destination_checked,
+            "Fork requires storage destination preflight"
+        );
         self.adapter.check_owner(manager)?;
         let reservation = manager
             .reserve_fork(self.request.clone())
             .map_err(|e| anyhow!(e))?;
+        self.reserved(manager, reservation)
+    }
+    fn reserved(
+        &self,
+        manager: &mut WorldManager,
+        reservation: ForkReservation,
+    ) -> Result<ReservedFork> {
         let scope: Scope = serde_json::from_value(reservation.destination.clone())?;
         let adapter = HostedCutAdapter::bind(
             manager,
@@ -656,6 +806,13 @@ pub struct ReservedFork {
     checkpoint: Vec<u8>,
 }
 impl ReservedFork {
+    pub async fn check_logical_context(&self, store: &CutStore) -> Result<()> {
+        store
+            .read_scope()
+            .await?
+            .check_logical_fork_context(&self.origin, &self.adapter.context_draft()?)
+            .await
+    }
     pub fn adapter(&self) -> &HostedCutAdapter {
         &self.adapter
     }

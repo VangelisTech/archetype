@@ -28,6 +28,9 @@ use std::{
 };
 use tokio::runtime::Runtime;
 
+#[path = "logical.rs"]
+mod logical;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Open {
@@ -54,6 +57,9 @@ pub struct ReceiptRef {
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
+    Logical {
+        request: logical::Request,
+    },
     Register {
         request: RegisterRequest,
     },
@@ -261,6 +267,7 @@ impl Resources {
     }
     pub fn call(&self, op: Operation) -> Result<Value> {
         let store = match &op {
+            Operation::Logical { request } if !request.uses_store() => self.store.clone(),
             Operation::Register { .. }
             | Operation::Definitions { .. }
             | Operation::Create { .. }
@@ -273,6 +280,7 @@ impl Resources {
             _ => self.runtime.block_on(self.store.read_scope())?,
         };
         match op {
+            Operation::Logical { request } => self.logical(&store, request),
             Operation::PublishCollection { world, run } => {
                 Ok(serde_json::to_value(self.runtime.block_on(
                     store.publish_context(&ContextDraft::artifact_collection(world, run)?),

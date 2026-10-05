@@ -9,7 +9,7 @@ API route, MCP tool, or cross-repository consumer migration. A separate
 ## Dependency and ownership
 
 `archetype-ddlog` pins DDlog Runtime commit
-`48ea5115e827253df753466b6ecd60bfff813d50` through the canonical Git dependency and
+`98374a8e7b3bd1662aad6d6601479a24cf0de320` through the canonical Git dependency and
 lockfile. That dependency commit is local and unpublished. Local evidence uses a
 Cargo Git cache seeded from its exact local repository; no filesystem dependency
 or path override is committed. External clean builds cannot fetch this revision

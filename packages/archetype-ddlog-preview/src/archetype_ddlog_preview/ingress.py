@@ -14,6 +14,7 @@ from typing import Any, Protocol
 
 from archetype_ddlog_preview import Host, NativeError
 from archetype_ddlog_preview import wire as w
+from archetype_ddlog_preview.programs import ProgramReference, native_types
 
 
 class Principal(Protocol):
@@ -147,6 +148,43 @@ class ContextResource:
 
 
 @dataclass(frozen=True, slots=True)
+class LogicalResource:
+    """Configured destination/declarations; native catalog owns its identity."""
+
+    name: str
+    world: str
+    run: str
+    components: tuple[Component, ...]
+    inputs: tuple[tuple[str, tuple[str, ...]], ...]
+
+    def __post_init__(self) -> None:
+        # Reuse only declaration validation, never legacy fork resolution.
+        Resource(self.name, None, self.world, self.run, self.components, self.inputs)
+
+    def destination(self) -> dict[str, str]:
+        return {"resource": self.name, "world": self.world, "run": self.run}
+
+    def declarations(self) -> dict[str, Any]:
+        return {
+            "components": [c.native() for c in self.components],
+            "inputs": {name: native_types(types) for name, types in self.inputs},
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProgramResource:
+    """Logical registry resource; no source, current version or live inventory."""
+
+    name: str
+
+    def __post_init__(self) -> None:
+        w.identifier(self.name)
+
+
+type ConfiguredResource = Resource | LogicalResource | ContextResource | ProgramResource
+
+
+@dataclass(frozen=True, slots=True)
 class Grant:
     principal_id: str
     resource: str
@@ -184,7 +222,7 @@ class Ingress:
         host: Host,
         *,
         verifier: PrincipalVerifier,
-        resources: tuple[Resource | ContextResource, ...],
+        resources: tuple[ConfiguredResource, ...],
         grants: tuple[Grant, ...],
         max_inflight: int = 4,
     ):
@@ -200,7 +238,11 @@ class Ingress:
                 for r in resources
                 if isinstance(r, Resource) and r.native_world is not None
             ],
-            [(type(r), r.world, r.run) for r in resources],
+            [
+                ("context" if isinstance(r, ContextResource) else "execution", r.world, r.run)
+                for r in resources
+                if not isinstance(r, ProgramResource)
+            ],
         ):
             if len(set(keys)) != len(keys):
                 raise ValueError("Conflicting resource binding")
@@ -210,12 +252,12 @@ class Ingress:
                 continue
             source = configured.get(resource.source_resource)
             if resource.source_resource is not None and (
-                not isinstance(source, Resource)
+                not isinstance(source, (Resource, LogicalResource))
                 or (source.world, source.run) != (resource.world, resource.run)
             ):
                 raise ValueError("Context requires its configured execution source")
             if resource.source_resource is None and any(
-                isinstance(other, Resource)
+                isinstance(other, (Resource, LogicalResource))
                 and (other.world, other.run) == (resource.world, resource.run)
                 for other in resources
             ):
@@ -277,25 +319,31 @@ class Ingress:
             decoded = w.Request.decode(request)
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
             return _error("invalid_request")
-        capability = w.CAPABILITIES[type(decoded.operation)]
-        if capability not in capabilities or capability not in self._grants.get(
-            (principal_id, decoded.resource), frozenset()
-        ):
-            return _error("forbidden")
-        if isinstance(decoded.operation, (w.Fork, w.PublishContext)):
-            source_name = decoded.operation.source_resource
-            if source_name is not None and capability not in self._grants.get(
-                (principal_id, source_name), frozenset()
+        for name, capability in w.requirements(decoded):
+            if capability not in capabilities or capability not in self._grants.get(
+                (principal_id, name), frozenset()
             ):
                 return _error("forbidden")
-        # No native lookup, even status, happens before BOTH exact grants.
-        resource = self._resources[decoded.resource]
+        # Every grant, including every protected program reference, precedes
+        # configuration, registry, native or storage resolution.
         try:
+            resource = self._resources[decoded.resource]
+            refs = ()
+            if isinstance(decoded.operation, w.Create):
+                refs = (decoded.operation.program,)
+            elif isinstance(decoded.operation, w.ProgramCompose):
+                refs = decoded.operation.composition.references()
+            if any(not isinstance(self._resources[ref.resource], ProgramResource) for ref in refs):
+                raise ValueError("Protected program resource required")
             if isinstance(decoded.operation, w.Fork):
                 source = self._resources[decoded.operation.source_resource]
-                if not isinstance(resource, Resource) or not isinstance(source, Resource):
+                if not isinstance(resource, (Resource, LogicalResource)) or not isinstance(
+                    source, (Resource, LogicalResource)
+                ):
                     raise ValueError("Fork requires execution resources")
-                if source.name == resource.name or resource.native_world is not None:
+                if source.name == resource.name or (
+                    isinstance(resource, Resource) and resource.native_world is not None
+                ):
                     raise ValueError("Fork requires a distinct configured destination")
                 if source.components != resource.components or source.inputs != resource.inputs:
                     raise ValueError("Fork destination configuration must match source")
@@ -304,13 +352,18 @@ class Ingress:
                 and decoded.operation.source_resource is not None
             ):
                 source = self._resources[decoded.operation.source_resource]
-                if not isinstance(source, Resource) or (source.world, source.run) != (
-                    resource.world,
-                    resource.run,
+                if (
+                    not isinstance(source, (Resource, LogicalResource))
+                    or not isinstance(resource, ContextResource)
+                    or (source.world, source.run)
+                    != (
+                        resource.world,
+                        resource.run,
+                    )
                 ):
                     raise ValueError("Hosted context must match the granted source scope")
             self._validate_scope(resource, decoded.operation)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, KeyError):
             return _error("invalid_request")
         if len(self._pending) >= self._max_inflight:
             return _error("busy")
@@ -322,14 +375,20 @@ class Ingress:
         return await asyncio.shield(task)
 
     @staticmethod
-    def _validate_scope(resource: Resource | ContextResource, op: w.Operation) -> None:
+    def _validate_scope(resource: ConfiguredResource, op: w.Operation) -> None:
+        if isinstance(op, (w.ProgramCreate, w.ProgramCompose, w.ProgramResolve, w.ProgramDescribe)):
+            if not isinstance(resource, ProgramResource):
+                raise ValueError("Program resource required")
+            return
+        if isinstance(op, (w.Create, w.Resolve)) and not isinstance(resource, LogicalResource):
+            raise ValueError("Logical execution resource required")
         if isinstance(op, (w.PublishContext, w.ReadContext, w.ContextArtifacts)):
             if not isinstance(resource, ContextResource):
                 raise ValueError("Context resource required")
             if isinstance(op, w.PublishContext) and op.source_resource != resource.source_resource:
                 raise ValueError("Context publication must use its configured origin")
             return
-        if not isinstance(resource, Resource):
+        if not isinstance(resource, (Resource, LogicalResource)):
             raise ValueError("Execution resource required")
         if isinstance(op, w.Admit):
             schemas = dict(resource.inputs)
@@ -342,7 +401,7 @@ class Ingress:
         ):
             raise ValueError("Receipt outside configured scope")
 
-    async def _call(self, resource: Resource | ContextResource, op: w.Operation) -> bytes:
+    async def _call(self, resource: ConfiguredResource, op: w.Operation) -> bytes:
         try:
             resource, value = await asyncio.to_thread(self._dispatch, resource, op)
             projected = _project(resource, op, value)
@@ -368,7 +427,13 @@ class Ingress:
             # proves rollback, absence, conflict, or permission to retry.
             return _error("operation_failed", dispatched=True)
 
-    def _resolve(self, resource: Resource) -> Resource:
+    def _logical(self, op: str, **arguments: Any) -> Any:
+        return self._host.request("logical", request={"op": op, **arguments})
+
+    def _resolve(self, resource: Resource | LogicalResource) -> Resource:
+        if isinstance(resource, LogicalResource):
+            value = self._logical("world_resolve", destination=resource.destination())
+            return _logical_binding(resource, value)
         if resource.native_world is not None:
             return resource
         binding = self._host.fork_binding(
@@ -384,14 +449,42 @@ class Ingress:
         return resolved
 
     def _dispatch(
-        self, resource: Resource | ContextResource, op: w.Operation
-    ) -> tuple[Resource | ContextResource, Any]:
+        self, resource: ConfiguredResource, op: w.Operation
+    ) -> tuple[ConfiguredResource, Any]:
+        if isinstance(resource, ProgramResource):
+            if isinstance(op, (w.ProgramCreate, w.ProgramCompose)):
+                if isinstance(op, w.ProgramCompose):
+                    for ref in op.composition.references():
+                        retained = self._logical("program_resolve", resource=ref.resource)
+                        if (
+                            retained["resource"] != ref.resource
+                            or retained["processor"] != ref.pin()
+                            or retained["phase"] != "published"
+                        ):
+                            raise ValueError("Reference differs from protected logical program")
+                    definition = op.composition.native()
+                else:
+                    definition = op.definition.native()
+                return resource, self._logical(
+                    "program_publish",
+                    request={
+                        "resource": resource.name,
+                        "request_key": op.request_key,
+                        "description": op.description,
+                        "definition": definition,
+                        "git_provenance": None,
+                        "lowering_version": 2,
+                    },
+                )
+            if isinstance(op, (w.ProgramResolve, w.ProgramDescribe)):
+                return resource, self._logical(op.name, resource=resource.name)
+            raise ValueError("Unknown program operation")
         if isinstance(resource, ContextResource):
             if isinstance(op, w.PublishContext):
                 if op.source_resource is None:
                     return resource, self._host.publish_collection(resource.world, resource.run)
                 source = self._resources[op.source_resource]
-                if not isinstance(source, Resource):
+                if not isinstance(source, (Resource, LogicalResource)):
                     raise ValueError("Execution source required")
                 return resource, self._host.publish_hosted_context(self._resolve(source).binding())
             if isinstance(op, w.ReadContext):
@@ -409,11 +502,40 @@ class Ingress:
                     limit=op.limit,
                 )
             raise ValueError("Unknown context operation")
+        if isinstance(op, (w.Create, w.Resolve)):
+            if not isinstance(resource, LogicalResource):
+                raise ValueError("Logical resource required")
+            if isinstance(op, w.Create):
+                result = self._logical(
+                    "world_create",
+                    destination=resource.destination(),
+                    request_key=op.request_key,
+                    label=op.label,
+                    program=op.program.native(),
+                    declarations=resource.declarations(),
+                )
+            else:
+                result = self._logical("world_resolve", destination=resource.destination())
+            _logical_binding(resource, result)
+            return resource, result
         if isinstance(op, w.Fork):
             configured_source = self._resources[op.source_resource]
-            if not isinstance(configured_source, Resource):
+            if not isinstance(configured_source, (Resource, LogicalResource)):
                 raise ValueError("Execution source required")
             source = self._resolve(configured_source)
+            if isinstance(resource, LogicalResource):
+                result = self._logical(
+                    "world_fork",
+                    source_binding=source.binding(),
+                    receipt=op.receipt.native(),
+                    destination=resource.destination(),
+                    label=resource.name,
+                    request_key=op.request_key,
+                    inputs=resource.declarations()["inputs"],
+                    expected_generation=op.expected_generation,
+                )
+                _logical_binding(resource, result)
+                return resource, result
             return resource, self._host.fork(
                 source.binding(),
                 op.receipt.native(),
@@ -498,7 +620,147 @@ def _boundary(resource: Resource, raw: Any) -> dict[str, Any]:
     }
 
 
-def _project(resource: Resource | ContextResource, op: w.Operation, raw: Any) -> dict[str, Any]:
+def _logical_binding(resource: LogicalResource, raw: Any) -> Resource:
+    creation = raw["creation"]
+    reservation = creation["reservation"]
+    resolved = Resource.from_binding(resource.name, raw["binding"], inputs=dict(resource.inputs))
+    if (
+        reservation["schema_version"] != 2
+        or reservation["destination"] != resource.destination()
+        or reservation["world_id"] != resolved.native_world
+        or raw["status"]["id"] != resolved.native_world
+        or (resolved.world, resolved.run, resolved.components)
+        != (resource.world, resource.run, resource.components)
+        or raw["inputs"] != resource.declarations()["inputs"]
+        or creation["binding"]["declarations"] != resource.declarations()
+        or creation["binding"]["program_resource"] != raw["program_resource"]
+    ):
+        raise ValueError("Logical binding differs from configured declarations")
+    if type(creation["context_confirmed"]) is not bool:
+        raise ValueError("Invalid context readiness")
+    context = raw["context"]
+    if context is not None and (context["world"], context["run"]) != (resource.world, resource.run):
+        raise ValueError("Logical context scope mismatch")
+    if creation["context_id"] is not None and (
+        context is None or context["context_id"] != creation["context_id"]
+    ):
+        raise ValueError("Logical context acknowledgment mismatch")
+    if creation["context_confirmed"] and creation["context_id"] is None:
+        raise ValueError("Confirmed creation requires context")
+    fork = creation["fork"]
+    if reservation["kind"] == "fork":
+        native_fork = raw["status"]["external_publication"]["fork"]
+        if (
+            fork is None
+            or native_fork["reservation"] != fork
+            or type(native_fork["ready"]) is not bool
+            or (
+                fork["child_world_id"] != resolved.native_world
+                or fork["destination"] != {"world": resource.world, "run": resource.run}
+                or fork["request_key"] != reservation["request_key"]
+            )
+        ):
+            raise ValueError("Logical fork reservation mismatch")
+        origin = raw["origin"]
+        if origin is not None and origin["reservation"] != fork:
+            raise ValueError("Logical fork origin mismatch")
+        if native_fork["ready"] and origin is None:
+            raise ValueError("Ready fork requires retained origin")
+    elif fork is not None or raw["origin"] is not None:
+        raise ValueError("Fresh creation cannot contain fork lineage")
+    return resolved
+
+
+def _program_projection(resource: ProgramResource, raw: Any) -> dict[str, Any]:
+    if raw["resource"] != resource.name:
+        raise ValueError("Native program resource mismatch")
+    ref = ProgramReference(resource.name, **raw["processor"])
+    return {
+        "program": {"resource": ref.resource, **ref.pin()},
+        "request_key": w.identifier(raw["request_key"]),
+        "request_sha256": w.digest(raw["request_sha256"]),
+        "phase": _choice(raw["phase"], "prepared published"),
+    }
+
+
+def _project(resource: ConfiguredResource, op: w.Operation, raw: Any) -> dict[str, Any]:
+    if isinstance(resource, ProgramResource):
+        selected = raw["program"] if isinstance(op, w.ProgramDescribe) else raw
+        result = _program_projection(resource, selected)
+        if (
+            isinstance(op, (w.ProgramCreate, w.ProgramCompose))
+            and selected["request_key"] != op.request_key
+        ):
+            raise ValueError("Program request key mismatch")
+        if isinstance(op, w.ProgramDescribe):
+            relations = raw["relations"]
+            if type(relations) is not list or len(relations) > 128:
+                raise ValueError("Unbounded program description")
+            result["kind"] = _choice(raw["kind"], "program composition")
+            result["relations"] = []
+            for relation in relations:
+                types = relation["fields"]
+                if (
+                    type(relation["input"]) is not bool
+                    or type(types) is not list
+                    or not 1 <= len(types) <= 64
+                    or any(t not in ("int", "string") for t in types)
+                ):
+                    raise ValueError("Invalid public relation")
+                result["relations"].append(
+                    {
+                        "name": w.identifier(relation["name"]),
+                        "input": relation["input"],
+                        "fields": ["int64" if t == "int" else t for t in types],
+                    }
+                )
+        return result
+    if isinstance(resource, LogicalResource):
+        resolved = _logical_binding(resource, raw)
+        creation, status = raw["creation"], raw["status"]
+        reservation = creation["reservation"]
+        kind = _choice(reservation["kind"], "fresh fork")
+        if isinstance(op, (w.Create, w.Fork)) and reservation["request_key"] != op.request_key:
+            raise ValueError("Creation request key mismatch")
+        processor = creation["definition"]["processor"]
+        ProgramReference("inherited", **processor)
+        if isinstance(op, w.Create) and (
+            kind != "fresh"
+            or raw["program_resource"] != op.program.resource
+            or processor != op.program.pin()
+        ):
+            raise ValueError("Fresh creation program mismatch")
+        result = {
+            "destination": resource.destination(),
+            "kind": kind,
+            "request_key": w.identifier(reservation["request_key"]),
+            "request_sha256": w.digest(reservation["request_sha256"]),
+            "program": {
+                "resource": None
+                if raw["program_resource"] is None
+                else w.identifier(raw["program_resource"]),
+                **processor,
+            },
+            "context_id": w.optional_digest(creation["context_id"]),
+            "context_ready": creation["context_confirmed"],
+            **_project(resolved, w.Status(), status),
+        }
+        if isinstance(op, w.Fork):
+            if kind != "fork" or creation["fork"] is None:
+                raise ValueError("Fork creation lineage missing")
+            if raw["origin"] is None or raw["origin"]["source"] != op.receipt.native():
+                raise ValueError("Fork creation source mismatch")
+        if raw["origin"] is not None:
+            origin = raw["origin"]
+            receipt = origin["source"]
+            result["source"] = {
+                "world": w.identifier(receipt["world"]),
+                "run": w.identifier(receipt["run"]),
+                "tick": w.unsigned(receipt["tick"]),
+                "cut_id": w.digest(receipt["cut_id"]),
+            }
+            result["lineage_sha256"] = w.digest(origin["lineage_sha256"])
+        return result
     if isinstance(resource, ContextResource):
         if isinstance(op, (w.PublishContext, w.ReadContext)):
             if raw["version"] != 1 or (raw["world"], raw["run"]) != (resource.world, resource.run):
