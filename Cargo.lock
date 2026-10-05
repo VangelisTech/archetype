@@ -176,6 +176,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "archetype-ddlog-python"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "archetype-ddlog",
+ "arrow-array",
+ "ddlog-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "archetype-ffi"
 version = "0.1.0"
 dependencies = [

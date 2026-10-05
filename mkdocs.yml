@@ -55,6 +55,7 @@ nav:
       - index.md
       - DDlog Migration and Preview: guide/ddlog-runtime.md
       - Hosted DDlog Publisher: guide/ddlog-hosted-publisher.md
+      - DDlog Python Preview: guide/ddlog-python-preview.md
       - Install World Libraries: guide/world-libraries.md
       - Framework Quickstart: guide/quickstart.md
       - Choose an Example: guide/examples.md

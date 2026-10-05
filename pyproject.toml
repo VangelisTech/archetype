@@ -212,6 +212,7 @@ include = [
     "packages/archetype-ecs/src",
     "packages/archetype-research/src",
     "packages/archetype-smol/src",
+    "packages/archetype-ddlog-preview/src",
 ]
 respect-ignore-files = true
 

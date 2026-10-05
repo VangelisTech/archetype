@@ -3,10 +3,11 @@
 This page is the entry point for Archetype's contract documents.
 
 The [DDlog migration](ddlog-runtime.md) is the accepted live-execution target
-and includes the local [hosted cut publisher](ddlog-hosted-publisher.md).
-The Python contracts below describe
-the retained 0.6 implementation, including its existing Daft loop; the bridge
-and generic DDlog API/MCP are not yet implemented. Agent memory, prompt, tool,
+and includes the local [hosted cut publisher](ddlog-hosted-publisher.md) and
+[Python preview](ddlog-python-preview.md). The Python contracts below describe
+the retained 0.6 implementation, including its existing Daft loop. The opt-in
+Python preview does not replace those contracts, and generic DDlog API/MCP
+are not yet implemented. Agent memory, prompt, tool,
 and budget semantics belong to X0. Missions and Physical AI products have
 been removed from current packaging and composition.
 
@@ -32,7 +33,8 @@ The current contract set is split across design docs and executable tests.
 | [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |
 | [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
 | [Durable Discovery](durable-discovery.md) | Control catalog and cold reads | Catalog authority, `discover_worlds`/`open_world_readonly`, fail-closed cold queries. |
-| [Hosted DDlog Publisher](ddlog-hosted-publisher.md) | Local Rust migration slice | Hosted admission to verified FULL analytical cuts; Python and transport integration remain incomplete. |
+| [Hosted DDlog Publisher](ddlog-hosted-publisher.md) | Local Rust migration slice | Hosted admission to verified FULL analytical cuts; A separate Python preview binds this slice; transport integration remains incomplete. |
+| [DDlog Python Preview](ddlog-python-preview.md) | Isolated trusted Python/C ABI | Explicit hosted operations, strict values and resource lifetime; no retained-runtime replacement. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
 | [Storage Migration](storage-migration.md) | Local whole-storage administration | Offline Iceberg-to-Iceberg and SQLite-to-SQLite migration, empty-destination activation, Artifact relocation, exact identity preservation, and cold verification. |
 | [Activities](activities.md) | Work between committed states | Resource/Activity boundary, post-commit admission, fenced attempts, provider reconciliation, result references, and later-receipt settlement. |

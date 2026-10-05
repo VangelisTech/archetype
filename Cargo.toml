@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/archetype-ddlog",
+    "crates/archetype-ddlog-python",
     "crates/archetype-bench",
     "crates/archetype-core",
     "crates/archetype-ffi",

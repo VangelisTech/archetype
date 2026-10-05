@@ -26,7 +26,8 @@ repositories and existing stored histories are outside this migration.
 
 ```mermaid
 flowchart LR
-    P[Python facade and API/MCP] -. planned bridge .-> W[DDlog WorldManager]
+    P[Opt-in Python preview] --> W[DDlog WorldManager]
+    T[Authenticated API/MCP] -. planned .-> W
     W --> D[DDlog Runtime: composed native program]
     D --> F[Freeze complete component outputs and checkpoint]
     F --> O[Stage immutable objects]
@@ -36,8 +37,8 @@ flowchart LR
 ```
 
 The Rust crate `archetype-ddlog` implements the path from the world owner through
-the cut manifest and pinned reads. The Python bridge and API/MCP route migration
-are not implemented by this slice.
+the cut manifest and pinned reads. The [Python preview](ddlog-python-preview.md)
+binds these local ports. API/MCP route migration remains unimplemented.
 
 ## Persistent relations become components
 
@@ -140,8 +141,8 @@ native test is not evidence of native execution.
 
 ## Remaining migration
 
-The remaining public boundary wraps the existing DDlog WorldManager with thin Python,
-HTTP, and MCP adapters. Generic tools should cover simulation submission,
+A local [Python preview](ddlog-python-preview.md) now wraps the existing DDlog
+WorldManager. Supported-runtime migration and HTTP/MCP adapters remain. Generic tools should cover simulation submission,
 status, step/run, history, fork, query, and artifact registration. The removed
 Mission MCP server is not a simulation interface. Admission, authentication,
 and cancellation need focused tests at that shared boundary.

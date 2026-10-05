@@ -3,7 +3,8 @@
 Status: implemented local Rust integration; the Python runtime remains on its
 existing engine. This slice consumes the upstream hosted external-publication
 port and real local Iceberg storage. It adds no manager, worker, admission ledger,
-Python binding, API route, MCP tool, or cross-repository consumer migration.
+API route, MCP tool, or cross-repository consumer migration. A separate
+[Python preview](ddlog-python-preview.md) now binds these Rust ports.
 
 ## Dependency and ownership
 
@@ -147,8 +148,9 @@ apply. The store remains local and cooperatively owned. Immutable data and
 receipts must be retained; remote recovery, retention/GC, distributed fencing,
 fork lineage and cross-world checkpoint import are not implemented here.
 
-Next work is the thin Python/runtime and authenticated transport boundary, with
-explicit cancellation, lifecycle and consumer migration contracts. Sanctioned
+The [Python preview](ddlog-python-preview.md) adds local binding, cancellation
+and lifetime contracts. Supported-runtime and authenticated transport migration
+remain, including versioned consumer contracts. Sanctioned
 Daft queries, forks and world-context artifact receipts remain separate work.
 This local publisher does not complete the overall execution migration or grant
 publication authorization.

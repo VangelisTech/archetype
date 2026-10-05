@@ -144,7 +144,7 @@ operational-audit:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/validate_operational_scenarios.py
 
 .PHONY: static
-static: format-check lint typecheck lock-check contract-audit benchmark-audit actionlint-audit
+static: format-check lint typecheck lock-check contract-audit benchmark-audit actionlint-audit ddlog-preview-audit
 	@echo "Static validation passed"
 
 .PHONY: actionlint-audit
@@ -487,7 +487,7 @@ operational-demand-biome: verify-release-artifact
 	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario example.14_biome_agent --out operational-demand-biome-results.json,ARCHETYPE_BIOME_LIVE=1,demand)
 
 .PHONY: verify-pr
-verify-pr: static test package-smoke ddlog-check
+verify-pr: static test package-smoke ddlog-check ddlog-python-check
 	@echo "PR verification profile passed"
 
 .PHONY: verify-full-source
@@ -630,3 +630,18 @@ ddlog-check:
 	@cargo +1.95.0 fmt -p archetype-ddlog -- --check
 	@cargo +1.95.0 clippy -p archetype-ddlog --all-targets --locked -- -D warnings
 	@cargo +1.95.0 test -p archetype-ddlog --locked
+
+# Installed-wheel/native evidence is an explicit local/release opt-in. This
+# ordinary profile uses simulated native transport and actual hosted Iceberg.
+DDLOG_PYTHON := python3
+DDLOG_PYTHON_LIBRARY := $(CURDIR)/target/debug/libarchetype_ddlog_python.$(if $(filter Darwin,$(shell uname)),dylib,so)
+.PHONY: ddlog-preview-audit ddlog-python-check
+ddlog-preview-audit:
+	@$(DDLOG_PYTHON) scripts/check_ddlog_preview.py
+
+ddlog-python-check: ddlog-preview-audit
+	@cargo +1.95.0 fmt -p archetype-ddlog-python -- --check
+	@cargo +1.95.0 clippy -p archetype-ddlog-python --all-targets --locked -- -D warnings
+	@cargo +1.95.0 test -p archetype-ddlog-python --locked
+	@cargo +1.95.0 build -p archetype-ddlog-python --locked
+	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) PYTHONPATH=packages/archetype-ddlog-preview/src $(DDLOG_PYTHON) -m unittest discover -s packages/archetype-ddlog-preview/tests -v
