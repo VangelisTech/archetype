@@ -199,6 +199,16 @@ impl HostedCutAdapter {
         Ok(())
     }
 
+    /// Verify an exact committed cut, including historical cuts, without moving
+    /// the native generation or the analytical publication head.
+    pub async fn verify_attachment_cut(
+        &self,
+        store: &CutStore,
+        receipt: &CutReceipt,
+    ) -> Result<()> {
+        self.check_cut(&store.verified_cut(receipt).await?)
+    }
+
     /// Storage read/verification finishes before the returned ticket borrows the
     /// native manager. The native owner still checks generation/revision/parent.
     pub async fn prepare_admission(

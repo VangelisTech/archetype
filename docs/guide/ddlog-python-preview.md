@@ -10,6 +10,11 @@ verifier and explicit resource grants over this Host. Optional
 [local HTTP/MCP adapters](ddlog-transports-preview.md) now consume that ingress;
 production hosting and consumer migration remain unimplemented.
 
+The [cut-bound artifact workflow](ddlog-artifacts-preview.md) now reuses the
+artifact family's file pipeline through a narrow storage port over this Host.
+It adds trusted local attachments to exact committed cuts; artifact HTTP/MCP
+routes and public runtime migration remain separate work.
+
 ## Ownership and installation
 
 `packages/archetype-ddlog-preview` ships `archetype_ddlog_preview`, a standard

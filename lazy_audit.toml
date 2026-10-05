@@ -42,6 +42,55 @@
 # the full detection logic.
 
 [[entries]]
+path = "packages/archetype-ecs/src/archetype/artifacts/cut_attachments.py"
+symbol = "prepare_attachments"
+expr = "discovered.to_pydict"
+method = "to_pydict"
+reason = "Bounded file submission validation: storage has already materialized occurrence identity exactly once; source presence and unique logical paths must be checked before content persistence."
+
+[[entries]]
+path = "packages/archetype-ecs/src/archetype/artifacts/cut_attachments.py"
+symbol = "prepare_attachments"
+expr = "stored.to_pydict"
+method = "to_pydict"
+reason = "Artifact receipt and scanner routing boundary: storage has already persisted and materialized file facts once; at most 32 occurrence identities select the specialized metadata plans and returned immutable ArtifactRefs."
+
+[[entries]]
+path = "packages/archetype-ecs/src/archetype/storage/cut_artifacts.py"
+symbol = "CutArtifactStorage.materialize"
+expr = "frame.collect"
+method = "collect"
+reason = "Storage execution boundary for cut-bound file ingestion: freeze UUIDv7 discovery or content persistence once before branching into typed and common metadata plans, preventing repeated identity or file effects."
+
+[[entries]]
+path = "packages/archetype-ecs/src/archetype/storage/cut_artifacts.py"
+symbol = "CutArtifactStorage.encode"
+expr = "common.to_arrow"
+method = "to_arrow"
+reason = "Native storage transport boundary: materialize the already-persisted common metadata projection into bounded Parquet payloads retained byte-for-byte for per-occurrence Iceberg commit retries."
+
+[[entries]]
+path = "packages/archetype-ecs/src/archetype/storage/cut_artifacts.py"
+symbol = "CutArtifactStorage.encode"
+expr = "frame.to_arrow"
+method = "to_arrow"
+reason = "Native storage transport boundary: execute each specialized metadata scanner once against stored content, encode its bounded result as Parquet, and retain those exact bytes for publication retry."
+
+[[entries]]
+path = "packages/archetype-ecs/src/archetype/storage/cut_artifacts.py"
+symbol = "CutArtifactStorage.encode"
+expr = "common_rows['artifact_id'].to_pylist"
+method = "to_pylist"
+reason = "Per-occurrence native storage routing: extract at most 32 UUID keys from an already-materialized Arrow metadata table to associate immutable Parquet payloads with their physical append keys."
+
+[[entries]]
+path = "packages/archetype-ecs/src/archetype/storage/cut_artifacts.py"
+symbol = "CutArtifactStorage.encode"
+expr = "rows['artifact_id'].to_pylist"
+method = "to_pylist"
+reason = "Per-occurrence native storage routing: extract UUID keys from already-materialized typed Arrow metadata to bind each bounded Parquet object to its common visibility root."
+
+[[entries]]
 path = "packages/archetype-ecs/src/archetype/api/models.py"
 symbol = "dataframe_to_rows"
 expr = "df.collect"

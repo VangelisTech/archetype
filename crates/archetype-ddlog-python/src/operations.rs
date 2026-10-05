@@ -3,7 +3,7 @@ use anyhow::{Result, anyhow, ensure};
 use archetype_ddlog::{
     component::Component,
     hosted::{HostedCutAdapter, HostedScope, publication_policy},
-    store::{CutReceipt, CutStore},
+    store::{CutReceipt, CutStore, attachments::Attachment},
 };
 use arrow_array::{Array, Int64Array, StringArray};
 use ddlog_runtime::{
@@ -109,6 +109,21 @@ pub enum Operation {
         binding: Binding,
         receipt: ReceiptRef,
         expected_generation: u64,
+    },
+    ArtifactCut {
+        binding: Binding,
+        receipt: ReceiptRef,
+    },
+    AttachArtifacts {
+        binding: Binding,
+        receipt: ReceiptRef,
+        attachments: Vec<Attachment>,
+    },
+    ReadArtifacts {
+        binding: Binding,
+        receipt: ReceiptRef,
+        offset: usize,
+        limit: usize,
     },
 }
 pub struct Resources {
@@ -349,6 +364,48 @@ impl Resources {
                     .runtime
                     .block_on(a.prepare_restore(&self.store, &receipt))?;
                 ticket.restore(&mut *self.manager()?, expected_generation)
+            }
+            Operation::ArtifactCut { binding, receipt } => {
+                let a = self.bind(binding)?;
+                let receipt = self.receipt(receipt)?;
+                self.runtime
+                    .block_on(a.verify_attachment_cut(&self.store, &receipt))?;
+                let root = self
+                    .runtime
+                    .block_on(self.store.attachment_root(&receipt))?;
+                Ok(json!({"object_root": root}))
+            }
+            Operation::AttachArtifacts {
+                binding,
+                receipt,
+                attachments,
+            } => {
+                let a = self.bind(binding)?;
+                let receipt = self.receipt(receipt)?;
+                self.runtime
+                    .block_on(a.verify_attachment_cut(&self.store, &receipt))?;
+                Ok(json!(
+                    self.runtime
+                        .block_on(self.store.attach(&receipt, &attachments))?
+                ))
+            }
+            Operation::ReadArtifacts {
+                binding,
+                receipt,
+                offset,
+                limit,
+            } => {
+                let a = self.bind(binding)?;
+                let receipt = self.receipt(receipt)?;
+                self.runtime
+                    .block_on(a.verify_attachment_cut(&self.store, &receipt))?;
+                let (items, total) = self
+                    .runtime
+                    .block_on(self.store.attachments(&receipt, offset, limit))?;
+                let end = offset + items.len();
+                Ok(
+                    json!({"items": items, "total": total, "next_offset": (end < total).then_some(end)}),
+                )
             }
         }
     }

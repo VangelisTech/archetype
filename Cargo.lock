@@ -160,7 +160,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow-array",
+ "arrow-cast",
  "arrow-schema",
+ "base64 0.22.1",
  "bytes",
  "ddlog-runtime",
  "futures",
@@ -173,6 +175,8 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "url",
+ "uuid",
 ]
 
 [[package]]

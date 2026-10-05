@@ -16,6 +16,7 @@ artifacts. Daft is intended for queries and analysis outside live execution.
 | Opt-in local [DDlog Python preview](docs/guide/ddlog-python-preview.md) | Implemented over the hosted Rust owner; not a replacement for the 0.6 runtime |
 | Local [DDlog shared ingress contract](docs/guide/ddlog-ingress-preview.md) | Exact capability/resource grants over the Python Host; no listener |
 | Local [DDlog HTTP/MCP adapters](docs/guide/ddlog-transports-preview.md) | Tested through the official SDK over shared ingress; production hosting and consumer migration remain |
+| Local [files attached to DDlog cuts](docs/guide/ddlog-artifacts-preview.md) | Exact historical cut attribution, durable content and common-index visibility; trusted batch preview |
 | Missions and Physical AI evaluation products | Removed from the intended product surface |
 
 See the [DDlog migration contract](docs/guide/ddlog-runtime.md) for exact schema

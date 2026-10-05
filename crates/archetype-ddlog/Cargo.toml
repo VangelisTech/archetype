@@ -10,7 +10,9 @@ description = "Archetype ECS cuts over the DDlog Runtime execution owner"
 [dependencies]
 anyhow.workspace = true
 arrow-array = "59.2"
+arrow-cast = "59.2"
 arrow-schema = "59.2"
+base64 = "0.22.1"
 bytes = "1"
 ddlog-runtime = { git = "https://github.com/everettVT/ddlog-runtime", rev = "3451df0ce968c6c2dc2a24265cf6434d108edccf" }
 futures = "0.3"
@@ -22,6 +24,8 @@ serde_json.workspace = true
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["any", "sqlite", "runtime-tokio"] }
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync"] }
+url = "2"
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

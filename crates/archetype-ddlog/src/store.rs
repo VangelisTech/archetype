@@ -30,6 +30,8 @@ use tokio::sync::Mutex;
 
 use crate::{component::ComponentSchema, world::FrozenCut};
 
+pub mod attachments;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TableCut {

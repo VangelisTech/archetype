@@ -1,5 +1,9 @@
 # Artifacts and ingestion
 
+This page describes the retained 0.6 runtime. The local DDlog preview has a
+separate [exact-cut attachment contract](ddlog-artifacts-preview.md), including
+historical attribution and versioned common-root visibility.
+
 An artifact is a file occurrence that Archetype has copied into durable object
 storage and indexed for a world run. The implementation is deliberately a
 small data pipeline. There are no artifact claims, leases, publication state
