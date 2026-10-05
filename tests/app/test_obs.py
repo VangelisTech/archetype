@@ -30,8 +30,6 @@ from archetype.core.config import WorldConfig
 from archetype.world.models import CreateWorld, GetWorldInfo
 from tests._runtime import build_test_runtime
 
-pytestmark = pytest.mark.contract("observability.signals.safe")
-
 
 def _capture(monkeypatch) -> InMemorySpanExporter:
     exporter = InMemorySpanExporter()

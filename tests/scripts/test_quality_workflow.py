@@ -1,111 +1,141 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
-
-"""Contracts for the deliberately small pull-request verification profile."""
+"""Contracts for current native CI and exact installed release verification."""
 
 from __future__ import annotations
 
-import ast
-import json
 import re
-import subprocess
-import tomllib
 from pathlib import Path
-from typing import cast
-
-import pytest
-
-from scripts.release_artifact import DISTRIBUTIONS, PUBLISHER_WORKFLOWS
-from scripts.run_operational_scenarios import _select_scenarios, run_scenarios
-from scripts.validate_operational_scenarios import load_scenarios
 
 ROOT = Path(__file__).resolve().parents[2]
-QUALITY_WORKFLOW = ROOT / ".github" / "workflows" / "python-tests.yml"
-RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+QUALITY_WORKFLOW = ROOT / ".github/workflows/python-tests.yml"
+RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 MAKEFILE = ROOT / "Makefile"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
-QUARANTINE = ROOT / "quality" / "quarantine" / "review-gate"
-OPERATIONAL_SCENARIOS = ROOT / "quality" / "operational_scenarios.toml"
+QUARANTINE = ROOT / "quality/quarantine/review-gate"
 
 
-def _job(workflow: str, job_id: str) -> str:
+def _job(workflow, job_id):
     match = re.search(
         rf"^  {re.escape(job_id)}:\n(?P<body>.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)",
         workflow,
         re.MULTILINE | re.DOTALL,
     )
-    assert match is not None, f"workflow lost the {job_id!r} job"
+    assert match is not None, f"workflow lost {job_id!r}"
     return match.group("body")
 
 
-def test_pull_request_workflow_has_python_and_ddlog_checks() -> None:
-    workflow = QUALITY_WORKFLOW.read_text(encoding="utf-8")
-    _, _, jobs = workflow.partition("\njobs:\n")
+def _dependencies(target):
+    match = re.search(
+        rf"^{re.escape(target)}:(?P<dependencies>[^\n]*)$", MAKEFILE.read_text(), re.MULTILINE
+    )
+    assert match is not None
+    return match.group("dependencies").split()
 
-    assert re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.MULTILINE) == [
-        "static",
-        "tests",
-        "ddlog-storage",
-    ]
+
+def test_pull_request_workflow_has_python_ddlog_and_installed_checks():
+    workflow = QUALITY_WORKFLOW.read_text()
+    assert re.findall(
+        r"^  ([a-z][a-z0-9-]*):$", workflow.partition("\njobs:\n")[2], re.MULTILINE
+    ) == ["static", "tests", "ddlog-storage", "installed-native"]
     assert "merge_group:" not in workflow
     assert "make static" in _job(workflow, "static")
-    assert "make test" in _job(workflow, "tests")
-    assert "make package-smoke" in _job(workflow, "tests")
-    assert "Distribution matrix" not in workflow
-    assert "uv build --all-packages" in MAKEFILE.read_text(encoding="utf-8")
-    assert "make test-cov" not in workflow
+    tests = _job(workflow, "tests")
+    assert "make test" in tests and "make package-smoke" in tests
+    assert "needs: ddlog-storage" in tests and "native-cabi" in tests
+    storage = _job(workflow, "ddlog-storage")
+    for package in ("archetype-ddlog", "archetype-ddlog-python"):
+        assert f"clippy -p {package} --all-targets --locked -- -D warnings" in storage
+        assert f"test -p {package} --locked" in storage
+    installed = _job(workflow, "installed-native")
+    assert "scripts/run_native_acceptance.py" in installed
+    assert "--candidate-dir dist --candidate-manifest release-artifact.json" in installed
+    assert "if: always()" in installed and "if-no-files-found: error" in installed
     assert "R2_" not in workflow
-    assert "codecov" not in workflow.lower()
 
 
-def test_local_pr_profile_matches_ci_jobs() -> None:
-    makefile = MAKEFILE.read_text(encoding="utf-8")
-    verify_pr = re.search(r"^verify-pr:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
-    verify_full_source = re.search(
-        r"^verify-full-source:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE
-    )
-    verify_full = re.search(r"^verify-full:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
-
-    assert verify_pr is not None
-    assert verify_pr.group("dependencies").split() == [
+def test_local_pr_profile_matches_ci_jobs():
+    assert _dependencies("verify-pr") == [
         "static",
         "test",
         "package-smoke",
         "ddlog-check",
+        "ddlog-python-check",
     ]
-    assert verify_full_source is not None
-    assert verify_full is not None
-    source = verify_full_source.group("dependencies").split()
-    for target in (
-        "test-cov",
-        "eval-conformance",
-        "eval-reliability",
-        "eval-capability",
-        "examples-smoke",
-        "operational-runtime",
-        "operational-commands",
+    assert _dependencies("verify-full") == ["verify-full-source", "installed-native-acceptance"]
+    assert _dependencies("verify-full-source") == [
+        "static",
+        "test",
         "docs",
-        "test-process",
-    ):
-        assert target in source
-    assert verify_full.group("dependencies").split() == [
-        "verify-full-source",
         "package-smoke",
-        "operational-wheel-existing",
+        "ddlog-check",
+        "ddlog-python-check",
+        "current-reliability",
+        "current-coverage",
     ]
 
 
-def test_contributing_ci_profile_and_publishers_match_the_harness() -> None:
-    guide = CONTRIBUTING.read_text(encoding="utf-8")
+def test_contributing_ci_profile_and_review_authority_match_harness():
+    guide = CONTRIBUTING.read_text()
+    for command in ("make ci", "make verify-full", "make verify-release", "make docs"):
+        assert f"`{command}`" in guide
+    for value in (
+        "Static",
+        "Tests (3.12)",
+        "eligible independent approval",
+        "merge normally",
+        "one rerun",
+        "explicitly authorized target and prefix",
+    ):
+        assert value in guide
 
-    assert (
-        "| `make ci` | `make static` + `make test` + `make package-smoke` + `make ddlog-check` |"
-        in guide
-    )
-    assert "| `Tests (3.12)` | `make test` + `make package-smoke` |" in guide
-    for distribution, workflow in PUBLISHER_WORKFLOWS.items():
-        assert f"| `{distribution}` | `{workflow}` |" in guide
-    assert "repository-harness.md#release-profile-and-publisher-identities" in guide
+
+def test_release_profile_tests_one_sealed_candidate_without_rebuilding():
+    makefile = MAKEFILE.read_text()
+    assert _dependencies("verify-release") == ["verify-full-source"]
+    body = re.search(
+        r"^verify-release:[^\n]*\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE
+    ).group("body")
+    assert body.count("scripts/release_artifact.py record") == 1
+    assert body.count("scripts/run_native_acceptance.py") == 1
+    assert "--candidate-dir dist --candidate-manifest release-artifact.json" in body
+    assert 'verify --dist "$(ACCEPTANCE_STAGE)/wheels"' in body
+    assert "build" not in body
+    assert ".NOTPARALLEL: verify-full verify-release" in makefile
+    workflow = RELEASE_WORKFLOW.read_text()
+    profile = _job(workflow, "release-profile")
+    assert "needs: authorize-release" in profile
+    assert "make verify-release" in profile
+    assert "if: always()" in profile and "if-no-files-found: error" in profile
+
+
+def test_local_tools_and_current_release_verifier_have_no_publish_authority():
+    makefile = MAKEFILE.read_text()
+    artifact = (ROOT / "scripts/release_artifact.py").read_text()
+    assert re.search(r"^publish(?:-test)?:", makefile, re.MULTILINE) is None
+    assert "uv publish" not in makefile and "uv publish" not in artifact
+    assert 'choices=("record", "verify")' in artifact
+    workflow = RELEASE_WORKFLOW.read_text()
+    assert "id-token: write" not in workflow
+    assert "pypa/gh-action-pypi-publish@" not in workflow
+    assert "R2_" not in workflow
+
+
+def test_release_workflow_is_operator_dispatched_from_exact_immutable_tag():
+    workflow = RELEASE_WORKFLOW.read_text()
+    assert "workflow_dispatch:" in workflow and "push:" not in workflow
+    authorize = _job(workflow, "authorize-release")
+    for value in (
+        '"$RELEASE_ACTOR" == "everettVT"',
+        '"$RELEASE_TRIGGERING_ACTOR" == "everettVT"',
+        '"$RELEASE_REF_TYPE" == "tag"',
+        '"$RELEASE_INPUT_TAG" == "$RELEASE_REF_NAME"',
+        "git ls-remote --exit-code",
+        'resolved_sha="${peeled_sha:-$direct_sha}"',
+        '"$resolved_sha" == "$RELEASE_COMMIT"',
+    ):
+        assert value in authorize
+    assert "cancel-in-progress: false" in workflow
 
 
 def test_release_check_emits_the_immutable_annotated_tag_recipe() -> None:
@@ -134,170 +164,6 @@ def test_review_gate_and_merge_queue_are_not_executable_workflows() -> None:
     ):
         assert not (active / name).exists()
         assert (QUARANTINE / "workflows" / name).is_file()
-
-
-def test_release_publish_requires_credentialed_r2_evidence() -> None:
-    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    external = _job(workflow, "external-evidence")
-    gate = _job(workflow, "release-evidence-gate")
-    publish = _job(workflow, "publish")
-
-    for variable in (
-        "R2_ACCESS_KEY_ID",
-        "R2_SECRET_ACCESS_KEY",
-        "R2_API_ENDPOINT",
-        "R2_BUCKET",
-    ):
-        assert variable in external
-    assert "target: operational-release-r2" in external
-    assert "tests/infrastructure/test_r2_idempotency.py" in external
-    assert "operational-release-r2-results.json" in gate
-    assert "needs: [authorize-release, release-evidence-gate, python-compatibility]" in _job(
-        workflow, "testpypi-preflight"
-    )
-    assert "needs: [authorize-release, pypi-preflight]" in publish
-
-    selected = _select_scenarios(
-        load_scenarios(),
-        mode="wheel",
-        cadence="release",
-        scenario_ids={"dogfood.storage.r2"},
-        kind=None,
-        min_tier=0,
-        max_tier=6,
-    )
-    assert [row["id"] for row in selected] == ["dogfood.storage.r2"]
-
-
-def test_example_smoke_keeps_quickstart_credential_free() -> None:
-    makefile = MAKEFILE.read_text(encoding="utf-8")
-    assert re.search(r"^examples-smoke: examples-local$", makefile, re.MULTILINE)
-    assert "--mode source --cadence pr --kind example --max-tier 1" in makefile
-
-    with OPERATIONAL_SCENARIOS.open("rb") as stream:
-        scenarios = tomllib.load(stream)["scenario"]
-    mission = next(row for row in scenarios if row["id"] == "example.00_quickstart")
-
-    assert mission["prerequisites"] == []
-    assert mission["missing_prerequisite"] == "fail"
-    assert mission["tier"] == 1
-    assert "pr" in mission["required_cadence"]
-
-
-def test_operational_receipts_cover_commands_and_runtime_from_source_and_wheel() -> None:
-    makefile = MAKEFILE.read_text(encoding="utf-8")
-    with OPERATIONAL_SCENARIOS.open("rb") as stream:
-        scenarios = tomllib.load(stream)["scenario"]
-    commands = next(row for row in scenarios if row["id"] == "dogfood.commands.local")
-
-    assert commands["owner"] == "commands"
-    assert commands["applicability"] == ["source", "wheel"]
-    assert commands["prerequisites"] == []
-    assert commands["missing_prerequisite"] == "fail"
-
-    source_commands = re.search(
-        r"^operational-commands:\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE
-    )
-    source_runtime = re.search(
-        r"^operational-runtime:\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE
-    )
-    wheel = re.search(r"^operational-wheel:\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE)
-    verify_full_source = re.search(
-        r"^verify-full-source:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE
-    )
-    assert source_commands is not None
-    assert source_runtime is not None
-    assert wheel is not None
-    assert verify_full_source is not None
-    assert source_commands.group("body").count("--scenario dogfood.commands.local") == 1
-    assert wheel.group("body").count("--scenario dogfood.commands.local") == 1
-    assert source_runtime.group("body").count("--scenario dogfood.runtime.loopback") == 1
-    assert wheel.group("body").count("--scenario dogfood.runtime.loopback") == 1
-    assert '--wheel-dir "$(OPERATIONAL_DIST_DIR)"' in wheel.group("body")
-    dependencies = verify_full_source.group("dependencies").split()
-    assert "operational-commands" in dependencies
-    assert "operational-runtime" in dependencies
-
-
-def test_required_release_execution_cannot_accept_not_run(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-    envelope, passed = run_scenarios(
-        root=ROOT,
-        registry=OPERATIONAL_SCENARIOS,
-        output=tmp_path / "required-not-run.json",
-        mode="source",
-        wheel=None,
-        cadence="release",
-        scenario_ids={"example.05_llm_agents"},
-        kind="example",
-        min_tier=6,
-        max_tier=6,
-        expected_revision=None,
-        require_clean=False,
-        require_run=True,
-    )
-
-    assert passed is False
-    assert envelope["outcome"] == "failed"
-    assert envelope["status_counts"] == {"passed": 0, "failed": 1, "not_run": 0}
-    (result,) = cast(list[dict[str, str]], envelope["results"])
-    assert result["status"] == "failed"
-    assert "release cadence requires execution" in result["reason"]
-
-
-def test_release_profile_builds_and_tests_one_exact_artifact_matrix() -> None:
-    makefile = MAKEFILE.read_text(encoding="utf-8")
-    verify_release = re.search(r"^verify-release:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
-    release_artifact = re.search(
-        r"^release-artifact:\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE
-    )
-    operational_release = re.search(
-        r"^operational-release:(?P<dependencies>[^\n]*)\n(?P<body>(?:\t.*\n)+)",
-        makefile,
-        re.MULTILINE,
-    )
-    assert verify_release is not None
-    assert verify_release.group("dependencies").split() == [
-        "verify-full-source",
-        "operational-release",
-    ]
-    assert release_artifact is not None
-    assert operational_release is not None
-    artifact_body = release_artifact.group("body")
-    build = re.search(r"^build:[^\n]*\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE)
-    assert build is not None
-    assert "uv build --all-packages --no-sources --clear --out-dir dist" in build.group("body")
-    assert artifact_body.count("scripts/package_smoke.py") == 1
-    assert artifact_body.count("scripts/release_artifact.py record") == 1
-    assert operational_release.group("dependencies").split() == ["release-artifact"]
-    assert "--min-tier 0 --max-tier 4" in operational_release.group("body")
-    assert makefile.count("$(MAKE) --no-print-directory build") == 2
-    assert (
-        "operational-wheel-existing:\n"
-        "\t@$(MAKE) --no-print-directory operational-wheel OPERATIONAL_BUILD_COMMAND=true"
-    ) in makefile
-    assert ".NOTPARALLEL: verify-full verify-release" in makefile
-    release_runner = re.search(
-        r"^define RUN_RELEASE_SCENARIOS\n(?P<body>.*?)^endef$",
-        makefile,
-        re.MULTILINE | re.DOTALL,
-    )
-    assert release_runner is not None
-    assert '--wheel-dir "$(OPERATIONAL_DIST_DIR)"' in release_runner.group("body")
-
-
-def test_hosted_oidc_is_the_only_publish_authority() -> None:
-    makefile = MAKEFILE.read_text(encoding="utf-8")
-    release_artifact = (ROOT / "scripts" / "release_artifact.py").read_text(encoding="utf-8")
-    assert re.search(r"^publish(?:-test)?:", makefile, re.MULTILINE) is None
-    assert "uv publish" not in makefile
-    assert 'choices=("record", "verify")' in release_artifact
-    assert "uv publish" not in release_artifact
-    assert "--publish-url" not in release_artifact
 
 
 def test_manual_registry_verification_matches_the_hosted_release_oracles() -> None:
@@ -336,421 +202,6 @@ def test_manual_registry_verification_matches_the_hosted_release_oracles() -> No
     assert "--registry-artifact-host files.pythonhosted.org" in published.group("body")
 
 
-def test_new_distribution_publishers_are_direct_isolated_workflows() -> None:
-    assert tuple(PUBLISHER_WORKFLOWS) == DISTRIBUTIONS
-    assert PUBLISHER_WORKFLOWS["archetype-ecs"] == "release.yml"
-    release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    profile = _job(release, "release-profile")
-
-    for distribution, workflow_name in PUBLISHER_WORKFLOWS.items():
-        prefix = distribution.replace("-", "_")
-        assert f"name: dist-{distribution}\n" in profile
-        assert f"path: dist/{prefix}-*" in profile
-        if distribution == "archetype-ecs":
-            continue
-
-        path = ROOT / ".github" / "workflows" / workflow_name
-        workflow = path.read_text(encoding="utf-8")
-        authorize = _job(workflow, "authorize")
-        testpypi = _job(workflow, "publish-testpypi")
-        pypi = _job(workflow, "publish-pypi")
-
-        assert "workflow_dispatch:" in workflow
-        assert "workflow_call:" not in workflow
-        assert "push:" not in workflow
-        assert "expected_tag_object:" in workflow
-        assert 'description: "Exact immutable release tag object"' in workflow
-        assert "group: archetype-release" not in workflow
-        references = re.findall(r"^\s*- uses:\s+([^\s#]+)", workflow, re.MULTILINE)
-        assert references
-        assert all(
-            re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", reference) is not None for reference in references
-        )
-        assert "actions: read" in authorize
-        assert "contents: read" in authorize
-        assert "id-token: write" not in authorize
-        assert "scripts/verify_publisher_dispatch.py" in authorize
-        assert f"--expected-workflow {workflow_name}" in authorize
-        assert f"--distribution {distribution}" in authorize
-        assert "EXPECTED_TAG_OBJECT: ${{ inputs.expected_tag_object }}" in authorize
-        assert '--expected-tag-object "$EXPECTED_TAG_OBJECT"' in authorize
-        assert "publisher-dispatch-${{ inputs.registry }}-${{ inputs.parent_run_attempt }}" in (
-            authorize
-        )
-
-        for registry, job in (("testpypi", testpypi), ("pypi", pypi)):
-            environment = f"release-{registry}"
-            assert f"if: inputs.registry == '{registry}'" in job
-            assert f"environment: {environment}" in job
-            assert "actions: read" in job
-            assert "id-token: write" in job
-            assert f"name: dist-{distribution}" in job
-            assert "run-id: ${{ inputs.parent_run_id }}" in job
-            assert "github-token: ${{ github.token }}" in job
-            assert "pypa/gh-action-pypi-publish@" in job
-            assert "skip-existing: true" in job
-            assert "attestations: true" in job
-            assert "actions/checkout@" not in job
-            assert job.count("run:") == 2
-            assert job.count("- uses:") == 3
-            assert job.count("actions/download-artifact@") == 2
-            assert "name: Reauthorize the live parent release" in job
-            assert "publisher-dispatch-${{ inputs.registry }}-${{ inputs.parent_run_attempt }}" in (
-                job
-            )
-            assert "path: .context/publisher-dispatch-live/" in job
-            assert "GH_TOKEN: ${{ github.token }}" in job
-            assert f"PUBLISHER_DISTRIBUTION: {distribution}" in job
-            assert f"PUBLISHER_WORKFLOW: {workflow_name}" in job
-            assert 'parent_json="$(gh api' in job
-            assert '.status == "in_progress"' in job
-            assert ".conclusion == null" in job
-            assert '.actor.login == "everettVT"' in job
-            assert '.triggering_actor.login == "everettVT"' in job
-            assert '.schema == "archetype.publisher-dispatch/v2"' in job
-            assert ".run_id == $child_run_id" in job
-            assert "name: Reauthorize the remote release tag" in job
-            assert "EXPECTED_TAG_OBJECT: ${{ inputs.expected_tag_object }}" in job
-            assert "RELEASE_INPUT_TAG: ${{ inputs.tag }}" in job
-            assert "git ls-remote --exit-code" in job
-            assert '[[ "$direct_sha" == "$EXPECTED_TAG_OBJECT" ]]' in job
-            assert 'resolved_sha="${peeled_sha:-$direct_sha}"' in job
-            assert '[[ "$resolved_sha" == "$GITHUB_SHA" ]]' in job
-            assert "scripts/" not in job
-            assert (
-                job.index("actions/download-artifact@")
-                < job.index(
-                    "name: publisher-dispatch-${{ inputs.registry }}-"
-                    "${{ inputs.parent_run_attempt }}"
-                )
-                < job.index("name: Reauthorize the live parent release")
-                < job.index("name: Reauthorize the remote release tag")
-                < job.index("pypa/gh-action-pypi-publish@")
-            )
-        assert "repository-url: https://test.pypi.org/legacy/" in testpypi
-        assert "repository-url:" not in pypi
-
-
-def test_every_release_scenario_is_installed_wheel_applicable() -> None:
-    with OPERATIONAL_SCENARIOS.open("rb") as stream:
-        scenarios = tomllib.load(stream)["scenario"]
-    required = [row for row in scenarios if "release" in row["required_cadence"]]
-    assert required
-    assert all("wheel" in row["applicability"] for row in required)
-    ids = {row["id"] for row in required}
-    assert {
-        "dogfood.runtime.shutdown",
-        "dogfood.storage.r2",
-    } <= ids
-    core_ids = {row["id"] for row in required if int(row["tier"]) <= 4}
-    assert ids - core_ids == {
-        "example.05_llm_agents",
-        "dogfood.storage.r2",
-    }
-    demand = {row["id"] for row in scenarios if "demand" in row["required_cadence"]}
-    assert demand == {
-        "example.14_biome_agent",
-    }
-
-
-def test_live_biome_demand_scenario_requires_the_pinned_macos_host() -> None:
-    with OPERATIONAL_SCENARIOS.open("rb") as stream:
-        scenarios = tomllib.load(stream)["scenario"]
-    biome = next(row for row in scenarios if row["id"] == "example.14_biome_agent")
-    nodeid = "tests/infrastructure/test_biome_live.py::test_pinned_biome_episode"
-
-    assert biome["source_path"] == "examples/14_biome_agent.py"
-    assert biome["source_command"] == ["pytest", "-q", nodeid]
-    assert biome["semantic_oracle"] == {"kind": "pytest", "ref": nodeid}
-    assert biome["timeout_seconds"] == 1800
-    assert biome["required_cadence"] == ["demand"]
-    assert set(biome["prerequisites"]) == {
-        "platform:darwin",
-        "binary:git",
-        "binary:cmake",
-        "binary:cargo",
-        "binary:pkg-config",
-        "infrastructure:ARCHETYPE_BIOME_LIVE",
-    }
-
-    makefile = MAKEFILE.read_text(encoding="utf-8")
-    target = re.search(
-        r"^operational-demand-biome:[^\n]*\n(?P<body>(?:\t.*\n)+)",
-        makefile,
-        re.MULTILINE,
-    )
-    assert target is not None
-    assert "--scenario example.14_biome_agent" in target.group("body")
-    assert "--out operational-demand-biome-results.json" in target.group("body")
-    assert ",demand)" in target.group("body")
-    assert "ARCHETYPE_BIOME_LIVE=1" in target.group("body")
-
-
-def test_every_high_tier_release_scenario_has_an_explicit_workflow_receipt() -> None:
-    with OPERATIONAL_SCENARIOS.open("rb") as stream:
-        scenarios = tomllib.load(stream)["scenario"]
-    high_tier = {
-        row["id"]
-        for row in scenarios
-        if "release" in row["required_cadence"] and int(row["tier"]) > 4
-    }
-    assert high_tier
-
-    makefile = MAKEFILE.read_text(encoding="utf-8")
-    release_targets: dict[str, tuple[str, str]] = {}
-    for match in re.finditer(
-        r"^(?P<target>operational-release-[a-z0-9-]+):[^\n]*\n"
-        r"(?P<body>(?:\t.*\n)+)",
-        makefile,
-        re.MULTILINE,
-    ):
-        body = match.group("body")
-        scenario = re.search(r"--scenario\s+([a-z0-9._-]+)", body)
-        receipt = re.search(r"--out\s+(operational-release-[a-z0-9-]+-results\.json)", body)
-        if scenario is not None and receipt is not None:
-            release_targets[match.group("target")] = (scenario.group(1), receipt.group(1))
-
-    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    external = _job(workflow, "external-evidence")
-    gate = _job(workflow, "release-evidence-gate")
-    workflow_receipts = {
-        target: receipt
-        for target, receipt in re.findall(
-            r"^\s+target:\s+(operational-release-[a-z0-9-]+)\n"
-            r"\s+receipt:\s+(operational-release-[a-z0-9-]+-results\.json)$",
-            external,
-            re.MULTILINE,
-        )
-    }
-
-    targets_by_scenario: dict[str, list[tuple[str, str]]] = {}
-    for target, (scenario, receipt) in release_targets.items():
-        targets_by_scenario.setdefault(scenario, []).append((target, receipt))
-
-    for scenario in sorted(high_tier):
-        mappings = targets_by_scenario.get(scenario, [])
-        assert len(mappings) == 1, f"{scenario} must map to one release Make target"
-        target, receipt = mappings[0]
-        assert workflow_receipts.get(target) == receipt
-        assert f"evidence/{receipt}" in gate
-
-    with OPERATIONAL_SCENARIOS.open("rb") as stream:
-        rows = tomllib.load(stream)["scenario"]
-    demand_scenarios = {row["id"] for row in rows if "demand" in row["required_cadence"]}
-    demand_targets: dict[str, str] = {}
-    for match in re.finditer(
-        r"^(?P<target>operational-demand-[a-z0-9-]+):[^\n]*\n(?P<body>(?:\t.*\n)+)",
-        makefile,
-        re.MULTILINE,
-    ):
-        body = match.group("body")
-        scenario = re.search(r"--scenario\s+([a-z0-9._-]+)", body)
-        assert scenario is not None
-        assert ",demand)" in body
-        demand_targets[scenario.group(1)] = match.group("target")
-    assert set(demand_targets) == demand_scenarios
-    for receipt_name in (
-        "operational-demand-modal-results.json",
-        "operational-demand-biome-results.json",
-        "operational-demand-apple-results.json",
-    ):
-        assert receipt_name not in workflow
-
-
-def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
-    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    profile = _job(workflow, "release-profile")
-    external = _job(workflow, "external-evidence")
-    compatibility = _job(workflow, "python-compatibility")
-    gate = _job(workflow, "release-evidence-gate")
-    test_preflight = _job(workflow, "testpypi-preflight")
-    publish_test = _job(workflow, "publish-testpypi")
-    publish_test_libraries = _job(workflow, "publish-testpypi-libraries")
-    test_smoke = _job(workflow, "testpypi-smoke")
-    pypi_preflight = _job(workflow, "pypi-preflight")
-    publish = _job(workflow, "publish")
-    publish_libraries = _job(workflow, "publish-libraries")
-    registry_smoke = _job(workflow, "registry-smoke")
-    github_release = _job(workflow, "github-release")
-
-    assert "make verify-release" in profile
-    assert "uv sync --all-packages --all-extras --group dev --group docs" in profile
-    assert "uv sync --all-packages --all-extras --group dev" in external
-    assert "release-artifact.json" in profile
-    assert "operational-release-results.json" in profile
-    for target in (
-        "operational-release-openai",
-        "operational-release-r2",
-    ):
-        assert f"target: {target}" in external
-        make_target = re.search(
-            rf"^{target}:[^\n]*\n(?P<body>(?:\t.*\n)+)",
-            MAKEFILE.read_text(encoding="utf-8"),
-            re.MULTILINE,
-        )
-        assert make_target is not None
-        assert "--min-tier 0 --max-tier 6" in make_target.group("body")
-    assert "tests/infrastructure/test_r2_idempotency.py" in external
-    assert "scripts/verify_release_evidence.py" in gate
-    assert "uvx --with packaging==26.1 python" in gate
-    assert "operational-release-physical-modal-r2-results.json" not in gate
-    assert "biome" not in gate
-    assert "apple" not in gate
-    assert "operational-release-modal-results.json" not in gate
-    assert "group: archetype-release" in workflow
-    assert "cancel-in-progress: false" in workflow
-    assert "runs-on: ${{ fromJSON(matrix.runner) }}" in external
-    assert "apple-evidence:" not in workflow
-    assert "modal-evidence:" not in workflow
-    assert "archetype-release-macos" not in workflow
-    assert "CODEX_AUTH_VOLUME" not in workflow
-    assert "pattern: release-operational-release-*-evidence" in gate
-    assert "needs: [release-profile, external-evidence]" in gate
-    assert 'UV_PYTHON: "3.13"' in compatibility
-    assert 'uv sync --python "3.13" --all-packages --all-extras --group dev' in compatibility
-    assert "sys.version_info[:2] == (3, 13)" in compatibility
-    assert "needs: [authorize-release, release-evidence-gate, python-compatibility]" in (
-        test_preflight
-    )
-    assert "scripts/verify_release_index.py" in test_preflight
-    assert "scripts/verify_release_ref.py" in test_preflight
-    assert "--publisher-environment release-testpypi" in test_preflight
-    assert "pypi-attestations==0.0.30" in test_preflight
-    assert "--registry-artifact-host test-files.pythonhosted.org" in test_preflight
-    assert "--attestation-staging" not in test_preflight
-    assert '--expected-commit "$GITHUB_SHA"' in test_preflight
-    assert (
-        '--expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"'
-        in test_preflight
-    )
-    assert "needs: [authorize-release, testpypi-preflight]" in publish_test
-    assert "environment: release-testpypi" in publish_test
-    assert "repository-url: https://test.pypi.org/legacy/" in publish_test
-    assert "needs: [publish-testpypi, publish-testpypi-libraries]" in test_smoke
-    assert "scripts/verify_release_index.py" in test_smoke
-    assert "scripts/registry_smoke.py" in test_smoke
-    assert "--manifest evidence/release-artifact.json" in test_smoke
-    assert "testpypi-install-evidence.json" in test_smoke
-    assert "--publisher-environment release-testpypi" in test_smoke
-    assert "pypi-attestations==0.0.30" in test_smoke
-    assert "--registry-artifact-host test-files.pythonhosted.org" in test_smoke
-    assert "--attestation-staging" not in test_smoke
-    assert '--expected-commit "$GITHUB_SHA"' in test_smoke
-    assert "needs: [authorize-release, testpypi-smoke]" in pypi_preflight
-    assert "scripts/verify_release_index.py" in pypi_preflight
-    assert "scripts/verify_release_ref.py" in pypi_preflight
-    assert "--publisher-environment release-pypi" in pypi_preflight
-    assert "pypi-attestations==0.0.30" in pypi_preflight
-    assert "--registry-artifact-host files.pythonhosted.org" in pypi_preflight
-    assert '--expected-commit "$GITHUB_SHA"' in pypi_preflight
-    assert (
-        '--expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"'
-        in pypi_preflight
-    )
-    assert "needs: [authorize-release, pypi-preflight]" in publish
-    assert "needs: [publish, publish-libraries]" in registry_smoke
-    assert "scripts/verify_release_index.py" in registry_smoke
-    assert "scripts/registry_smoke.py" in registry_smoke
-    assert "--manifest evidence/release-artifact.json" in registry_smoke
-    assert "pypi-install-evidence.json" in registry_smoke
-    assert "--publisher-environment release-pypi" in registry_smoke
-    assert "pypi-attestations==0.0.30" in registry_smoke
-    assert "--registry-artifact-host files.pythonhosted.org" in registry_smoke
-    assert '--expected-commit "$GITHUB_SHA"' in registry_smoke
-    assert "needs: [authorize-release, registry-smoke]" in github_release
-
-    for publishing_job in (publish_test, publish):
-        assert "name: dist-archetype-ecs" in publishing_job
-        assert "pypa/gh-action-pypi-publish@" in publishing_job
-        assert "skip-existing: true" in publishing_job
-        assert "attestations: true" in publishing_job
-        assert "id-token: write" in publishing_job
-        assert "actions/checkout@" not in publishing_job
-        assert publishing_job.count("run:") == 1
-        assert "uv build" not in publishing_job
-        assert "make build" not in publishing_job
-        assert "github.triggering_actor == 'everettVT'" in publishing_job
-
-    for registry, coordinator in (
-        ("testpypi", publish_test_libraries),
-        ("pypi", publish_libraries),
-    ):
-        assert f"--registry {registry}" in coordinator
-        assert "actions: write" in coordinator
-        assert "contents: read" in coordinator
-        assert "id-token: write" not in coordinator
-        assert "scripts/dispatch_release_publishers.py dispatch" in coordinator
-        assert "scripts/dispatch_release_publishers.py await" in coordinator
-        assert '--parent-run-id "$GITHUB_RUN_ID"' in coordinator
-        assert '--parent-run-attempt "$GITHUB_RUN_ATTEMPT"' in coordinator
-        assert '--tag "$GITHUB_REF_NAME"' in coordinator
-        assert '--expected-commit "$GITHUB_SHA"' in coordinator
-        assert (
-            coordinator.count(
-                '--expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"'
-            )
-            == 2
-        )
-        assert "needs: [authorize-release," in coordinator
-        assert f"publisher-dispatch-{registry}.json" in coordinator
-        assert f"name: publisher-dispatch-{registry}-${{{{ github.run_attempt }}}}" in coordinator
-        assert (
-            coordinator.index("dispatch_release_publishers.py dispatch")
-            < coordinator.index(f"name: publisher-dispatch-{registry}-")
-            < coordinator.index("dispatch_release_publishers.py await")
-        )
-        assert "github.triggering_actor == 'everettVT'" in coordinator
-
-    publisher_check = re.compile(
-        r"      - name: Reauthorize the remote release tag\n"
-        r"(?P<step>.*?)(?=      - uses: pypa/gh-action-pypi-publish@)",
-        re.DOTALL,
-    )
-    publish_test_check = publisher_check.search(publish_test)
-    publish_check = publisher_check.search(publish)
-    assert publish_test_check is not None
-    assert publish_check is not None
-    assert publish_test_check.group("step") == publish_check.group("step")
-    check = publish_test_check.group("step")
-    assert "shell: bash" in check
-    assert "set -euo pipefail" in check
-    assert "RELEASE_INPUT_TAG: ${{ inputs.tag }}" in check
-    assert "EXPECTED_TAG_OBJECT: ${{ needs.authorize-release.outputs.tag_object_sha }}" in check
-    assert '[[ "$GITHUB_REPOSITORY" == "VangelisTech/archetype" ]]' in check
-    assert '[[ "$GITHUB_REF" == "$tag_ref" ]]' in check
-    assert "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" in check
-    assert "git ls-remote --exit-code" in check
-    assert 'remote="https://github.com/VangelisTech/archetype.git"' in check
-    assert '"$tag_ref" "$tag_ref^{}"' in check
-    assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in check
-    assert '[[ "$direct_sha" == "$EXPECTED_TAG_OBJECT" ]]' in check
-    assert 'resolved_sha="${peeled_sha:-$direct_sha}"' in check
-    assert '[[ "$resolved_sha" == "$GITHUB_SHA" ]]' in check
-    assert "scripts/" not in check
-    assert "uses:" not in check
-    for publishing_job in (publish_test, publish):
-        assert (
-            publishing_job.index("actions/download-artifact@")
-            < publishing_job.index("name: Reauthorize the remote release tag")
-            < publishing_job.index("pypa/gh-action-pypi-publish@")
-        )
-        assert publishing_job.count("- uses:") == 2
-
-    assert "github.triggering_actor == 'everettVT'" in github_release
-    assert "scripts/verify_release_ref.py" in github_release
-    assert '--expected-commit "$GITHUB_SHA"' in github_release
-    assert (
-        '--expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"'
-        in github_release
-    )
-    assert github_release.index("scripts/verify_release_ref.py") < github_release.index(
-        "softprops/action-gh-release@"
-    )
-    assert 'version: "latest"' not in workflow
-    assert workflow.count('version: "0.9.28"') == 8
-    assert workflow.count("persist-credentials: false") == 11
-
-
 def test_release_workflow_pins_every_external_action_to_a_full_commit() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     references = re.findall(r"^\s*- uses:\s+([^\s#]+)", workflow, re.MULTILINE)
@@ -761,91 +212,3 @@ def test_release_workflow_pins_every_external_action_to_a_full_commit() -> None:
         for reference in references
         if re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", reference) is None
     } == set()
-
-
-def test_release_workflow_is_operator_dispatched_from_an_immutable_tag() -> None:
-    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    authorize = _job(workflow, "authorize-release")
-    profile = _job(workflow, "release-profile")
-    compatibility = _job(workflow, "python-compatibility")
-    github_release = _job(workflow, "github-release")
-
-    assert "workflow_dispatch:" in workflow
-    assert "push:\n    tags:" not in workflow
-    assert "RELEASE_ACTOR: ${{ github.actor }}" in authorize
-    assert "RELEASE_TRIGGERING_ACTOR: ${{ github.triggering_actor }}" in authorize
-    assert '[[ "$RELEASE_ACTOR" == "everettVT" ]]' in authorize
-    assert '[[ "$RELEASE_TRIGGERING_ACTOR" == "everettVT" ]]' in authorize
-    assert '[[ "$RELEASE_REF_TYPE" == "tag" ]]' in authorize
-    assert '[[ "$RELEASE_INPUT_TAG" == "$RELEASE_REF_NAME" ]]' in authorize
-    assert "tag_object_sha: ${{ steps.release_ref.outputs.tag_object_sha }}" in authorize
-    assert "git ls-remote --exit-code" in authorize
-    assert "printf 'tag_object_sha=%s\\n'" in authorize
-    assert "needs: authorize-release" in profile
-    assert "needs: authorize-release" in compatibility
-    assert 'git merge-base --is-ancestor "${GITHUB_REF_NAME}^{commit}" origin/main' in profile
-    for job_id in ("testpypi-preflight", "pypi-preflight", "github-release"):
-        job = _job(workflow, job_id)
-        assert "scripts/verify_release_ref.py" in job
-        assert '--expected-commit "$GITHUB_SHA"' in job
-        assert (
-            '--expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"' in job
-        )
-    assert "tag_name: ${{ github.ref_name }}" in github_release
-
-
-def test_commands_operational_oracle_does_not_import_pytest_modules() -> None:
-    path = ROOT / "tests" / "integration" / "test_commands_operational.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    imported_modules = [
-        module
-        for node in ast.walk(tree)
-        for module in (
-            [alias.name for alias in node.names]
-            if isinstance(node, ast.Import)
-            else [node.module or ""]
-            if isinstance(node, ast.ImportFrom)
-            else []
-        )
-    ]
-    assert not [
-        module
-        for module in imported_modules
-        if any(part.startswith("test_") for part in module.split("."))
-    ]
-
-
-def test_operational_wheel_failures_still_emit_a_receipt(tmp_path: Path) -> None:
-    makefile = MAKEFILE.read_text(encoding="utf-8")
-    target = re.search(
-        r"^operational-wheel:(?P<dependencies>[^\n]*)\n(?P<body>(?:\t.*\n)+)",
-        makefile,
-        re.MULTILINE,
-    )
-    assert target is not None
-    assert target.group("dependencies").strip() == ""
-    body = target.group("body")
-    assert "$(OPERATIONAL_BUILD_COMMAND) || build_status=$$?" in body
-    assert 'wheel="$(OPERATIONAL_DIST_DIR)/.missing-operational-wheel.whl"' in body
-
-    for label, build_command in (("build-failed", "false"), ("wheel-missing", "true")):
-        output = tmp_path / f"{label}.json"
-        completed = subprocess.run(
-            [
-                "make",
-                "--no-print-directory",
-                "operational-wheel",
-                f"OPERATIONAL_BUILD_COMMAND={build_command}",
-                f"OPERATIONAL_DIST_DIR={tmp_path / label / 'dist'}",
-                f"OPERATIONAL_WHEEL_RESULTS={output}",
-            ],
-            cwd=ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        assert completed.returncode != 0
-        receipt = json.loads(output.read_text(encoding="utf-8"))
-        assert receipt["schema"] == "archetype.operational-results/v1"
-        assert receipt["outcome"] == "failed"
-        assert "--wheel must name the built archetype-ecs wheel" in receipt["error"]

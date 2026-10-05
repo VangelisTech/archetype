@@ -11,10 +11,7 @@ from archetype.core.component import Component
 from archetype.core.interfaces import AppendReceipt
 from archetype.storage.session import configure_session
 
-pytestmark = [
-    pytest.mark.contract("storage.cache.concurrent_no_loss"),
-    pytest.mark.race,
-]
+pytestmark = [pytest.mark.race]
 
 
 class Position(Component):

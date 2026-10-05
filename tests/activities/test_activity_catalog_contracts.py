@@ -33,10 +33,7 @@ from archetype.storage.activity_catalog import (
     SqliteActivityCatalog,
 )
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.contract("activities.durable_control"),
-]
+pytestmark = [pytest.mark.asyncio]
 
 _KIND = "missions.author"
 _OPERATION_ID = "missions.author:world-a:dispatch-1"

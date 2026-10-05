@@ -14,10 +14,7 @@ import pytest
 
 from archetype.world.errors import WorldClosingError
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.contract("world.tick.atomic_visibility"),
-]
+pytestmark = [pytest.mark.asyncio]
 
 
 @dataclass(slots=True)

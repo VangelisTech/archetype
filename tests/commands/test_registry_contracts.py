@@ -22,8 +22,6 @@ from archetype.world.models import (
     AddProcessor,
 )
 
-pytestmark = pytest.mark.contract("commands.identity.idempotent")
-
 
 class _RegistryApi(NamedTuple):
     OperationRegistry: type[Any]

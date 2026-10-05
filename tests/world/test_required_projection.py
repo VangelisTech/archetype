@@ -19,10 +19,7 @@ import pytest
 from archetype.core.config import RunConfig
 from archetype.core.hooks import HookRegistry, PostTick
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.contract("world.tick.atomic_visibility"),
-]
+pytestmark = [pytest.mark.asyncio]
 
 
 class _ReceiptWorld:

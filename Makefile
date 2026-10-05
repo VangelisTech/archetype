@@ -212,7 +212,7 @@ complexity:
 # ------------------------------------------------------------------------------
 
 .PHONY: test
-test: retained-value-contracts docs-workflow-contracts
+test: retained-value-contracts docs-workflow-contracts current-harness-contracts
 	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) PYTHONDONTWRITEBYTECODE=1 DO_NOT_TRACK=1 uv run python scripts/run_current_contracts.py
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q packages/archetype-smol/tests
 
@@ -613,3 +613,7 @@ ddlog-python-check: ddlog-preview-audit
 	@cargo +1.95.0 test -p archetype-ddlog-python --locked
 	@cargo +1.95.0 build -p archetype-ddlog-python --locked
 	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) PYTHONPATH=packages/archetype-native/src $(DDLOG_PYTHON) -m unittest discover -s packages/archetype-native/tests -v
+
+.PHONY: current-harness-contracts
+current-harness-contracts:
+	@PYTHONPATH=$(PYTHONPATH):. uv run pytest --noconftest -q tests/scripts/test_quality_workflow.py tests/scripts/test_operational_capture.py tests/scripts/test_acceptance_receipts.py tests/scripts/test_validate_contracts.py

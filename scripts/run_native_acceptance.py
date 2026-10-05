@@ -30,10 +30,12 @@ def digest(path):
 
 
 def execute(command, *, environment, cwd, log):
-    with log.open("wb") as output:
-        subprocess.run(
-            command, env=environment, cwd=cwd, stdout=output, stderr=subprocess.STDOUT, check=True
-        )
+    if __package__:
+        from .process_capture import execute as captured_execute
+    else:
+        from process_capture import execute as captured_execute
+
+    captured_execute(command, environment=environment, cwd=cwd, log=log)
 
 
 def main():
@@ -53,6 +55,16 @@ def main():
         "--candidate-manifest", type=Path, help="Exact eight-artifact release manifest"
     )
     args = parser.parse_args()
+    if __package__:
+        from .acceptance_receipts import run_with_receipt
+    else:
+        from acceptance_receipts import run_with_receipt
+    return run_with_receipt(
+        args.stage, lambda: _run(args), mode="exact installed native acceptance"
+    )
+
+
+def _run(args):
     if (args.candidate_dir is None) != (args.candidate_manifest is None):
         raise SystemExit("Candidate directory and manifest must be supplied together")
     if args.candidate_dir is not None and args.allow_dirty:
@@ -226,16 +238,16 @@ def main():
             cwd=stage,
             log=stage / "actual-public-contract.log",
         )
-        contract = json.loads((stage / "result.json").read_text())
-        if (
-            contract.get("mode") != "actual-DDlog/Iceberg/public-Python-HTTP-MCP"
-            or contract.get("result") != "pass"
-            or any(
-                contract.get(key) != value
-                for key, value in {"tests_run": 1, "failures": 0, "errors": 0, "skipped": 0}.items()
-            )
-        ):
-            raise RuntimeError("Actual contract child did not produce complete passing evidence")
+        if __package__:
+            from .acceptance_receipts import require_child
+        else:
+            from acceptance_receipts import require_child
+        require_child(
+            stage / "result.json",
+            schema="archetype.installed-native/v1",
+            mode="actual-DDlog/Iceberg/public-Python-HTTP-MCP",
+            counts={"tests_run": 1, "failures": 0, "errors": 0, "skipped": 0},
+        )
         example_store = stage / "example"
         environment.update(
             ARCHETYPE_NATIVE_LIBRARY=str(library),
@@ -253,6 +265,11 @@ def main():
             environment=environment,
             cwd=stage,
             log=stage / "installed-example.log",
+        )
+        require_child(
+            stage / "example-result.json",
+            schema="archetype.installed-native/v1",
+            mode="installed actual-DDlog documented example",
         )
         example = json.loads((stage / "example-result.json").read_text())
         if (

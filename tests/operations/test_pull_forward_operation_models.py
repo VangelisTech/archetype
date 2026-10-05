@@ -27,7 +27,6 @@ from archetype.commands.models import ActorCtx, DurableOptions
 from archetype.commands.registry import OperationRegistry, OperationSpec
 from archetype.world.models import Spawn
 
-pytestmark = pytest.mark.contract("commands.identity.idempotent")
 
 _MODEL_BOUNDARIES = (
     ("archetype.artifacts.models", "IngestArtifacts", "ingest_artifacts"),

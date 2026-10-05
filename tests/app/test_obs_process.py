@@ -12,10 +12,7 @@ import textwrap
 
 import pytest
 
-pytestmark = [
-    pytest.mark.contract("observability.signals.safe"),
-    pytest.mark.process,
-]
+pytestmark = [pytest.mark.process]
 
 
 def _run(source: str) -> subprocess.CompletedProcess[str]:

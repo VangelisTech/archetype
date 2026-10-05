@@ -12,8 +12,6 @@ import pytest
 from archetype.storage.catalog import SignatureRecord
 from archetype.storage.service import PinnedVisibility
 
-pytestmark = pytest.mark.contract("world.tick.atomic_visibility")
-
 
 def _signature(table_id: str) -> SignatureRecord:
     return SignatureRecord(

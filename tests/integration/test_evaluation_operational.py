@@ -13,11 +13,7 @@ from archetype.core.config import StorageBackend, StorageConfig
 from archetype.evaluation.contracts import GraderContract, Outcome
 from archetype.runtime_resources import RuntimeCloseState
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.contract("evaluation.result.snapshot_pinned"),
-    pytest.mark.integration,
-]
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 class OperationalMetric(Component):

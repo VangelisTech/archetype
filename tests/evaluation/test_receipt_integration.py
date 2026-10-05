@@ -33,11 +33,7 @@ from archetype.storage.service import StorageService
 from archetype.world.models import CreateWorld, ForkWorld, Spawn, Step
 from tests._runtime import build_test_runtime
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.contract("evaluation.result.snapshot_pinned"),
-    pytest.mark.integration,
-]
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 _EVALUATION_RESULTS = evaluation_views.EVALUATION_RESULTS_TABLE
 

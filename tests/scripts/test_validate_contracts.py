@@ -16,10 +16,10 @@ def _registry(contract_rows: str) -> str:
     return f"version = 1\n\n{contract_rows}"
 
 
-def _row(contract_id: str, *, section: str = "What counts as public") -> str:
+def _row(contract_id: str, *, section: str = "Ownership") -> str:
     return f'''[[contract]]
 id = "{contract_id}"
-source = "docs/guide/api-stability.md"
+source = "docs/guide/specification.md"
 section = "{section}"
 owner = "test"
 risk = "low"
@@ -75,8 +75,8 @@ def test_stale_normative_heading_fails_closed(tmp_path: Path) -> None:
 def _oracle_row(nodeid: str) -> str:
     return f'''[[contract]]
 id = "test.oracle"
-source = "docs/guide/api-stability.md"
-section = "What counts as public"
+source = "docs/guide/specification.md"
+section = "Ownership"
 owner = "test"
 risk = "low"
 pytest = ["{nodeid}"]

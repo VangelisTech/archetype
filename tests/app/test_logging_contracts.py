@@ -11,14 +11,11 @@ import sys
 import types
 from typing import cast
 
-import pytest
 from fastapi.testclient import TestClient
 from opentelemetry import context, trace
 from uuid_utils import uuid7
 
 from archetype import _logging, _obs
-
-pytestmark = pytest.mark.contract("observability.logging.correlated")
 
 
 def _record() -> logging.LogRecord:

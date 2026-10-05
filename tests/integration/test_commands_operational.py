@@ -28,13 +28,7 @@ from archetype.world.models import (
 )
 from tests._runtime import build_test_runtime
 
-pytestmark = [
-    pytest.mark.contract("gateway.authorization.rbac"),
-    pytest.mark.contract("commands.identity.idempotent"),
-    pytest.mark.contract("commands.settlement.atomic"),
-    pytest.mark.contract("commands.failure.preserves_progress"),
-    pytest.mark.integration,
-]
+pytestmark = [pytest.mark.integration]
 
 
 class CommandsOperationalMarker(Component):

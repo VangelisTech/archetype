@@ -40,11 +40,7 @@ from archetype.world.registry import WorldRegistry
 from archetype.world.simulation import PostCommitProjectionError, RequiredProjector
 from tests._runtime import build_test_runtime
 
-pytestmark = [
-    pytest.mark.contract("runtime.lifecycle.single_flight_and_drain"),
-    pytest.mark.integration,
-    pytest.mark.race,
-]
+pytestmark = [pytest.mark.integration, pytest.mark.race]
 
 
 class Value(Component):

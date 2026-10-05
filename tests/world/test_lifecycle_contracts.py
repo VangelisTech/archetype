@@ -18,10 +18,7 @@ from archetype.core.config import StorageConfig, WorldConfig
 from archetype.storage.catalog import WorldRecord
 from archetype.world.errors import WorldClosingError, WorldHasUnsettledWorkError
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.contract("world.tick.atomic_visibility"),
-]
+pytestmark = [pytest.mark.asyncio]
 
 
 async def test_build_world_restores_exact_uuid7_and_bare_build_mints() -> None:

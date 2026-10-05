@@ -27,11 +27,6 @@ from archetype.world.models import (
     SpawnReserved,
 )
 
-pytestmark = [
-    pytest.mark.contract("gateway.authorization.rbac"),
-    pytest.mark.contract("commands.identity.idempotent"),
-    pytest.mark.contract("commands.settlement.atomic"),
-]
 
 _APPLICATION_SCOPED_WORLD_OPERATIONS = {
     "create_world",

@@ -32,11 +32,7 @@ from archetype.core.hooks import HookRegistry, PostTick, PreTick
 from archetype.core.interfaces import CommitContext
 from archetype.core.resources import Resources
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.contract("world.tick.atomic_visibility"),
-    pytest.mark.contract("commands.settlement.atomic"),
-]
+pytestmark = [pytest.mark.asyncio]
 
 
 class DueCommandMarker(Component):

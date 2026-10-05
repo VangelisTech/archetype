@@ -66,12 +66,7 @@ from archetype.world.models import (
 )
 from archetype.world.registry import WorldRegistry
 
-pytestmark = [
-    pytest.mark.contract("commands.identity.idempotent"),
-    pytest.mark.contract("commands.settlement.atomic"),
-    pytest.mark.contract("commands.failure.preserves_progress"),
-    pytest.mark.integration,
-]
+pytestmark = [pytest.mark.integration]
 
 
 class DurableMarker(Component):

@@ -26,11 +26,7 @@ from archetype.world.models import CreateWorld, Spawn, Step
 from archetype.world.registry import WorldRegistry
 from tests._runtime import build_test_runtime
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.contract("evaluation.result.snapshot_pinned"),
-    pytest.mark.integration,
-]
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 class Telemetry(Component):

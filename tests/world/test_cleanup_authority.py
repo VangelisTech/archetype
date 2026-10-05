@@ -22,10 +22,7 @@ from archetype.core.component import Component
 from archetype.core.config import RunConfig
 from archetype.world.errors import WorldClosingError
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.contract("world.tick.atomic_visibility"),
-]
+pytestmark = [pytest.mark.asyncio]
 
 
 class _Evidence(Component):

@@ -54,7 +54,6 @@ def _managed_rows(value: int) -> daft.DataFrame:
     )
 
 
-@pytest.mark.contract("storage.execution.single_authority")
 @pytest.mark.asyncio
 async def test_terminal_materializations_share_one_execution_lane(monkeypatch):
     service = StorageService()
@@ -89,7 +88,6 @@ async def test_terminal_materializations_share_one_execution_lane(monkeypatch):
         await service.shutdown()
 
 
-@pytest.mark.contract("storage.execution.single_authority")
 @pytest.mark.asyncio
 async def test_lancedb_first_use_shares_the_append_execution_lane(monkeypatch, tmp_path):
     """A read-side table Overwrite cannot race a durable Lance Append."""
@@ -141,7 +139,6 @@ async def test_lancedb_first_use_shares_the_append_execution_lane(monkeypatch, t
         await asyncio.gather(*pending, return_exceptions=True)
 
 
-@pytest.mark.contract("storage.execution.single_authority")
 @pytest.mark.asyncio
 async def test_cancelled_terminal_worker_retains_lane_through_shutdown(monkeypatch):
     service = StorageService()
@@ -378,7 +375,6 @@ async def test_concurrent_first_table_registration_recovers_losing_creator(tmp_p
         await second.shutdown()
 
 
-@pytest.mark.contract("storage.execution.single_authority")
 @pytest.mark.asyncio
 async def test_managed_iceberg_conflict_retries_frozen_payload_once_per_writer(
     tmp_path,
@@ -474,7 +470,6 @@ async def test_managed_iceberg_conflict_retries_frozen_payload_once_per_writer(
         await second.shutdown()
 
 
-@pytest.mark.contract("storage.execution.single_authority")
 @pytest.mark.asyncio
 async def test_managed_iceberg_conflict_retry_is_bounded_without_rematerializing(
     tmp_path,
@@ -522,7 +517,6 @@ async def test_managed_iceberg_conflict_retry_is_bounded_without_rematerializing
         await service.shutdown()
 
 
-@pytest.mark.contract("storage.execution.single_authority")
 @pytest.mark.asyncio
 async def test_managed_iceberg_ambiguous_commit_is_typed_and_never_replayed(
     tmp_path,
