@@ -44,4 +44,3 @@
 ```text
 ::: archetype._api.public_api
 ```
-

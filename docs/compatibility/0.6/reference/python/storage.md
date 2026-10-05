@@ -22,4 +22,3 @@
 ```text
 ::: archetype.core.AsyncLancedbStore
 ```
-

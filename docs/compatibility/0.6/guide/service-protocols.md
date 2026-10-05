@@ -93,6 +93,7 @@ The research family deliberately has no application service port.
 the world/storage ports, exact cleanup callback, and one process-shared
 `AutoResearchAdmissions` instance by the private
 `archetype.research._extension` installer.
+
 ## 4. Boundary rules
 
 ### Runtime and API adapters

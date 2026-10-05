@@ -122,4 +122,3 @@
 ```text
 ::: archetype.core.hooks.HookHandle
 ```
-

@@ -6,8 +6,6 @@
 
 `from archetype import RuntimeWorld`
 
-RuntimeWorld(_runtime: 'ArchetypeRuntime', name: 'str', world: 'str', run: 'str')
-
 Obtain this handle from the runtime or a completed operation. Its private constructor is not a supported interface.
 
 | Field | Type |
@@ -104,8 +102,6 @@ stop(self) -> 'WorldStatus'
 
 `from archetype import SyncRuntimeWorld`
 
-SyncRuntimeWorld(_runtime: 'SyncArchetypeRuntime', _handle: 'RuntimeWorld')
-
 Obtain this handle from the runtime or a completed operation. Its private constructor is not a supported interface.
 
 ### admission_status
@@ -196,8 +192,6 @@ stop(self)
 
 `from archetype import RuntimeProgram`
 
-RuntimeProgram(_runtime: 'ArchetypeRuntime', name: 'str')
-
 Obtain this handle from the runtime or a completed operation. Its private constructor is not a supported interface.
 
 | Field | Type |
@@ -220,8 +214,6 @@ resolve(self) -> 'ProgramReference'
 
 `from archetype import SyncRuntimeProgram`
 
-SyncRuntimeProgram(_runtime: 'SyncArchetypeRuntime', _handle: 'RuntimeProgram')
-
 Obtain this handle from the runtime or a completed operation. Its private constructor is not a supported interface.
 
 ### publish
@@ -239,8 +231,6 @@ resolve(self)
 ## RuntimeCut
 
 `from archetype import RuntimeCut`
-
-RuntimeCut(_runtime: 'ArchetypeRuntime', _resource: 'str', world: 'str', run: 'str', tick: 'int', cut_id: 'str', parent: 'str | None' = None)
 
 Obtain this handle from the runtime or a completed operation. Its private constructor is not a supported interface.
 
@@ -270,8 +260,6 @@ read(self, component: 'str', *, offset: 'int' = 0, limit: 'int' = 32) -> 'RowPag
 
 `from archetype import SyncRuntimeCut`
 
-SyncRuntimeCut(_runtime: 'SyncArchetypeRuntime', _handle: 'RuntimeCut')
-
 Obtain this handle from the runtime or a completed operation. Its private constructor is not a supported interface.
 
 ### analyze
@@ -289,8 +277,6 @@ read(self, component, **bounds)
 ## RuntimeArtifacts
 
 `from archetype import RuntimeArtifacts`
-
-RuntimeArtifacts(_runtime: 'ArchetypeRuntime', name: 'str', world: 'str', run: 'str')
 
 Obtain this handle from the runtime or a completed operation. Its private constructor is not a supported interface.
 
@@ -355,8 +341,6 @@ upload(self, content: 'bytes', *, logical_path: 'str', artifact_id: 'str', cut: 
 ## SyncRuntimeArtifacts
 
 `from archetype import SyncRuntimeArtifacts`
-
-SyncRuntimeArtifacts(_runtime: 'SyncArchetypeRuntime', _handle: 'RuntimeArtifacts')
 
 Obtain this handle from the runtime or a completed operation. Its private constructor is not a supported interface.
 

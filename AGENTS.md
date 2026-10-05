@@ -10,7 +10,6 @@ outside the accepted target's live loop. See `docs/guide/ddlog-runtime.md`.
 Missions and Physical AI products are removed; X0 owns agent semantics.
 Retain generic simulation, history/forks, artifacts, inference and engine tests.
 
-
 ## Package ownership
 
 Choose the owning package before adding a type or behavior:

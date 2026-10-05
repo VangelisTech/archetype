@@ -33,7 +33,6 @@ Missions and Physical AI evaluation products are excluded from active exports,
 entry-point discovery, extras, docs navigation and release lanes. The independent
 Eventual physical-ai-evals repository is outside this change.
 
-
 ## Verification profiles
 
 `make ci` requires source static checks, current Python/native/storage/transport

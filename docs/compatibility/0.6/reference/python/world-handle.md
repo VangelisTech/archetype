@@ -14,4 +14,3 @@
     options:
       show_signature: false
 ```
-

@@ -90,8 +90,6 @@ def _symbol(name):
     value = getattr(archetype, name)
     lines = ["## " + name, "", "`from archetype import " + name + "`", ""]
     doc = inspect.getdoc(value)
-    if doc:
-        lines.extend([doc, ""])
     handle = name == "PreparedArtifacts" or name.startswith(
         (
             "RuntimeWorld",
@@ -104,6 +102,8 @@ def _symbol(name):
             "SyncRuntimeArtifacts",
         )
     )
+    if doc and not (handle and doc.startswith(name + "(")):
+        lines.extend([doc, ""])
     if handle:
         lines.extend(
             [

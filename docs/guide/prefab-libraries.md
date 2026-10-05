@@ -1,6 +1,11 @@
 # Prefab Libraries
 
-**Document type:** Normative current contract and user guide.
+**Document type:** Version 0.6 compatibility contract and user guide.
+
+Use this guide with matching 0.6 source and wheels. The Biome comparison below
+records historical pinned inputs; it does not claim a native 0.7 game integration.
+The former public Biome repository and its source links are unavailable as of
+October 5, 2026. File names and revision pins remain historical provenance.
 
 Archetype prefab libraries are entity-backed asset graphs.  A library can be
 queried, versioned by tick, forked, graded, and composed with the same
@@ -49,10 +54,10 @@ liveness decisions.  `ChildOf` is exclusive and uses `DELETE`.
 
 ## Registration has two layers
 
-Biome's [`main.c`](https://github.com/SanderMertens/biome/blob/main/src/main.c)
+The historical Biome `src/main.c`
 first imports C modules that register component metadata, systems, observers,
 and hooks.  It then evaluates the root
-[`biome.flecs`](https://github.com/SanderMertens/biome/blob/main/etc/scenes/biome.flecs)
+`etc/scenes/biome.flecs`
 script, which creates named prefabs and rules from those registered types.
 Archetype keeps the same code-versus-data boundary:
 
@@ -142,12 +147,12 @@ relation is deliberately generalized in `archetype.prefabs`.
 
 ## The Biome pattern being translated
 
-Biome's archived
-[`buildings.flecs`](https://github.com/SanderMertens/biome/blob/29b7f0e126c81568ba61946c1eb46d921abe8aa2/etc/scenes/config/buildings.flecs)
-shows the composition directly.  `PoweredBuilding` supplies common state;
+The historical Biome comparison used
+`etc/scenes/config/buildings.flecs` at revision
+`29b7f0e126c81568ba61946c1eb46d921abe8aa2` to illustrate composition.  `PoweredBuilding` supplies common state;
 `Drill` composes it with a drill emitter and adds `Building`, `StorageDesc`,
 `Storage`, `Miner`, `Power`, `Recipe`, and rendering components.  The
-[`miner` systems](https://github.com/SanderMertens/biome/blob/main/src/modules/miner.c)
+historical `src/modules/miner.c` systems
 then match combinations including miner, storage, storage-description, and
 power state.  The prefab is not a class that calls mining behavior.  Its
 component set makes an instance eligible for systems that implement mining.

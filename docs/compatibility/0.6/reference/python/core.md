@@ -52,4 +52,3 @@
 ```text
 ::: archetype.core.TickFailure
 ```
-

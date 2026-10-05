@@ -74,4 +74,3 @@
 ```text
 ::: archetype.artifacts.context.synthesize_artifact_context
 ```
-
