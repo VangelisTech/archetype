@@ -17,8 +17,8 @@ from unittest.mock import patch
 
 import httpx2
 from archetype_native.ingress import ContextResource, Grant, Ingress, ProgramResource
-from archetype_native.wire import MAX_REQUEST_BYTES
-from archetype_transports import MCP_BODY_LIMIT, create_app
+from archetype_native.wire import MAX_REQUEST_BYTES, WIRE_ERROR_CODES
+from archetype_transports import HTTP_STATUS, MCP_BODY_LIMIT, create_app
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from starlette.applications import Starlette
@@ -92,6 +92,10 @@ async def mcp(client, raw):
 
 
 class TransportTests(unittest.IsolatedAsyncioTestCase):
+    def test_http_status_map_covers_exact_closed_wire_errors(self):
+        self.assertEqual(set(HTTP_STATUS), WIRE_ERROR_CODES)
+        self.assertEqual(HTTP_STATUS["conflict"], 409)
+
     async def test_program_composition_all_refs_and_creation_have_http_mcp_parity(self):
         from test_logical_ingress import Backend as LogicalBackend
         from test_logical_ingress import composition, leaf
@@ -414,6 +418,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             ("unsupported_format", 422),
             ("corrupt_data", 500),
             ("invalid_request", 400),
+            ("conflict", 409),
         ):
             with (
                 self.subTest(code=code),

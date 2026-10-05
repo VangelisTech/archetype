@@ -41,6 +41,21 @@ from .values import (
 
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024
+WIRE_ERROR_CODES = frozenset(
+    {
+        "unavailable",
+        "unauthenticated",
+        "forbidden",
+        "invalid_request",
+        "busy",
+        "operation_failed",
+        "conflict",
+        "corrupt_data",
+        "resource_limit",
+        "unsupported_format",
+    }
+)
+
 MAX_CHANGES = 256
 
 
@@ -598,18 +613,10 @@ def decode_response(raw: bytes, request: Request) -> dict[str, Any]:
     else:
         fields(value, "version ok error")
         error = fields(value["error"], "code outcome")
-        if error["code"] not in {
-            "unavailable",
-            "unauthenticated",
-            "forbidden",
-            "invalid_request",
-            "busy",
-            "operation_failed",
-            "conflict",
-            "corrupt_data",
-            "resource_limit",
-            "unsupported_format",
-        } or error["outcome"] not in ("not_dispatched", "unknown"):
+        if error["code"] not in WIRE_ERROR_CODES or error["outcome"] not in (
+            "not_dispatched",
+            "unknown",
+        ):
             raise ValueError("Invalid error envelope")
     return value
 
