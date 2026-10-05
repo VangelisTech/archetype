@@ -27,7 +27,6 @@ from archetype.world.models import (
     SpawnReserved,
 )
 
-
 _APPLICATION_SCOPED_WORLD_OPERATIONS = {
     "create_world",
     "list_worlds",
