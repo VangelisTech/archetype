@@ -180,10 +180,11 @@ class ArchetypeRuntime:
             self._opening.add_done_callback(
                 lambda done: None if done.cancelled() else done.exception()
             )
+        opening = self._opening
         try:
-            return await asyncio.shield(self._opening)
+            return await asyncio.shield(opening)
         except Exception:
-            if self._opening.done():
+            if self._opening is opening and opening.done():
                 self._opening = None
             raise
 
@@ -204,7 +205,13 @@ class ArchetypeRuntime:
             code = (
                 error.code
                 if error.code
-                in {"resource_limit", "corrupt_data", "invalid_request", "unsupported_format"}
+                in {
+                    "resource_limit",
+                    "corrupt_data",
+                    "invalid_request",
+                    "unsupported_format",
+                    "conflict",
+                }
                 else "operation_failed"
             )
             raise RuntimeOperationError(code, outcome="unknown") from None

@@ -53,11 +53,15 @@ native worker/checkpoint semantics remain owned by the pinned DDlog dependency;
 its exact-head upstream acceptance is retained separately rather than counted as
 new Archetype tests.
 
-`make verify-release` also records and verifies exact wheel/sdist hashes, commit,
+`make verify-release` seals the eight package-smoked artifacts before acceptance,
+installs their exact wheel bytes without rebuilding, and verifies both the original
+and retained sets after acceptance. It records exact wheel/sdist hashes, commit,
 clean source and all four package identities. Smol retains its independent 0.6.3
 version and separate installed Daft environment. The three current native surface
 packages are 0.7.0. Package smoke rebuilds each sdist and checks wheel content,
-licenses, exports and discovery without source imports. The installed example is
+licenses, exports and discovery without source imports. A separate installed
+analysis-extra probe verifies Component declarations and Arrow schemas, validated
+Outcome values and deterministic GraderContract digests outside live execution. The installed example is
 the credential-free operator smoke. Failed or skipped actual proof is never a
 release pass. Current coverage is evidence; no global 0.6 coverage denominator
 or threshold is reused for this different surface.

@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -235,6 +236,17 @@ def verify(
                     f"manifest={value.get(field)!r}, actual={observed!r}"
                 )
     return manifest
+
+
+def copy_candidate(
+    manifest: dict[str, Any], candidate: Path, destination: Path, *, expected_commit: str
+) -> dict[str, Any]:
+    """Verify before copying, then verify the exact eight retained install inputs."""
+    verify(manifest, candidate, expected_commit=expected_commit)
+    destination.mkdir()
+    for artifact in manifest["artifacts"]:
+        shutil.copy2(candidate / artifact["name"], destination / artifact["name"])
+    return verify(manifest, destination, expected_commit=expected_commit)
 
 
 def _load(path: Path) -> dict[str, Any]:

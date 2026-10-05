@@ -8,6 +8,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
+from archetype_native import NativeError, ProtocolError
+
 from archetype import ArchetypeRuntime, Change, RuntimeOperationError
 from archetype.runtime.runtime import SyncArchetypeRuntime
 
@@ -30,7 +32,91 @@ def result(_executor, request):
     return {"state": "running", "generation": "1", "revision": "1", "has_error": False}
 
 
+def conflicting_fork(_executor, request):
+    if request.operation.name == "fork":
+        raise NativeError("binding", "/private/diagnostic", "fork", code="conflict")
+    if request.operation.name == "history":
+        return {
+            "receipts": [
+                {
+                    "receipt": {"world": "source", "run": "main", "tick": "1", "cut_id": "a" * 64},
+                    "parent": None,
+                }
+            ],
+            "total": "1",
+            "next_offset": None,
+        }
+    return result(_executor, request)
+
+
 class OwnershipTests(unittest.IsolatedAsyncioTestCase):
+    async def test_public_async_fork_preserves_typed_conflict(self):
+        host = FakeHost()
+        with (
+            patch("archetype.runtime.runtime.open_host", return_value=host),
+            patch("archetype.runtime.runtime._Executor.execute", conflicting_fork),
+        ):
+            async with ArchetypeRuntime(library="/library", store="/store") as runtime:
+                source, destination = runtime.world("source"), runtime.world("destination")
+                cut = (await source.history()).cuts[0]
+                with self.assertRaises(RuntimeOperationError) as caught:
+                    await destination.fork(source, cut, request_key="retained-fork")
+                self.assertEqual(
+                    (caught.exception.code, caught.exception.outcome), ("conflict", "unknown")
+                )
+                self.assertEqual(caught.exception.args, ("conflict",))
+                self.assertIsNone(caught.exception.__cause__)
+        self.assertEqual(host.closes, 1)
+
+    async def test_concurrent_failed_activation_is_bounded_and_retryable(self):
+        for failure, code in (
+            (OSError("/private/loader"), "native_unavailable"),
+            (ProtocolError("/private/abi"), "native_incompatible"),
+        ):
+            with self.subTest(code=code):
+                host, entered, release = FakeHost(), threading.Event(), threading.Event()
+                attempts = 0
+
+                def opening(
+                    _configuration, *, entered=entered, release=release, failure=failure, host=host
+                ):
+                    nonlocal attempts
+                    attempts += 1
+                    if attempts == 1:
+                        entered.set()
+                        if not release.wait(5):
+                            raise AssertionError("Factory failure gate was not released")
+                        raise failure
+                    return host
+
+                with (
+                    patch("archetype.runtime.runtime.open_host", opening),
+                    patch("archetype.runtime.runtime._Executor.execute", result),
+                ):
+                    runtime = ArchetypeRuntime(library="/library", store="/store")
+                    first, second = runtime.world("first"), runtime.world("second")
+                    tasks = [
+                        asyncio.create_task(first.history()),
+                        asyncio.create_task(second.history()),
+                    ]
+                    try:
+                        self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+                        await asyncio.sleep(0)
+                    finally:
+                        release.set()
+                    failures = await asyncio.gather(*tasks, return_exceptions=True)
+                    self.assertEqual(attempts, 1)
+                    for error in failures:
+                        self.assertIsInstance(error, RuntimeOperationError)
+                        self.assertEqual(
+                            (error.code, error.outcome, error.args),
+                            (code, "not_dispatched", (code,)),
+                        )
+                    self.assertEqual((await first.history()).total, 0)
+                    self.assertEqual(attempts, 2)
+                    await runtime.shutdown()
+                    self.assertEqual(host.closes, 1)
+
     async def test_storage_only_ignores_live_environment_before_activation(self):
         with patch.dict(
             "os.environ",
@@ -205,6 +291,24 @@ class OwnershipTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BlockingTests(unittest.TestCase):
+    def test_public_sync_fork_preserves_typed_conflict(self):
+        host = FakeHost()
+        with (
+            patch("archetype.runtime.runtime.open_host", return_value=host),
+            patch("archetype.runtime.runtime._Executor.execute", conflicting_fork),
+        ):
+            with ArchetypeRuntime.sync(library="/library", store="/store") as runtime:
+                source, destination = runtime.world("source"), runtime.world("destination")
+                cut = source.history().cuts[0]
+                with self.assertRaises(RuntimeOperationError) as caught:
+                    destination.fork(source, cut, request_key="retained-fork")
+                self.assertEqual(
+                    (caught.exception.code, caught.exception.outcome), ("conflict", "unknown")
+                )
+                self.assertEqual(caught.exception.args, ("conflict",))
+                self.assertIsNone(caught.exception.__cause__)
+        self.assertEqual(host.closes, 1)
+
     def test_failed_close_retains_runner_and_same_host_for_retry(self):
         host = FakeHost()
         host.fail_close = True

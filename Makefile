@@ -213,7 +213,7 @@ complexity:
 # ------------------------------------------------------------------------------
 
 .PHONY: test
-test:
+test: retained-value-contracts
 	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) PYTHONDONTWRITEBYTECODE=1 DO_NOT_TRACK=1 uv run python scripts/run_current_contracts.py
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q packages/archetype-smol/tests
 
@@ -473,12 +473,21 @@ installed-native-acceptance:
 verify-full: verify-full-source installed-native-acceptance
 	@echo "Current source, installed real-native and documented-example evidence passed"
 
-verify-release: verify-full-source installed-native-acceptance
+verify-release: verify-full-source
+	@test -n "$(ARCHETYPE_ACCEPTANCE_DRIVER)" || (echo "Actual DDlog driver is mandatory"; exit 1)
+	@test -n "$(ACCEPTANCE_STAGE)" || (echo "Provide a fresh absolute ACCEPTANCE_STAGE"; exit 1)
 	@uv run python scripts/release_artifact.py record --dist dist --manifest release-artifact.json
 	@uv run python scripts/release_artifact.py verify --dist dist --manifest release-artifact.json
+	@uv run python scripts/run_native_acceptance.py --stage "$(ACCEPTANCE_STAGE)" --library "$(DDLOG_PYTHON_LIBRARY)" --driver "$(ARCHETYPE_ACCEPTANCE_DRIVER)" --candidate-dir dist --candidate-manifest release-artifact.json
+	@uv run python scripts/release_artifact.py verify --dist dist --manifest release-artifact.json
+	@uv run python scripts/release_artifact.py verify --dist "$(ACCEPTANCE_STAGE)/wheels" --manifest release-artifact.json
 	@echo "Exact installed candidate acceptance passed; publication/deployment is separate"
 
 .NOTPARALLEL: verify-full verify-release
+
+.PHONY: retained-value-contracts
+retained-value-contracts:
+	@PYTHONPATH=$(PYTHONPATH):. uv run pytest --noconftest -q tests/core/test_component_core.py tests/evaluation/test_evaluation_family_ownership.py::test_outcome_vocabulary_is_unchanged tests/evaluation/test_evaluation_family_ownership.py::test_digest_vectors_are_byte_for_byte_unchanged tests/scripts/test_release_candidate.py
 
 .PHONY: test-compatibility
 # Run retained 0.6 contracts only against matching 0.6 source, never this facade.

@@ -46,7 +46,17 @@ def main():
         action="store_true",
         help="Local candidate evidence only; never release acceptance",
     )
+    parser.add_argument(
+        "--candidate-dir", type=Path, help="Consume sealed artifacts without rebuilding"
+    )
+    parser.add_argument(
+        "--candidate-manifest", type=Path, help="Exact eight-artifact release manifest"
+    )
     args = parser.parse_args()
+    if (args.candidate_dir is None) != (args.candidate_manifest is None):
+        raise SystemExit("Candidate directory and manifest must be supplied together")
+    if args.candidate_dir is not None and args.allow_dirty:
+        raise SystemExit("Sealed candidate acceptance requires clean source")
     stage, library, driver = args.stage.resolve(), args.library.resolve(), args.driver.resolve()
     if not library.is_file() or not driver.is_file() or not os.access(driver, os.X_OK):
         raise SystemExit("Actual native library and executable real DDlog driver are mandatory")
@@ -96,6 +106,20 @@ def main():
             indent=2,
         )
     )
+    candidate_manifest = None
+    if args.candidate_dir is not None:
+        from release_artifact import copy_candidate
+
+        candidate_manifest = json.loads(args.candidate_manifest.resolve().read_text())
+        copy_candidate(
+            candidate_manifest,
+            args.candidate_dir.resolve(),
+            stage / "wheels",
+            expected_commit=subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+            ).strip(),
+        )
+        (stage / "candidate-manifest.json").write_text(json.dumps(candidate_manifest, indent=2))
     environment = {
         key: value
         for key, value in os.environ.items()
@@ -124,12 +148,13 @@ def main():
         cwd=ROOT,
         log=stage / "dependencies.log",
     )
-    execute(
-        ["uv", "build", "--all-packages", "--out-dir", str(stage / "wheels")],
-        environment=environment,
-        cwd=ROOT,
-        log=stage / "wheels.log",
-    )
+    if candidate_manifest is None:
+        execute(
+            ["uv", "build", "--all-packages", "--out-dir", str(stage / "wheels")],
+            environment=environment,
+            cwd=ROOT,
+            log=stage / "wheels.log",
+        )
     wheels = sorted((stage / "wheels").glob("*.whl"))
     if len(wheels) != 4:
         raise SystemExit("Expected exactly ECS/native/transports/Smol wheels")
@@ -304,6 +329,14 @@ def main():
                     )
                 links.append(entry)
         (stage / "native-source-links.json").write_text(json.dumps(links, indent=2))
+    if candidate_manifest is not None:
+        from release_artifact import verify
+
+        expected_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip()
+        verify(candidate_manifest, args.candidate_dir.resolve(), expected_commit=expected_commit)
+        verify(candidate_manifest, stage / "wheels", expected_commit=expected_commit)
     print("Installed actual native acceptance:", stage)
     return 0
 

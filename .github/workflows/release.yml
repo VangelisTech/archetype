@@ -121,7 +121,7 @@ jobs:
           exec "$DDLOG_ACCEPTANCE_UPSTREAM/scripts/build-ddlog.sh" "$@"
           DRIVER
           chmod +x "$RUNNER_TEMP/actual-driver.sh"
-      - name: Run source and installed actual release profiles
+      - name: Seal eight artifacts and test those exact installed release inputs
         env:
           DDLOG_PYTHON_LIBRARY: ${{ github.workspace }}/archetype/target/debug/libarchetype_ddlog_python.so
           ARCHETYPE_ACCEPTANCE_DRIVER: ${{ runner.temp }}/actual-driver.sh

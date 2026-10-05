@@ -207,6 +207,43 @@ print(json.dumps({name:importlib.metadata.version(name) for name in ("archetype-
         cwd=stage,
         check=True,
     )
+    analysis_env = stage / "analysis-env"
+    subprocess.run(["uv", "venv", "--python", "3.12", str(analysis_env)], env=env, check=True)
+    subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(analysis_env / "bin/python"),
+            str(wheels["archetype-ecs"]) + "[analysis]",
+            str(wheels["archetype-native"]),
+            str(wheels["archetype-transports"]),
+        ],
+        env=env,
+        check=True,
+    )
+    with (stage / "analysis-values.log").open("wb") as output:
+        subprocess.run(
+            [
+                str(analysis_env / "bin/python"),
+                str(Path(__file__).resolve().with_name("probe_analysis_values.py")),
+                "--wheels",
+                str(args.dist_dir.resolve()),
+                "--source",
+                str(Path(__file__).resolve().parents[1]),
+                "--out",
+                str(stage / "analysis-values.json"),
+            ],
+            cwd=stage,
+            env=env,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            check=True,
+        )
+    analysis_values = json.loads((stage / "analysis-values.json").read_text())
+    if analysis_values["result"] != "pass" or analysis_values["errors"]:
+        raise RuntimeError("Installed analysis-value evidence is incomplete")
     receipt = {
         "schema": "archetype.package-smoke/v1",
         "stage": str(stage),
@@ -217,6 +254,7 @@ print(json.dumps({name:importlib.metadata.version(name) for name in ("archetype-
         },
         "sdist_wheel_parity": rebuilt_identity,
         "independent_smol_environment": str(smol_env),
+        "installed_analysis_values": analysis_values,
         "artifacts": {
             path.name: hashlib.sha256(path.read_bytes()).hexdigest()
             for path in (*wheels.values(), *sdists.values())
