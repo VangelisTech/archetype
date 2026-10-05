@@ -5,6 +5,12 @@ execution boundary and separates the working Rust slice from the migration
 that remains. The published 0.6 Python runtime still uses Daft for execution.
 Do not describe that runtime as DDlog-backed yet.
 
+The local [hosted publisher](ddlog-hosted-publisher.md) now connects the existing
+DDlog WorldManager to verified Iceberg FULL cuts. Its dependency revision is
+local and unpublished; clean external builds cannot yet fetch that commit.
+The standalone World described below remains an earlier preview. Use the hosted
+publisher contract for new integration work.
+
 ## Ownership
 
 DDlog Runtime owns native rule execution and composition. Archetype owns ECS
@@ -20,7 +26,7 @@ repositories and existing stored histories are outside this migration.
 
 ```mermaid
 flowchart LR
-    P[Python facade and API/MCP] -. planned bridge .-> W[Archetype world owner]
+    P[Python facade and API/MCP] -. planned bridge .-> W[DDlog WorldManager]
     W --> D[DDlog Runtime: composed native program]
     D --> F[Freeze complete component outputs and checkpoint]
     F --> O[Stage immutable objects]
@@ -56,9 +62,10 @@ old table's meaning.
 Program identity binds exact processor versions, resolved dependencies, public
 ports, the composition, generated source digest, lowering version, persistent
 declarations, the pinned DDlog Runtime revision, and the Archetype adapter ABI.
-The native compiler is an operator-installed prerequisite. Upstream exposes its
-native executable digest internally; a public activation-bound provenance port
-is still needed before claiming exact native binary identity in every receipt.
+The native compiler is an operator-installed prerequisite. The hosted port now
+retains public activation-bound native provenance in its
+managed checkpoint and immutable manifest; the hosted publisher preserves those
+values without claiming rebuilt executables are identical.
 
 ## A tick becomes visible once
 
@@ -133,7 +140,7 @@ native test is not evidence of native execution.
 
 ## Remaining migration
 
-The next public boundary is one DDlog-backed world manager with thin Python,
+The remaining public boundary wraps the existing DDlog WorldManager with thin Python,
 HTTP, and MCP adapters. Generic tools should cover simulation submission,
 status, step/run, history, fork, query, and artifact registration. The removed
 Mission MCP server is not a simulation interface. Admission, authentication,

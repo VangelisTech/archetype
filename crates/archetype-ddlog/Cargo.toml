@@ -12,7 +12,7 @@ anyhow.workspace = true
 arrow-array = "59.2"
 arrow-schema = "59.2"
 bytes = "1"
-ddlog-runtime = { git = "https://github.com/everettVT/ddlog-runtime", rev = "5524ed918014f4b2ffbf724b2930e556c479d7ae" }
+ddlog-runtime = { git = "https://github.com/everettVT/ddlog-runtime", rev = "3451df0ce968c6c2dc2a24265cf6434d108edccf" }
 futures = "0.3"
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "4d83bc77dc10cff851a3ef427c451ff977bc3643" }
 iceberg-catalog-sql = { git = "https://github.com/apache/iceberg-rust", rev = "4d83bc77dc10cff851a3ef427c451ff977bc3643" }

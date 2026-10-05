@@ -3,7 +3,8 @@
 This page is the entry point for Archetype's contract documents.
 
 The [DDlog migration](ddlog-runtime.md) is the accepted live-execution target
-and defines the implemented Rust preview. The Python contracts below describe
+and includes the local [hosted cut publisher](ddlog-hosted-publisher.md).
+The Python contracts below describe
 the retained 0.6 implementation, including its existing Daft loop; the bridge
 and generic DDlog API/MCP are not yet implemented. Agent memory, prompt, tool,
 and budget semantics belong to X0. Missions and Physical AI products have
@@ -31,6 +32,7 @@ The current contract set is split across design docs and executable tests.
 | [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |
 | [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
 | [Durable Discovery](durable-discovery.md) | Control catalog and cold reads | Catalog authority, `discover_worlds`/`open_world_readonly`, fail-closed cold queries. |
+| [Hosted DDlog Publisher](ddlog-hosted-publisher.md) | Local Rust migration slice | Hosted admission to verified FULL analytical cuts; Python and transport integration remain incomplete. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
 | [Storage Migration](storage-migration.md) | Local whole-storage administration | Offline Iceberg-to-Iceberg and SQLite-to-SQLite migration, empty-destination activation, Artifact relocation, exact identity preservation, and cold verification. |
 | [Activities](activities.md) | Work between committed states | Resource/Activity boundary, post-commit admission, fenced attempts, provider reconciliation, result references, and later-receipt settlement. |

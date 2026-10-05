@@ -52,6 +52,8 @@ pub struct CutReceipt {
     pub program: String,
     pub parent: Option<String>,
     pub checkpoint_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen_manifest_sha256: Option<String>,
     pub components: BTreeMap<String, TableCut>,
 }
 
@@ -233,6 +235,11 @@ impl CutStore {
             program: cut.program.clone(),
             parent: cut.parent.clone(),
             checkpoint_sha256: crate::hash(&cut.checkpoint),
+            frozen_manifest_sha256: cut
+                .hosted
+                .as_ref()
+                .map(crate::hosted::canonical_digest)
+                .transpose()?,
             components,
         };
         let table = self.table("cuts", cut_schema()?).await?;
@@ -274,21 +281,32 @@ impl CutStore {
         self.publish(&cut).await
     }
 
-    /// Recovery payload is separate from analytical tables. Retain the local
-    /// journal with the catalog; this v1 store does not promise remote recovery.
+    /// Recovery payload is separate from analytical tables and keeps its exact
+    /// upstream managed checkpoint envelope. No rows reconstruct native inputs.
     pub async fn checkpoint(&self, receipt: &CutReceipt) -> Result<Vec<u8>> {
         self.require_visible(receipt).await?;
-        let cut = FrozenCut::decode_journal(&fs::read(self.journal(
-            &receipt.world,
-            &receipt.run,
-            receipt.tick,
-        ))?)?;
-        ensure!(
-            cut.identity()? == receipt.cut_id
-                && crate::hash(&cut.checkpoint) == receipt.checkpoint_sha256,
-            "Recovery checkpoint identity mismatch"
-        );
+        let cut = self.load_frozen(&receipt.world, &receipt.run, receipt.tick)?;
+        validate_receipt(receipt, &cut)?;
         Ok(cut.checkpoint)
+    }
+
+    pub(crate) fn load_frozen(&self, world: &str, run: &str, tick: u64) -> Result<FrozenCut> {
+        ensure!(
+            crate::identifier(world) && crate::identifier(run),
+            "Invalid world/run"
+        );
+        let cut = FrozenCut::decode_journal(&fs::read(self.journal(world, run, tick))?)?;
+        ensure!(
+            cut.world == world && cut.run == run && cut.tick == tick,
+            "Journal attribution mismatch"
+        );
+        Ok(cut)
+    }
+
+    /// Complete journal, final-manifest and pinned component verification.
+    pub(crate) async fn verified_cut(&self, receipt: &CutReceipt) -> Result<FrozenCut> {
+        self.verify_cut(receipt).await?;
+        self.load_frozen(&receipt.world, &receipt.run, receipt.tick)
     }
 
     pub async fn history(&self, world: &str, run: &str) -> Result<Vec<CutReceipt>> {
@@ -342,10 +360,20 @@ impl CutStore {
 
     async fn verify_cut(&self, receipt: &CutReceipt) -> Result<()> {
         self.require_visible(receipt).await?;
-        for name in receipt.components.keys() {
+        let cut = self.load_frozen(&receipt.world, &receipt.run, receipt.tick)?;
+        validate_receipt(receipt, &cut)?;
+        for (name, selected) in &receipt.components {
             self.read(receipt, name).await?;
+            if selected.rows > 0 {
+                let batch = cut.relations[name]
+                    .schema
+                    .batch(&receipt.cut_id, &cut.relations[name].rows)?;
+                ensure!(
+                    selected.object_sha256.as_deref() == Some(&crate::hash(&encode_batch(&batch)?)),
+                    "Component object differs from frozen journal"
+                );
+            }
         }
-        self.checkpoint(receipt).await?;
         Ok(())
     }
 
@@ -415,10 +443,7 @@ impl CutStore {
         cut_id: &str,
         batch: &RecordBatch,
     ) -> Result<(String, String)> {
-        let mut bytes = vec![];
-        let mut writer = ArrowWriter::try_new(&mut bytes, batch.schema(), None)?;
-        writer.write(batch)?;
-        writer.close()?;
+        let bytes = encode_batch(batch)?;
         let digest = crate::hash(&bytes);
         let path = self
             .root
@@ -614,4 +639,94 @@ fn immutable(path: &Path, bytes: &[u8]) -> Result<()> {
     fs::remove_file(temp)?;
     File::open(path.parent().unwrap())?.sync_all()?;
     Ok(())
+}
+
+fn encode_batch(batch: &RecordBatch) -> Result<Vec<u8>> {
+    let mut bytes = vec![];
+    let mut writer = ArrowWriter::try_new(&mut bytes, batch.schema(), None)?;
+    writer.write(batch)?;
+    writer.close()?;
+    Ok(bytes)
+}
+
+pub(crate) fn validate_receipt(receipt: &CutReceipt, cut: &FrozenCut) -> Result<()> {
+    ensure!(
+        receipt.cut_id == cut.identity()?
+            && receipt.world == cut.world
+            && receipt.run == cut.run
+            && receipt.tick == cut.tick
+            && receipt.program == cut.program
+            && receipt.parent == cut.parent
+            && receipt.checkpoint_sha256 == crate::hash(&cut.checkpoint)
+            && receipt.frozen_manifest_sha256
+                == cut
+                    .hosted
+                    .as_ref()
+                    .map(crate::hosted::canonical_digest)
+                    .transpose()?
+            && receipt.components.len() == cut.relations.len(),
+        "Receipt/journal identity or inventory mismatch"
+    );
+    for (name, relation) in &cut.relations {
+        let selected = receipt
+            .components
+            .get(name)
+            .ok_or_else(|| anyhow!("Missing component inventory"))?;
+        ensure!(
+            selected.schema == relation.schema
+                && selected.rows == relation.rows.len()
+                && selected.table == format!("component_{}", relation.schema.identity()?),
+            "Receipt/journal component mismatch"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod corrupted_catalog_contract {
+    use super::*;
+
+    #[tokio::test]
+    async fn stored_receipt_cannot_omit_inventory_or_change_program() -> Result<()> {
+        for corruption in ["nonempty", "empty", "program"] {
+            let root = tempfile::tempdir()?;
+            let store = CutStore::open(root.path()).await?;
+            let mut cut = crate::store_tests::cut();
+            if corruption == "empty" {
+                cut.relations.get_mut("label").unwrap().rows.clear();
+            }
+            let mut receipt = store.publish(&cut).await?;
+            if corruption == "program" {
+                receipt.program = "forged".into();
+            } else {
+                receipt.components.remove("label");
+            }
+            // Corrupt the stored final-manifest row while retaining cut/checkpoint
+            // identities. Previously duplicate publication trusted its inventory.
+            let batch = RecordBatch::try_new(
+                Arc::new(schema_to_arrow_schema(&cut_schema()?)?),
+                vec![
+                    Arc::new(StringArray::from(vec![receipt.cut_id.as_str()])),
+                    Arc::new(StringArray::from(vec![serde_json::to_string(&receipt)?])),
+                ],
+            )?;
+            let object = fs::read_dir(store.root.join("objects"))?
+                .map(|e| e.unwrap().path())
+                .find(|p| {
+                    p.file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("cuts.")
+                })
+                .unwrap();
+            fs::write(object, encode_batch(&batch)?)?;
+            assert!(
+                store.publish(&cut).await.is_err(),
+                "accepted corrupt {corruption} receipt"
+            );
+            assert!(store.verified_cut(&receipt).await.is_err());
+        }
+        Ok(())
+    }
 }

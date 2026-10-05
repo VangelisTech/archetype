@@ -1,6 +1,7 @@
 //! ECS persistence and tick visibility over DDlog Runtime. No rule evaluation,
 //! operator scheduling, or Daft execution belongs in this adapter.
 pub mod component;
+pub mod hosted;
 pub mod store;
 pub mod world;
 
@@ -10,7 +11,7 @@ mod store_tests;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-pub const DDLOG_REVISION: &str = "5524ed918014f4b2ffbf724b2930e556c479d7ae";
+pub const DDLOG_REVISION: &str = "3451df0ce968c6c2dc2a24265cf6434d108edccf";
 pub const ADAPTER_ABI: &str = "archetype-ddlog-cut-v1";
 
 pub(crate) fn digest(value: &impl Serialize) -> anyhow::Result<String> {

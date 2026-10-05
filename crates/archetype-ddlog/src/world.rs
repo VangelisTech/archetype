@@ -34,6 +34,8 @@ pub struct FrozenCut {
     pub(crate) parent: Option<String>,
     pub(crate) relations: BTreeMap<String, RelationState>,
     pub(crate) checkpoint: Vec<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) hosted: Option<ddlog_runtime::worlds::FrozenManifest>,
 }
 
 impl FrozenCut {
@@ -63,6 +65,9 @@ impl FrozenCut {
             )?;
             checked.validate_rows(&relation.rows)?;
         }
+        if self.hosted.is_some() {
+            return crate::hosted::validate_frozen(self);
+        }
         let checkpoint: Value = serde_json::from_slice(&self.checkpoint)?;
         ensure!(
             checkpoint["state"]["metadata"]
@@ -91,6 +96,7 @@ impl FrozenCut {
             .get_mut("cut")
             .and_then(Value::as_object_mut)
             .ok_or_else(|| anyhow!("Invalid journal cut"))?;
+        let hosted = v.remove("hosted").map(serde_json::from_value).transpose()?;
         let mut take = |key: &str| {
             v.remove(key)
                 .ok_or_else(|| anyhow!("Missing cut field: {key}"))
@@ -104,6 +110,7 @@ impl FrozenCut {
             parent: serde_json::from_value(take("parent")?)?,
             relations: serde_json::from_value(take("relations")?)?,
             checkpoint: serde_json::from_value(take("checkpoint")?)?,
+            hosted,
         };
         ensure!(v.is_empty() && root.len() == 1, "Unknown journal fields");
         ensure!(
@@ -345,6 +352,7 @@ impl World {
                 .ok_or_else(|| anyhow!("Tick overflow"))?;
             let checkpoint = self.backend.checkpoint_bytes(json!({"abi":crate::ADAPTER_ABI,"program":self.program,"world":self.world,"run":self.run,"tick":tick})).map_err(|e| anyhow!(e))?;
             self.frozen = Some(FrozenCut {
+                hosted: None,
                 world: self.world.clone(),
                 run: self.run.clone(),
                 tick,

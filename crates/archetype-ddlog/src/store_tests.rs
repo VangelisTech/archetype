@@ -27,8 +27,9 @@ fn schema(name: &str) -> ComponentSchema {
 
 // Storage tests intentionally supply a synthetic opaque checkpoint. Native
 // checkpoint validity/restore are independently tested by native_cut.rs.
-fn cut() -> FrozenCut {
+pub(crate) fn cut() -> FrozenCut {
     FrozenCut {
+        hosted: None,
         world: "demo".into(),
         run: "run_a".into(),
         tick: 1,
@@ -242,5 +243,22 @@ async fn distinct_worlds_share_schema_but_not_visible_rows() -> Result<()> {
             .sum::<usize>(),
         1
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_future_cut_cannot_reserve_a_legitimate_successors_journal() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let store = CutStore::open(root.path()).await?;
+    let first = cut();
+    let mut future = first.clone();
+    future.tick = 2;
+    future.parent = Some("unknown".into());
+    future.checkpoint = checkpoint("demo", 2);
+    assert!(store.publish(&future).await.is_err());
+    assert!(!root.path().join("cuts/demo.run_a.2.json").exists());
+    let parent = store.publish(&first).await?;
+    future.parent = Some(parent.cut_id);
+    assert_eq!(store.publish(&future).await?.tick, 2);
     Ok(())
 }

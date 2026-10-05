@@ -799,7 +799,7 @@ dependencies = [
 [[package]]
 name = "ddlog-runtime"
 version = "0.1.0"
-source = "git+https://github.com/everettVT/ddlog-runtime?rev=5524ed918014f4b2ffbf724b2930e556c479d7ae#5524ed918014f4b2ffbf724b2930e556c479d7ae"
+source = "git+https://github.com/everettVT/ddlog-runtime?rev=3451df0ce968c6c2dc2a24265cf6434d108edccf#3451df0ce968c6c2dc2a24265cf6434d108edccf"
 dependencies = [
  "lemmalog-syntax",
  "libc",
@@ -1795,7 +1795,7 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 [[package]]
 name = "lemmalog-syntax"
 version = "0.1.0"
-source = "git+https://github.com/everettVT/ddlog-runtime?rev=5524ed918014f4b2ffbf724b2930e556c479d7ae#5524ed918014f4b2ffbf724b2930e556c479d7ae"
+source = "git+https://github.com/everettVT/ddlog-runtime?rev=3451df0ce968c6c2dc2a24265cf6434d108edccf#3451df0ce968c6c2dc2a24265cf6434d108edccf"
 
 [[package]]
 name = "lexical-core"
