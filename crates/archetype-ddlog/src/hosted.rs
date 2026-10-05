@@ -10,8 +10,8 @@ use ddlog_runtime::{
     registry::{ProcessorDefinition, ProcessorReference},
     worlds::{
         AdmissionQuery, AdmitInputs, BoundCheckpointRestore, BoundaryAdmission, BoundaryKey,
-        ExternalPublicationPolicy, ExternalReceipt, FrozenBlob, FrozenBlobRead, FrozenManifest,
-        PublicationBinding, WorldDefinition, WorldManager,
+        ExternalPublicationPolicy, ExternalReceipt, ForkRequest, ForkReservation, FrozenBlob,
+        FrozenBlobRead, FrozenManifest, PublicationBinding, WorldDefinition, WorldManager,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,10 @@ use serde_json::{Value, json};
 
 use crate::{
     component::{Component, ComponentSchema},
-    store::{CutReceipt, CutStore, PublicationFault},
+    store::{
+        CutReceipt, CutStore, PublicationFault,
+        origin::{ForkOrigin, Scope},
+    },
     world::{FrozenCut, RelationState},
 };
 
@@ -177,15 +180,23 @@ impl HostedCutAdapter {
         Ok(())
     }
     fn check_cut(&self, cut: &FrozenCut) -> Result<()> {
+        self.check_compatible(cut)?;
+        let manifest = cut.hosted.as_ref().unwrap();
+        ensure!(
+            manifest.binding.context == json!(self.context(cut.tick, cut.parent.clone()))
+                && manifest.key.world_id == self.scope.native_world,
+            "Hosted scope mismatch"
+        );
+        Ok(())
+    }
+    fn check_compatible(&self, cut: &FrozenCut) -> Result<()> {
         cut.validate()?;
         let manifest = cut
             .hosted
             .as_ref()
             .ok_or_else(|| anyhow!("Hosted evidence required"))?;
         ensure!(
-            manifest.binding.context == json!(self.context(cut.tick, cut.parent.clone()))
-                && manifest.key.world_id == self.scope.native_world
-                && manifest.policy == self.policy
+            manifest.policy == self.policy
                 && cut.program == self.program
                 && manifest.checkpoint_receipt["program"] == self.native_program
                 && cut
@@ -197,6 +208,86 @@ impl HostedCutAdapter {
             "Hosted scope/program/schema mismatch"
         );
         Ok(())
+    }
+
+    async fn scoped_cut(&self, store: &CutStore, receipt: &CutReceipt) -> Result<FrozenCut> {
+        ensure!(
+            store
+                .history(&self.scope.world, &self.scope.run)
+                .await?
+                .contains(receipt),
+            "Cut is outside bound lineage"
+        );
+        let cut = store.verified_cut(receipt).await?;
+        if receipt.world == self.scope.world && receipt.run == self.scope.run {
+            self.check_cut(&cut)?;
+        } else {
+            let origin = store
+                .origin(&self.scope.world, &self.scope.run)?
+                .ok_or_else(|| anyhow!("Missing inherited origin"))?;
+            ensure!(
+                origin.reservation.child_world_id == self.scope.native_world,
+                "Origin belongs to another native child"
+            );
+            self.check_compatible(&cut)?;
+        }
+        Ok(cut)
+    }
+
+    /// Historical selection is separate from latest-only resume. All source
+    /// catalog, snapshot and checkpoint verification precedes native reservation.
+    pub async fn prepare_fork(
+        &self,
+        store: &CutStore,
+        source: &CutReceipt,
+        request_key: String,
+        destination: Scope,
+        label: String,
+    ) -> Result<PreparedFork> {
+        let store = store.read_scope().await?;
+        destination.validate()?;
+        let source_scope = Scope {
+            world: self.scope.world.clone(),
+            run: self.scope.run.clone(),
+        };
+        ensure!(destination != source_scope, "Cannot fork onto source scope");
+        let cut = self.scoped_cut(&store, source).await?;
+        let external = external_receipt(&cut, source)?;
+        store
+            .check_fork_destination(&destination, &request_key, source, &source_scope)
+            .await?;
+        let request = ForkRequest {
+            request_key,
+            destination: json!(destination),
+            source_context: json!(source_scope),
+            definition: WorldDefinition {
+                label,
+                processor: self.processor.clone(),
+                external_publication: Some(self.policy.clone()),
+                purpose: "instance".into(),
+                scenarios: vec![],
+            },
+            manifest: cut.hosted.clone().unwrap(),
+            published: external.clone(),
+            checkpoint_bytes: cut.checkpoint.clone(),
+        };
+        Ok(PreparedFork {
+            adapter: self.clone(),
+            source: source.clone(),
+            external,
+            request,
+        })
+    }
+    pub async fn verify_origin(&self, store: &CutStore) -> Result<ForkOrigin> {
+        let origin = store
+            .origin(&self.scope.world, &self.scope.run)?
+            .ok_or_else(|| anyhow!("Missing fork origin"))?;
+        ensure!(
+            origin.reservation.child_world_id == self.scope.native_world,
+            "Origin native child mismatch"
+        );
+        self.scoped_cut(store, &origin.source).await?;
+        Ok(origin)
     }
 
     /// Verify an exact committed cut, including historical cuts, without moving
@@ -230,8 +321,7 @@ impl HostedCutAdapter {
             "Stale analytical parent"
         );
         let parent_receipt_sha256 = if let Some(receipt) = latest {
-            let cut = store.verified_cut(receipt).await?;
-            self.check_cut(&cut)?;
+            let cut = self.scoped_cut(store, receipt).await?;
             Some(external_receipt(&cut, receipt)?.receipt_sha256)
         } else {
             None
@@ -332,8 +422,7 @@ impl HostedCutAdapter {
             "Cut parent mismatch"
         );
         let expected = if let Some(receipt) = parent {
-            let parent_cut = store.verified_cut(receipt).await?;
-            self.check_cut(&parent_cut)?;
+            let parent_cut = self.scoped_cut(store, receipt).await?;
             Some(external_receipt(&parent_cut, receipt)?.receipt_sha256)
         } else {
             None
@@ -396,6 +485,107 @@ impl HostedCutAdapter {
         Ok(RestoreTicket {
             published: self.verified_publication(store, receipt).await?,
         })
+    }
+}
+
+pub struct PreparedFork {
+    adapter: HostedCutAdapter,
+    source: CutReceipt,
+    external: ExternalReceipt,
+    request: ForkRequest,
+}
+impl PreparedFork {
+    pub fn reserve(&self, manager: &mut WorldManager) -> Result<ReservedFork> {
+        self.adapter.check_owner(manager)?;
+        let reservation = manager
+            .reserve_fork(self.request.clone())
+            .map_err(|e| anyhow!(e))?;
+        let scope: Scope = serde_json::from_value(reservation.destination.clone())?;
+        let adapter = HostedCutAdapter::bind(
+            manager,
+            HostedScope {
+                native_world: reservation.child_world_id.clone(),
+                world: scope.world,
+                run: scope.run,
+            },
+            self.adapter
+                .schemas
+                .values()
+                .map(|s| s.component.clone())
+                .collect(),
+        )?;
+        ensure!(
+            adapter.program == self.adapter.program,
+            "Fork program changed"
+        );
+        let origin = ForkOrigin {
+            version: 1,
+            lineage_sha256: reservation.lineage_sha256().map_err(|e| anyhow!(e))?,
+            reservation,
+            source: self.source.clone(),
+            external: self.external.clone(),
+        };
+        Ok(ReservedFork {
+            adapter,
+            origin,
+            checkpoint: self.request.checkpoint_bytes.clone(),
+        })
+    }
+}
+pub struct ReservedFork {
+    adapter: HostedCutAdapter,
+    origin: ForkOrigin,
+    checkpoint: Vec<u8>,
+}
+impl ReservedFork {
+    pub fn adapter(&self) -> &HostedCutAdapter {
+        &self.adapter
+    }
+    pub fn origin(&self) -> &ForkOrigin {
+        &self.origin
+    }
+    pub fn reservation(&self) -> &ForkReservation {
+        &self.origin.reservation
+    }
+    pub async fn publish_origin(&self, store: &CutStore) -> Result<()> {
+        store.read_scope().await?.publish_origin(&self.origin).await
+    }
+    pub fn restore(&self, manager: &mut WorldManager, expected_generation: u64) -> Result<Value> {
+        self.adapter.check_owner(manager)?;
+        manager
+            .restore_fork_async(
+                self.origin.reservation.clone(),
+                expected_generation,
+                self.checkpoint.clone(),
+            )
+            .map_err(|e| anyhow!(e))
+    }
+    /// Storage proof finishes before manager access; the returned ticket only
+    /// acknowledges this exact immutable origin, never advances an input head.
+    pub async fn prepare_confirmation(&self, store: &CutStore) -> Result<ForkConfirmation> {
+        let store = store.read_scope().await?;
+        let dest = self.origin.destination()?;
+        ensure!(
+            store.origin(&dest.world, &dest.run)?.as_ref() == Some(&self.origin),
+            "Fork origin is not durable"
+        );
+        store.verified_cut(&self.origin.source).await?;
+        Ok(ForkConfirmation {
+            origin: self.origin.clone(),
+        })
+    }
+}
+pub struct ForkConfirmation {
+    origin: ForkOrigin,
+}
+impl ForkConfirmation {
+    pub fn confirm(&self, manager: &mut WorldManager) -> Result<Value> {
+        manager
+            .confirm_fork_lineage(
+                self.origin.reservation.clone(),
+                self.origin.lineage_sha256.clone(),
+            )
+            .map_err(|e| anyhow!(e))
     }
 }
 
@@ -536,7 +726,7 @@ impl RestoreTicket {
     }
 }
 
-fn external_receipt(cut: &FrozenCut, receipt: &CutReceipt) -> Result<ExternalReceipt> {
+pub(crate) fn external_receipt(cut: &FrozenCut, receipt: &CutReceipt) -> Result<ExternalReceipt> {
     crate::store::validate_receipt(receipt, cut)?;
     let frozen_manifest_sha256 = canonical_digest(
         cut.hosted

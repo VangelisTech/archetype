@@ -9,7 +9,7 @@ API route, MCP tool, or cross-repository consumer migration. A separate
 ## Dependency and ownership
 
 `archetype-ddlog` pins DDlog Runtime commit
-`3451df0ce968c6c2dc2a24265cf6434d108edccf` through the canonical Git dependency and
+`21634883fc3d6a9dd10ae37f3773d6f1acbea8d9` through the canonical Git dependency and
 lockfile. That dependency commit is local and unpublished. Local evidence uses a
 Cargo Git cache seeded from its exact local repository; no filesystem dependency
 or path override is committed. External clean builds cannot fetch this revision
@@ -146,11 +146,11 @@ output, 64 MiB aggregate output JSON and the upstream 64 MiB checkpoint bound.
 Upstream input, context, manifest, JSON-depth and admission-retention bounds also
 apply. The store remains local and cooperatively owned. Immutable data and
 receipts must be retained; remote recovery, retention/GC, distributed fencing,
-fork lineage and cross-world checkpoint import are not implemented here.
+general cross-program checkpoint import is not implemented here. Historical hosted forks use the [separate exact-origin contract](ddlog-historical-forks.md).
 
 The [Python preview](ddlog-python-preview.md) adds local binding, cancellation
 and lifetime contracts. Supported-runtime and authenticated transport migration
 remain, including versioned consumer contracts. Sanctioned
-Daft queries, forks and world-context artifact receipts remain separate work.
+Daft queries and world-context artifact receipts remain separate work.
 This local publisher does not complete the overall execution migration or grant
 publication authorization.

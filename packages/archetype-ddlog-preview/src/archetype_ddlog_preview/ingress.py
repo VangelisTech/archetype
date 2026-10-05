@@ -56,7 +56,7 @@ class Resource:
     """Immutable operator configuration; no live state, head or admission inventory."""
 
     name: str
-    native_world: str
+    native_world: str | None
     world: str
     run: str
     components: tuple[Component, ...]
@@ -84,8 +84,10 @@ class Resource:
         )
 
     def __post_init__(self) -> None:
-        for value in (self.name, self.native_world, self.world, self.run):
+        for value in (self.name, self.world, self.run):
             w.identifier(value)
+        if self.native_world is not None:
+            w.identifier(self.native_world)
         if type(self.components) is not tuple or not 1 <= len(self.components) <= 64:
             raise ValueError("Invalid component configuration")
         for c in self.components:
@@ -120,6 +122,8 @@ class Resource:
             raise ValueError("Duplicate input configuration")
 
     def binding(self) -> dict[str, Any]:
+        if self.native_world is None:
+            raise ValueError("Fork resource requires durable origin resolution")
         return {
             "scope": {"native_world": self.native_world, "world": self.world, "run": self.run},
             "components": [c.native() for c in self.components],
@@ -175,10 +179,10 @@ class Ingress:
         # Snapshots contain composition and access configuration, never world state.
         for keys in (
             [r.name for r in resources],
-            [r.native_world for r in resources],
+            [r.native_world for r in resources if r.native_world is not None],
             [(r.world, r.run) for r in resources],
         ):
-            if len(set(keys)) != len(resources):
+            if len(set(keys)) != len(keys):
                 raise ValueError("Conflicting resource binding")
         configured = {r.name: r for r in resources}
         allowed = {}
@@ -243,9 +247,19 @@ class Ingress:
             (principal_id, decoded.resource), frozenset()
         ):
             return _error("forbidden")
+        if isinstance(decoded.operation, w.Fork) and capability not in self._grants.get(
+            (principal_id, decoded.operation.source_resource), frozenset()
+        ):
+            return _error("forbidden")
         # No native lookup, even status, happens before BOTH exact grants.
         resource = self._resources[decoded.resource]
         try:
+            if isinstance(decoded.operation, w.Fork):
+                source = self._resources[decoded.operation.source_resource]
+                if source.name == resource.name or resource.native_world is not None:
+                    raise ValueError("Fork requires a distinct configured destination")
+                if source.components != resource.components or source.inputs != resource.inputs:
+                    raise ValueError("Fork destination configuration must match source")
             self._validate_scope(resource, decoded.operation)
         except (ValueError, TypeError):
             return _error("invalid_request")
@@ -273,7 +287,7 @@ class Ingress:
 
     async def _call(self, resource: Resource, op: w.Operation) -> bytes:
         try:
-            value = await asyncio.to_thread(self._native, resource, op)
+            resource, value = await asyncio.to_thread(self._dispatch, resource, op)
             projected = _project(resource, op, value)
             return w.response(
                 {
@@ -297,8 +311,40 @@ class Ingress:
             # proves rollback, absence, conflict, or permission to retry.
             return _error("operation_failed", dispatched=True)
 
+    def _resolve(self, resource: Resource) -> Resource:
+        if resource.native_world is not None:
+            return resource
+        binding = self._host.fork_binding(
+            resource.world, resource.run, [c.native() for c in resource.components]
+        )
+        resolved = Resource.from_binding(resource.name, binding, inputs=dict(resource.inputs))
+        if (resolved.world, resolved.run, resolved.components) != (
+            resource.world,
+            resource.run,
+            resource.components,
+        ):
+            raise ValueError("Resolved fork resource mismatch")
+        return resolved
+
+    def _dispatch(self, resource: Resource, op: w.Operation) -> tuple[Resource, Any]:
+        if isinstance(op, w.Fork):
+            source = self._resolve(self._resources[op.source_resource])
+            return resource, self._host.fork(
+                source.binding(),
+                op.receipt.native(),
+                world=resource.world,
+                run=resource.run,
+                label=resource.name,
+                request_key=op.request_key,
+                expected_generation=op.expected_generation,
+            )
+        resolved = self._resolve(resource)
+        return resolved, self._native(resolved, op)
+
     def _native(self, resource: Resource, op: w.Operation) -> Any:
         host, native_id = self._host, resource.native_world
+        if native_id is None:
+            raise ValueError("Unresolved fork resource")
         if isinstance(op, w.Status):
             return host.status(native_id)
         if isinstance(op, w.Start):
@@ -368,6 +414,34 @@ def _boundary(resource: Resource, raw: Any) -> dict[str, Any]:
 
 
 def _project(resource: Resource, op: w.Operation, raw: Any) -> dict[str, Any]:
+    if isinstance(op, w.Fork):
+        destination = {"world": resource.world, "run": resource.run}
+        origin, status = raw["origin"], raw["status"]
+        reservation = origin["reservation"]
+        if (
+            raw["destination"] != destination
+            or raw["source"] != op.receipt.native()
+            or raw["request_key"] != op.request_key
+            or reservation["request_key"] != op.request_key
+            or reservation["destination"] != destination
+            or status["id"] != reservation["child_world_id"]
+            or status["external_publication"]["fork"]["reservation"] != reservation
+        ):
+            raise ValueError("Native fork result identity mismatch")
+        ready = status["external_publication"]["fork"]["ready"]
+        if type(ready) is not bool:
+            raise ValueError("Invalid fork readiness")
+        return {
+            "request_key": op.request_key,
+            "destination": destination,
+            "source": {**op.receipt.native(), "tick": w.unsigned(op.receipt.tick)},
+            "lineage_sha256": w.digest(origin["lineage_sha256"]),
+            "lineage_ready": ready,
+            "state": _choice(
+                status["state"], "created starting running stopping stopped failed interrupted"
+            ),
+            "generation": w.unsigned(status["generation"]),
+        }
     if isinstance(op, (w.Publish, w.Reconcile)):
         if (raw["world"], raw["run"]) != (resource.world, resource.run):
             raise ValueError("Native receipt owner mismatch")
@@ -389,7 +463,7 @@ def _project(resource: Resource, op: w.Operation, raw: Any) -> dict[str, Any]:
         raise ValueError("Native world mismatch")
     generation = w.unsigned(raw["generation"])
     if isinstance(op, (w.Status, w.Start, w.Stop, w.Restore)):
-        return {
+        result = {
             "state": _choice(
                 raw["state"], "created starting running stopping stopped failed interrupted"
             ),
@@ -397,6 +471,12 @@ def _project(resource: Resource, op: w.Operation, raw: Any) -> dict[str, Any]:
             "revision": None if raw["revision"] is None else w.unsigned(raw["revision"]),
             "has_error": raw.get("error") is not None,
         }
+        fork = raw.get("external_publication", {}).get("fork")
+        if fork is not None:
+            if type(fork["ready"]) is not bool:
+                raise ValueError("Invalid fork readiness")
+            result["lineage_ready"] = fork["ready"]
+        return result
     result: dict[str, Any] = {
         "generation": generation,
         "admission_key": w.identifier(raw["admission_key"]),

@@ -33,6 +33,7 @@ mod bounded_io;
 #[cfg(test)]
 mod bounded_reads;
 pub mod bounds;
+pub mod origin;
 mod preflight;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,7 +96,7 @@ impl CutStore {
         owner
             .try_lock()
             .map_err(|e| anyhow!("Store already owned: {e}"))?;
-        for dir in ["warehouse", "objects", "cuts"] {
+        for dir in ["warehouse", "objects", "cuts", "origins"] {
             fs::create_dir_all(root.join(dir))?;
         }
         File::open(&root)?.sync_all()?;
@@ -248,6 +249,15 @@ impl CutStore {
             }
         }
         let history = self.history(&cut.world, &cut.run).await?;
+        if let Some(origin) = self.origin(&cut.world, &cut.run)? {
+            ensure!(
+                cut.hosted
+                    .as_ref()
+                    .is_some_and(|m| m.key.world_id == origin.reservation.child_world_id)
+                    && cut.program == origin.source.program,
+                "Cut does not own fork scope"
+            );
+        }
         if let Some(existing) = history.iter().find(|r| r.tick == cut.tick) {
             ensure!(
                 existing.cut_id == cut_id,
@@ -257,7 +267,7 @@ impl CutStore {
             return Ok(existing.clone());
         }
         ensure!(
-            cut.tick == history.last().map_or(1, |r| r.tick + 1)
+            Some(cut.tick) == history.last().map_or(Some(1), |r| r.tick.checked_add(1))
                 && cut.parent == history.last().map(|r| r.cut_id.clone()),
             "Cut is not the next published tick"
         );
@@ -412,9 +422,6 @@ impl CutStore {
             "Invalid world/run",
         )?;
         let table = self.catalog.load_table(&ident("cuts")?).await?;
-        if table.metadata().current_snapshot().is_none() {
-            return Ok(vec![]);
-        }
         let mut receipts: Vec<CutReceipt> = vec![];
         for batch in self.scan_metadata(&table).await? {
             let ids = strings(&batch, "cut_id")?;
@@ -434,21 +441,10 @@ impl CutStore {
                 let receipt: CutReceipt = serde_json::from_str(values.value(i))
                     .map_err(|e| bounds::fault(bounds::FaultCode::CorruptData, e.to_string()))?;
                 ensure!(receipt.cut_id == ids.value(i), "Manifest identity mismatch");
-                if receipt.world == world && receipt.run == run {
-                    receipts.push(receipt);
-                }
+                receipts.push(receipt);
             }
         }
-        receipts.sort_by_key(|r| r.tick);
-        let mut parent = None;
-        for (i, receipt) in receipts.iter().enumerate() {
-            ensure!(
-                receipt.tick == i as u64 + 1 && receipt.parent == parent,
-                "Broken or duplicate cut history"
-            );
-            parent = Some(receipt.cut_id.clone());
-        }
-        Ok(receipts)
+        self.resolve_history(world, run, receipts)
     }
 
     async fn require_visible(&self, receipt: &CutReceipt) -> Result<()> {

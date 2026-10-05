@@ -206,8 +206,17 @@ class Restore:
     expected_generation: int
 
 
+@dataclass(frozen=True, slots=True)
+class Fork:
+    name: ClassVar[str] = "fork"
+    source_resource: str
+    receipt: Receipt
+    request_key: str
+    expected_generation: int
+
+
 type Operation = (
-    Status | Start | Stop | AdmissionStatus | Admit | Publish | Reconcile | Confirm | Restore
+    Status | Start | Stop | AdmissionStatus | Admit | Publish | Reconcile | Confirm | Restore | Fork
 )
 
 CAPABILITIES: dict[type[Operation], str] = {
@@ -220,6 +229,7 @@ CAPABILITIES: dict[type[Operation], str] = {
     Reconcile: "simulation:publish",
     Confirm: "simulation:confirm",
     Restore: "simulation:restore",
+    Fork: "simulation:fork",
 }
 
 
@@ -293,6 +303,14 @@ class Request:
             fields(args, "receipt expected_generation")
             operation = Restore(
                 Receipt.decode(args["receipt"]), decimal(args["expected_generation"])
+            )
+        elif name == "fork":
+            fields(args, "source_resource receipt request_key expected_generation")
+            operation = Fork(
+                identifier(args["source_resource"]),
+                Receipt.decode(args["receipt"]),
+                identifier(args["request_key"]),
+                decimal(args["expected_generation"]),
             )
         else:
             raise ValueError("Unsupported operation")

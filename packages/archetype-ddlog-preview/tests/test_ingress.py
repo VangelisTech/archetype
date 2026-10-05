@@ -109,6 +109,91 @@ class Backend:
 
 
 class IngressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fork_requires_both_exact_grants_before_either_lookup(self):
+        class NoLookup:
+            def __getitem__(self, key):
+                raise AssertionError("Unauthorized fork lookup")
+
+        dest = replace(resource(), name="child", native_world=None, world="child")
+        args = {
+            "source_resource": "alpha",
+            "receipt": {"world": "alpha", "run": "run_a", "tick": "1", "cut_id": DIGEST},
+            "request_key": "fork_one",
+            "expected_generation": "0",
+        }
+        for caps, grants in (
+            (CAPS, (Grant("agent", "child", CAPS),)),
+            (CAPS, (Grant("agent", "alpha", CAPS),)),
+            (
+                CAPS - {"simulation:fork"},
+                (Grant("agent", "alpha", CAPS), Grant("agent", "child", CAPS)),
+            ),
+        ):
+            ingress = self.make(
+                verifier=directory(caps), resources=(resource(), dest), grants=grants
+            )
+            ingress._resources = NoLookup()
+            result = json.loads(await ingress.invoke(TOKEN, request("fork", args, "child")))
+            self.assertEqual(result["error"], {"code": "forbidden", "outcome": "not_dispatched"})
+        self.assertEqual(self.backend.calls, [])
+        for changed in (
+            {"expected_generation": 0},
+            {"expected_generation": "18446744073709551616"},
+            {"checkpoint": "private"},
+        ):
+            with self.assertRaises(ValueError):
+                Request.decode(request("fork", {**args, **changed}, "child"))
+
+    async def test_fork_projection_hides_native_identity_and_checks_exact_result(self):
+        dest = replace(resource(), name="child", native_world=None, world="child")
+        args = {
+            "source_resource": "alpha",
+            "receipt": {"world": "alpha", "run": "run_a", "tick": "1", "cut_id": DIGEST},
+            "request_key": "fork_one",
+            "expected_generation": "0",
+        }
+        reservation = {
+            "request_key": "fork_one",
+            "destination": {"world": "child", "run": "run_a"},
+            "child_world_id": "private-child",
+        }
+        raw = {
+            "request_key": "fork_one",
+            "destination": reservation["destination"],
+            "source": {**args["receipt"], "tick": 1},
+            "origin": {
+                "reservation": reservation,
+                "lineage_sha256": DIGEST,
+                "secret": "/private/checkpoint",
+            },
+            "status": {
+                "id": "private-child",
+                "state": "starting",
+                "generation": 2**53 + 1,
+                "external_publication": {"fork": {"ready": False, "reservation": reservation}},
+            },
+        }
+        calls = []
+
+        def fork(binding, receipt, **kw):
+            calls.append((binding, receipt, kw))
+            return raw
+
+        self.backend.fork = fork
+        ingress = self.make(
+            resources=(resource(), dest),
+            grants=(Grant("agent", "alpha", CAPS), Grant("agent", "child", CAPS)),
+        )
+        result = json.loads(await ingress.invoke(TOKEN, request("fork", args, "child")))
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["value"]["lineage_ready"])
+        self.assertEqual(result["value"]["generation"], str(2**53 + 1))
+        self.assertNotIn("private", json.dumps(result))
+        self.assertEqual(calls[0][0], BINDING)
+        raw["source"] = {**raw["source"], "tick": 2}
+        result = json.loads(await ingress.invoke(TOKEN, request("fork", args, "child")))
+        self.assertEqual(result["error"]["outcome"], "unknown")
+
     def setUp(self):
         self.backend = Backend()
         self.ingress = self.make()
@@ -430,12 +515,17 @@ class NativeArtifactIngressTests(unittest.IsolatedAsyncioTestCase):
             ingress = Ingress(
                 fixture.host,
                 verifier=directory(),
-                resources=(resource(binding=binding),),
-                grants=(Grant("agent", "alpha", CAPS),),
+                resources=(
+                    resource(binding=binding),
+                    replace(
+                        resource(binding=binding), name="child", world="child", native_world=None
+                    ),
+                ),
+                grants=(Grant("agent", "alpha", CAPS), Grant("agent", "child", CAPS)),
             )
 
-            async def call(op, args=None):
-                raw = await ingress.invoke(TOKEN, request(op, args))
+            async def call(op, args=None, name="alpha"):
+                raw = await ingress.invoke(TOKEN, request(op, args, name))
                 result = json.loads(raw)
                 self.assertTrue(result["ok"], (op, result))
                 return result["value"]
@@ -486,6 +576,28 @@ class NativeArtifactIngressTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(fixture.running, binding)
             self.assertEqual(
                 int((await call("status"))["generation"]), int(stopped["generation"]) + 1
+            )
+            fork_args = {
+                "source_resource": "alpha",
+                "receipt": published["receipt"],
+                "request_key": "public_fork",
+                "expected_generation": "0",
+            }
+            async with asyncio.timeout(20):
+                while True:
+                    forked = await call("fork", fork_args, "child")
+                    if forked["lineage_ready"]:
+                        break
+                    await asyncio.sleep(0.01)
+            self.assertEqual(forked["source"], published["receipt"])
+            self.assertEqual((await call("status", name="child"))["lineage_ready"], True)
+            self.assertEqual(forked["destination"], {"world": "child", "run": "run_a"})
+            self.assertNotIn(binding["scope"]["native_world"], json.dumps(forked))
+            self.assertEqual(
+                (await asyncio.to_thread(fixture.host.history, "child", "run_a"))["receipts"][0][
+                    "cut_id"
+                ],
+                published["receipt"]["cut_id"],
             )
         finally:
             if ingress is not None:

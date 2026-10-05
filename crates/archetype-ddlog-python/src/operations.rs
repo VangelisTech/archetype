@@ -3,7 +3,7 @@ use anyhow::{Result, anyhow, ensure};
 use archetype_ddlog::{
     component::Component,
     hosted::{HostedCutAdapter, HostedScope, publication_policy},
-    store::{CutReceipt, CutStore, attachments::Attachment, bounds},
+    store::{CutReceipt, CutStore, attachments::Attachment, bounds, origin::Scope},
 };
 use arrow_array::{Array, Int64Array, StringArray};
 use ddlog_runtime::{
@@ -109,6 +109,18 @@ pub enum Operation {
         binding: Binding,
         receipt: ReceiptRef,
         expected_generation: u64,
+    },
+    Fork {
+        binding: Binding,
+        receipt: ReceiptRef,
+        destination: Scope,
+        label: String,
+        request_key: String,
+        expected_generation: u64,
+    },
+    ForkBinding {
+        destination: Scope,
+        components: Vec<Component>,
     },
     ArtifactCut {
         binding: Binding,
@@ -361,6 +373,88 @@ impl Resources {
                 Ok(
                     json!({"schema":table.schema,"rows":rows,"next_offset":(end<table.rows).then_some(end),"total_rows":table.rows,"cut_id":receipt.cut_id}),
                 )
+            }
+            Operation::ForkBinding {
+                destination,
+                components,
+            } => {
+                let origin = store
+                    .origin(&destination.world, &destination.run)?
+                    .ok_or_else(|| anyhow!("Fork origin is not published"))?;
+                let scope = HostedScope {
+                    native_world: origin.reservation.child_world_id,
+                    world: destination.world,
+                    run: destination.run,
+                };
+                let adapter = HostedCutAdapter::bind(
+                    &mut *self.manager()?,
+                    scope.clone(),
+                    components.clone(),
+                )?;
+                self.runtime.block_on(adapter.verify_origin(&store))?;
+                Ok(json!({"scope":scope,"components":components}))
+            }
+            Operation::Fork {
+                binding,
+                receipt,
+                destination,
+                label,
+                request_key,
+                expected_generation,
+            } => {
+                // Resolve inside the trusted source binding first. A caller's
+                // physical receipt scope may be an ancestor, never an authority
+                // to open an unrelated lineage before admission checks.
+                let source = self
+                    .runtime
+                    .block_on(store.history(&binding.scope.world, &binding.scope.run))?
+                    .into_iter()
+                    .find(|r| {
+                        r.world == receipt.world
+                            && r.run == receipt.run
+                            && r.tick == receipt.tick
+                            && r.cut_id == receipt.cut_id
+                    })
+                    .ok_or_else(|| {
+                        bounds::fault(
+                            bounds::FaultCode::InvalidRequest,
+                            "Cut is outside bound source lineage",
+                        )
+                    })?;
+                let adapter = self.bind(binding)?;
+                let prepared = self.runtime.block_on(adapter.prepare_fork(
+                    &store,
+                    &source,
+                    request_key.clone(),
+                    destination.clone(),
+                    label,
+                ))?;
+                let reserved = prepared.reserve(&mut *self.manager()?)?;
+                self.runtime.block_on(reserved.publish_origin(&store))?;
+                let id = &reserved.reservation().child_world_id;
+                let mut status = native(self.manager()?.status(id))?;
+                let origin_only_resume = status["generation"].as_u64() == Some(expected_generation)
+                    && matches!(
+                        status["state"].as_str(),
+                        Some("stopped" | "failed" | "interrupted")
+                    )
+                    && self
+                        .runtime
+                        .block_on(store.history(&destination.world, &destination.run))?
+                        .last()
+                        == Some(&source);
+                if status["external_publication"]["fork"]["ready"] != true || origin_only_resume {
+                    status = reserved.restore(&mut *self.manager()?, expected_generation)?;
+                    if status["state"] == "running" {
+                        let confirmation = self
+                            .runtime
+                            .block_on(reserved.prepare_confirmation(&store))?;
+                        status = confirmation.confirm(&mut *self.manager()?)?;
+                    }
+                }
+                Ok(json!({"request_key":request_key,"destination":destination,
+                    "source":{"world":source.world,"run":source.run,"tick":source.tick,"cut_id":source.cut_id},
+                    "origin":reserved.origin(),"status":status}))
             }
             Operation::Restore {
                 binding,

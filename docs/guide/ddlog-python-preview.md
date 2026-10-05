@@ -1,7 +1,7 @@
 # DDlog Python preview
 
 Status: local, trusted, opt-in Python binding over DDlog Runtime
-`3451df0ce968c6c2dc2a24265cf6434d108edccf` and the
+`21634883fc3d6a9dd10ae37f3773d6f1acbea8d9` and the
 [hosted cut publisher](ddlog-hosted-publisher.md). This is a separately installed
 preview, not a drop-in replacement for `ArchetypeRuntime`. The retained 0.6
 runtime still uses its existing engine. A separate local
@@ -265,5 +265,9 @@ is distinct from simulated transport; a skipped opt-in is not native evidence.
 
 The original environment, old runtime, suspended duplicate-manager prototype
 and prior checkpoints remain separate. Broader query/Arrow types, sanctioned
-Daft analytical reads, authenticated hosts, fork lineage, world-context
+Daft analytical reads, production hosts, world-context
 artifacts and versioned consumer migration remain future scoped work.
+
+Historical source forks and explicit origin-only resume are described in the
+[historical fork contract](ddlog-historical-forks.md). They preserve latest-only
+same-world/run restore and use the same native owner and storage authority.

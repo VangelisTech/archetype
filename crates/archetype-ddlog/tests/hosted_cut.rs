@@ -4,7 +4,10 @@
 #[path = "support/hosted.rs"]
 mod support;
 use anyhow::{Result, anyhow};
-use archetype_ddlog::store::{CutStore, PublicationFault};
+use archetype_ddlog::store::{
+    CutStore, PublicationFault,
+    bounds::{Fault, FaultCode},
+};
 use serde_json::json;
 use std::fs;
 use support::*;
@@ -429,19 +432,59 @@ async fn multi_page_capture_is_complete_and_can_release_the_manager_between_page
         "checkpoint and two outputs must require continuation pages"
     );
     let cut = capture.finish()?;
-    let published = a.publish(&store, &cut).await?;
+    let captured = serde_json::to_value(&cut)?;
     for name in ["label", "status"] {
-        assert_eq!(published.receipt().components[name].rows, 1200);
-        assert_eq!(
-            store
-                .read(published.receipt(), name)
-                .await?
-                .iter()
-                .map(|b| b.num_rows())
-                .sum::<usize>(),
-            1200
-        );
+        let rows = captured["relations"][name]["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1200);
+        let mut ids = std::collections::BTreeSet::new();
+        for row in rows {
+            ids.insert(row[0].as_u64().unwrap());
+            assert_eq!(row[1], "x".repeat(4000));
+        }
+        assert_eq!(ids, (0..1200).collect());
     }
-    published.confirm(&mut m)?;
+    // Native capture can span more bytes than the analytical journal budget.
+    // Rejection leaves the frozen native boundary retryable and unconfirmed.
+    let frozen = lookup(&mut m, &k)?;
+    let before = m.status(&id).map_err(|e| anyhow!(e))?;
+    let commits = f.commits();
+    let error = a
+        .publish(&store, &cut)
+        .await
+        .err()
+        .expect("oversized journal");
+    assert_eq!(
+        error
+            .chain()
+            .find_map(|e| e.downcast_ref::<Fault>())
+            .map(|e| e.code),
+        Some(FaultCode::ResourceLimit)
+    );
+    assert!(store.history("alpha", "run_a").await?.is_empty());
+    assert!(!f.root.path().join("store/cuts/alpha.run_a.1.json").exists());
+    assert_eq!(
+        fs::read_dir(f.root.path().join("store/objects"))?.count(),
+        0
+    );
+    assert_eq!(lookup(&mut m, &k)?, frozen);
+    let after = m.status(&id).map_err(|e| anyhow!(e))?;
+    assert_eq!(after["generation"], before["generation"]);
+    assert_eq!(after["revision"], before["revision"]);
+    let blocked = a
+        .prepare_admission(
+            &store,
+            None,
+            request(
+                &id,
+                1,
+                after["revision"].as_u64().unwrap(),
+                "next",
+                "b",
+                false,
+            ),
+        )
+        .await?;
+    assert!(blocked.submit(&mut m).is_err());
+    assert_eq!(f.commits(), commits);
     Ok(())
 }

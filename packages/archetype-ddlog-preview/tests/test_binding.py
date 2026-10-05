@@ -193,6 +193,100 @@ class Fixture:
 
 
 class BindingTests(unittest.TestCase):
+    def test_fork_unrelated_selector_cannot_open_other_scope_origin(self):
+        f = self.f
+        parent = f.world("parent", f.program())
+        f.host.start(parent["scope"]["native_world"])
+        f.running(parent)
+        key = f.submit(parent)
+        f.frozen(key)
+        source = f.host.publish(parent, key)
+        f.confirm(parent, key, source)
+        unrelated = f.root / "storage/origins/unrelated.run_a.json"
+        with unrelated.open("wb") as stream:
+            stream.truncate(3 << 20)
+        with self.assertRaises(NativeError) as caught:
+            f.host.fork(
+                parent,
+                {**source, "world": "unrelated"},
+                world="child",
+                run="run_a",
+                label="Child",
+                request_key="fork_one",
+            )
+        self.assertEqual(caught.exception.code, "invalid_request")
+        self.assertFalse((f.root / "worlds/forks").exists())
+        self.assertFalse((f.root / "storage/origins/child.run_a.json").exists())
+
+    def test_historical_fork_origin_ready_gate_reopen_and_retraction(self):
+        f = self.f
+        parent = f.world("parent", f.program())
+        f.host.start(parent["scope"]["native_world"])
+        f.running(parent)
+        key = f.submit(parent)
+        f.frozen(key)
+        source = f.host.publish(parent, key)
+        f.confirm(parent, key, source)
+        later_key = f.submit(parent, "parent_delete", source["cut_id"], delete=True)
+        f.frozen(later_key)
+        empty = f.host.publish(parent, later_key)
+        f.confirm(parent, later_key, empty)
+        args = dict(world="child", run="run_a", label="Child", request_key="fork_one")
+        # Hold compilation after the durable origin is visible. Inputs must not
+        # become writable merely because lineage has been published.
+        (f.root / "hold_compile").touch()
+        first = f.host.fork(parent, source, **args)
+        self.assertEqual(first["status"]["state"], "starting")
+        self.assertFalse(first["status"]["external_publication"]["fork"]["ready"])
+        child = f.host.fork_binding("child", "run_a", COMPONENTS)
+        self.assertEqual(f.host.history("child", "run_a")["receipts"], [source])
+        self.assertEqual(f.host.read(source, "label")["rows"], [[ENTITY, "héllo world"]])
+        with self.assertRaises(NativeError):
+            f.host.admit(
+                child,
+                expected_head=source["cut_id"],
+                generation=1,
+                revision=0,
+                key="premature",
+                changes=[{"op": "insert", "predicate": "seed", "values": [ENTITY, "blocked"]}],
+            )
+        with self.assertRaises(NativeError):
+            f.host.fork(parent, empty, **args)
+        (f.root / "hold_compile").unlink()
+        ready = wait(
+            lambda: f.host.fork(parent, source, **args),
+            lambda r: r["status"]["external_publication"]["fork"]["ready"],
+        )
+        self.assertEqual(ready["origin"], first["origin"])
+        # A confirmed origin with no child cut can resume only under an explicit
+        # current-generation request. Replaying generation zero stays stopped.
+        f.host.stop(child["scope"]["native_world"])
+        f.close()
+        f.host = f.open()
+        stopped = f.host.fork(parent, source, **args)
+        self.assertIn(stopped["status"]["state"], ("stopped", "interrupted"))
+        self.assertEqual(stopped["status"]["generation"], 1)
+        resumed = f.host.fork(parent, source, expected_generation=1, **args)
+        self.assertEqual(resumed["status"]["generation"], 2)
+        f.running(child)
+        child_key = f.submit(child, "child_delete", source["cut_id"], delete=True)
+        f.frozen(child_key)
+        child_cut = f.host.publish(child, child_key)
+        f.confirm(child, child_key, child_cut)
+        self.assertEqual(child_cut["tick"], 2)
+        self.assertEqual(child_cut["parent"], source["cut_id"])
+        self.assertEqual(f.host.read(child_cut, "label")["rows"], [])
+        self.assertEqual(f.host.history("parent", "run_a")["receipts"], [source, empty])
+        f.close()
+        f.host = f.open()
+        self.assertEqual(f.host.fork_binding("child", "run_a", COMPONENTS), child)
+        replay = f.host.fork(parent, source, **args)
+        self.assertEqual(replay["origin"], first["origin"])
+        self.assertTrue(replay["status"]["external_publication"]["fork"]["ready"])
+        self.assertEqual(f.host.history("child", "run_a")["receipts"], [source, child_cut])
+        with self.assertRaises(NativeError):
+            f.host.restore(child, source, expected_generation=1)
+
     def test_file_io_fault_survives_native_error_chain(self):
         f = self.f
         # The initial cuts table exists without executing a native program.

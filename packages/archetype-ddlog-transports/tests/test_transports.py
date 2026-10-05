@@ -11,6 +11,7 @@ import json
 import sys
 import unittest
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -91,6 +92,39 @@ async def mcp(client, raw):
 
 
 class TransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fork_source_destination_grants_have_http_mcp_parity(self):
+        destination = replace(resource(), name="child", native_world=None, world="child")
+        ingress = Ingress(
+            self.backend,
+            verifier=directory(),
+            resources=(resource(), destination),
+            grants=(Grant("agent", "child", CAPS),),
+        )
+
+        class NoLookup:
+            def __getitem__(self, key):
+                raise AssertionError("Unauthorized fork lookup")
+
+        ingress._resources = NoLookup()
+        raw = request(
+            "fork",
+            {
+                "source_resource": "alpha",
+                "receipt": {"world": "alpha", "run": "run_a", "tick": "1", "cut_id": "a" * 64},
+                "request_key": "fork_one",
+                "expected_generation": "0",
+            },
+            "child",
+        )
+        async with local(ingress) as http, session(http) as client:
+            response = await http.post("/invoke", content=raw)
+            self.assertEqual(response.status_code, 403)
+            self.assertEqual(await mcp(client, raw), response.json())
+            self.assertEqual(
+                response.json()["error"], {"code": "forbidden", "outcome": "not_dispatched"}
+            )
+        self.assertEqual(self.backend.calls, [])
+
     def setUp(self):
         self.backend = Backend()
         self.ingress = self.make()

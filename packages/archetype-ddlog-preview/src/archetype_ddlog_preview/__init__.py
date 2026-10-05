@@ -339,6 +339,44 @@ class Host:
             expected_generation=expected_generation,
         )
 
+    def fork(
+        self,
+        binding: dict[str, Any],
+        receipt: dict[str, Any],
+        *,
+        world: str,
+        run: str,
+        label: str,
+        request_key: str,
+        expected_generation: int = 0,
+    ) -> dict[str, Any]:
+        """Reserve and progress one exact historical fork; never replay inputs.
+
+        A starting reply keeps lineage unready. Repeat the exact call to observe
+        completion and confirm its durable origin. Interrupted restore requires
+        the caller to supply the newly observed generation explicitly.
+        """
+        return self.request(
+            "fork",
+            binding=binding,
+            receipt={k: receipt[k] for k in ("world", "run", "tick", "cut_id")},
+            destination={"world": world, "run": run},
+            label=label,
+            request_key=request_key,
+            expected_generation=expected_generation,
+        )
+
+    def fork_binding(
+        self,
+        world: str,
+        run: str,
+        components: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Resolve immutable child identity from its durable analytical origin."""
+        return self.request(
+            "fork_binding", destination={"world": world, "run": run}, components=components
+        )
+
     def close(self) -> None:
         self._owner()
         if self._handle:

@@ -39,6 +39,7 @@ The current contract set is split across design docs and executable tests.
 | [DDlog Python Preview](ddlog-python-preview.md) | Isolated trusted Python/C ABI | Explicit hosted operations, strict values and resource lifetime; no retained-runtime replacement. |
 | [DDlog Shared Ingress Preview](ddlog-ingress-preview.md) | Local transport-neutral admission | Exact capabilities/resource grants over the same Host, strict values, safe projections and cancellation ownership; no listener. |
 | [DDlog Local Transports Preview](ddlog-transports-preview.md) | Optional local HTTP/MCP adapters | Actual SDK auth/context and lifespan over shared ingress; no production host or consumer migration. |
+| [DDlog Historical Forks](ddlog-historical-forks.md) | Exact source cut inheritance | Native durable child reservation/readiness and immutable analytical origin, with explicit resume and bounded ancestry. |
 | [DDlog Cut Artifacts Preview](ddlog-artifacts-preview.md) | Trusted local batch attachments | Exact committed-cut attribution, durable original files, versioned typed/common indexes and exact-occurrence retries. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
 | [Storage Migration](storage-migration.md) | Local whole-storage administration | Offline Iceberg-to-Iceberg and SQLite-to-SQLite migration, empty-destination activation, Artifact relocation, exact identity preservation, and cold verification. |

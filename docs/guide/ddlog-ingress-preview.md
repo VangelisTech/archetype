@@ -70,6 +70,7 @@ checks before information is lost. Version 1 has exactly four envelope fields:
 | `reconcile` | `boundary`, `tick`, `expected_parent` | `simulation:publish` |
 | `confirm` | `boundary`, `tick`, `expected_parent` | `simulation:confirm` |
 | `restore` | `receipt`, `expected_generation` | `simulation:restore` |
+| `fork` | `source_resource`, `receipt`, `request_key`, `expected_generation` | `simulation:fork` on source and destination |
 
 Every capability also requires an exact `(principal_id, resource)` grant.
 `start` can invoke the operator's existing compiler driver. `stop` controls only
@@ -77,8 +78,13 @@ that configured world; neither operation controls the shared process. Grant
 these and restore separately from read/submit. No operation takes a native ID,
 program definition, driver, path, storage config, binding or component schema.
 Registration, world creation, binding, host construction/close and raw requests
-remain trusted local operations. Inventory, history, component reads, step/run,
-fork and artifact registration are absent.
+remain trusted local operations. Inventory, history, component reads, step/run
+and artifact registration are absent.
+
+A [historical fork](ddlog-historical-forks.md) requires exact grants on both
+resources before either lookup. Its configured destination has `native_world=None`;
+subsequent operations resolve its immutable child identity from CutStore.
+Results expose lineage readiness separately from native lifecycle.
 
 All signed Int64 cells and unsigned 64-bit control values use canonical decimal
 strings on the wire. For example an input row is
