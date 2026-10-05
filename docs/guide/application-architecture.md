@@ -81,9 +81,15 @@ translates transport models, authenticates principals, constructs exact
 operations, and delegates actor-aware entry. It does not own authorization
 policy or implement domain workflows.
 
-Other untrusted ingress, including MCP tools, sandboxed agents, or multi-tenant
+Other untrusted ingress into the retained runtime, including MCP tools, sandboxed agents, or multi-tenant
 embeddings, must authenticate an `ActorCtx` and use the same actor-aware
 dispatcher methods even when HTTP is not involved.
+
+The separately classified [DDlog shared ingress preview](ddlog-ingress-preview.md)
+is a bounded exception outside this retained runtime graph. It borrows the
+preview Host, consumes the real principal verifier through a structural port,
+and owns exact capability/resource admission without importing the retained
+dispatcher or adding durable scheduling. It supplies no HTTP/MCP host.
 
 The concrete `ArchetypeRuntime` is not a dependency of ordinary domain-family
 modules. Framework runtime and API surfaces are parallel trusted and actor-aware

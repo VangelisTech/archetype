@@ -203,10 +203,15 @@ authenticated ingress adapter or focused security test constructs it. The
 trusted Python runtime is actor-free and never calls an actor-aware entry point.
 
 The CLI sends credentials; it does not mint local roles. FastAPI or another
-host authenticates those credentials, constructs `ActorCtx`, and invokes the
+host for the retained runtime authenticates those credentials, constructs `ActorCtx`, and invokes the
 actor-aware dispatcher. An embedded host exposing capabilities to sandboxed or
-untrusted code must use the same actor-aware dispatcher boundary even without
+untrusted code through that runtime must use the same actor-aware dispatcher boundary even without
 HTTP.
+
+The independently classified [DDlog shared ingress preview](ddlog-ingress-preview.md)
+uses its own exact operation and capability/resource contract over the preview
+Host. This explicit local exception does not replace this gate, introduce a
+second durable scheduler, or authorize bypasses into retained runtime handlers.
 
 ## Executable contracts
 
