@@ -178,7 +178,7 @@ def _expected_outputs(_locations=None):
         for name in names:
             page.extend(_symbol(name))
         outputs[DOCS_DIR / "python" / (slug + ".md")] = "\n".join(page)
-    outputs[DOCS_DIR / "python-api.md"] = "\n".join(index)
+    outputs[DOCS_DIR / "python-api.md"] = "\n".join(index) + "\n"
     return outputs
 
 
