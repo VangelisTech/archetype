@@ -98,17 +98,17 @@ class Host:
         self,
         *,
         library: os.PathLike[str] | str,
-        registry_root: os.PathLike[str] | str,
-        build_root: os.PathLike[str] | str,
-        driver: os.PathLike[str] | str,
+        registry_root: os.PathLike[str] | str | None,
+        build_root: os.PathLike[str] | str | None,
+        driver: os.PathLike[str] | str | None,
         store_root: os.PathLike[str] | str,
     ):
         self._pid = os.getpid()
         self._handle = 0
         config = {
-            "registry_root": _absolute(registry_root),
-            "build_root": _absolute(build_root),
-            "driver": _absolute(driver),
+            "registry_root": None if registry_root is None else _absolute(registry_root),
+            "build_root": None if build_root is None else _absolute(build_root),
+            "driver": None if driver is None else _absolute(driver),
             "store_root": _absolute(store_root),
         }
         self._lib = ctypes.CDLL(_absolute(library))
@@ -388,3 +388,28 @@ class Host:
 
     def __exit__(self, *_: Any) -> None:
         self.close()
+
+    def publish_collection(self, world: str, run: str) -> dict[str, Any]:
+        """Publish a nonexecuting artifact collection; exact scope retries adopt."""
+        return self.request("publish_collection", world=world, run=run)
+
+    def publish_hosted_context(self, binding: dict[str, Any]) -> dict[str, Any]:
+        """Persist verified hosted declarations without starting or ticking."""
+        return self.request("publish_hosted_context", binding=binding)
+
+    def context(self, world: str, run: str) -> dict[str, Any]:
+        """Verify a published descriptor using only retained storage evidence."""
+        return self.request("context_at", world=world, run=run)
+
+
+class Store(Host):
+    """Own only CutStore and its executor, with the same lease/close protocol.
+
+    No manager, registry or native build driver is constructed. Simulation
+    operations require a Host; context and immutable read operations work here.
+    """
+
+    def __init__(self, *, library: os.PathLike[str] | str, store_root: os.PathLike[str] | str):
+        super().__init__(
+            library=library, store_root=store_root, registry_root=None, build_root=None, driver=None
+        )

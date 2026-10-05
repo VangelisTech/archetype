@@ -78,6 +78,22 @@ struct PreparedObject {
 }
 
 impl CutStore {
+    pub(super) async fn occurrence_exists(&self, prefix: &str, id: &str) -> Result<bool> {
+        ensure!(
+            matches!(prefix, "cut_artifact" | "context_artifact"),
+            "Unknown occurrence format"
+        );
+        for name in std::iter::once("files").chain(TYPED.iter().copied()) {
+            let table_name = format!("{prefix}_{name}_v1");
+            if self.catalog.table_exists(&ident(&table_name)?).await? {
+                let table = self.catalog.load_table(&ident(&table_name)?).await?;
+                if find_snapshot(&table, id)?.is_some() {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
     pub async fn attachment_root(&self, cut: &CutReceipt) -> Result<PathBuf> {
         self.read_scope().await?.verified_cut(cut).await?;
         Ok(self.root.join("artifact_objects"))
@@ -130,6 +146,18 @@ impl CutStore {
                 "Expected distinct canonical UUIDv7 occurrence identities"
             );
             validate_common(&common)?;
+            ensure!(
+                !self
+                    .root
+                    .join("objects")
+                    .join(format!("context_artifact_prepared_v1.{id}.json"))
+                    .try_exists()?,
+                "Occurrence already belongs to context attribution"
+            );
+            ensure!(
+                !self.occurrence_exists("context_artifact", &id).await?,
+                "Occurrence already has context index evidence"
+            );
             self.verify_content(&common, true)?;
             let mut typed = BTreeMap::new();
             for (name, encoded) in &attachment.typed {
@@ -197,7 +225,7 @@ impl CutStore {
         Ok(receipts)
     }
 
-    async fn append_index(
+    pub(super) async fn append_index(
         &self,
         name: &str,
         id: &str,
@@ -227,6 +255,15 @@ impl CutStore {
                     .any(|n| proof.table == format!("cut_artifact_{n}_v1")),
             "Unknown index table"
         );
+        self.read_index_record(proof, id, "artifact_id").await
+    }
+
+    pub(super) async fn read_index_record(
+        &self,
+        proof: &IndexReceipt,
+        id: &str,
+        key_column: &str,
+    ) -> Result<RecordBatch> {
         let table = self.catalog.load_table(&ident(&proof.table)?).await?;
         ensure!(
             table.metadata().uuid().to_string() == proof.table_uuid
@@ -248,10 +285,7 @@ impl CutStore {
             )
             .await?;
         let batch = decode_bytes(bytes, &self.budget)?;
-        ensure!(
-            text(&batch, "artifact_id")? == id,
-            "Index occurrence mismatch"
-        );
+        ensure!(text(&batch, key_column)? == id, "Index occurrence mismatch");
         Ok(batch)
     }
 
@@ -406,7 +440,7 @@ impl CutStore {
             .join(format!("cut_artifact_prepared_v1.{id}.json"))
     }
 
-    fn verify_content(&self, common: &RecordBatch, sync: bool) -> Result<()> {
+    pub(super) fn verify_content(&self, common: &RecordBatch, sync: bool) -> Result<()> {
         let digest = text(common, "sha256")?;
         ensure!(
             digest.len() == 64
@@ -455,7 +489,7 @@ impl CutStore {
     }
 }
 
-fn physical_batch(batch: &RecordBatch) -> Result<(Schema, RecordBatch)> {
+pub(super) fn physical_batch(batch: &RecordBatch) -> Result<(Schema, RecordBatch)> {
     let schema = arrow_schema_to_schema_auto_assign_ids(batch.schema().as_ref())?;
     let physical = Arc::new(schema_to_arrow_schema(&schema)?);
     let columns = batch
@@ -482,7 +516,7 @@ fn receipt(cut: &CutReceipt, artifact_id: String, common: IndexReceipt) -> Attac
 fn decode(encoded: &str) -> Result<RecordBatch> {
     decode_bounded(encoded, &bounds::Budget::new(bounds::Limits::default()))
 }
-fn decode_bounded(encoded: &str, budget: &bounds::Budget) -> Result<RecordBatch> {
+pub(super) fn decode_bounded(encoded: &str, budget: &bounds::Budget) -> Result<RecordBatch> {
     ensure!(
         encoded.len() <= 192 * 1024,
         "Occurrence metadata exceeds 192 KiB"
@@ -506,12 +540,12 @@ fn decode_bytes(bytes: Bytes, budget: &bounds::Budget) -> Result<RecordBatch> {
     bounds::corrupt(batches.len() == 1, "Missing occurrence")?;
     Ok(batches.remove(0))
 }
-fn text<'a>(batch: &'a RecordBatch, column: &str) -> Result<&'a str> {
+pub(super) fn text<'a>(batch: &'a RecordBatch, column: &str) -> Result<&'a str> {
     let array = strings(batch, column)?;
     ensure!(!array.is_null(0), "Null {column}");
     Ok(array.value(0))
 }
-fn integer(batch: &RecordBatch, column: &str) -> Result<i64> {
+pub(super) fn integer(batch: &RecordBatch, column: &str) -> Result<i64> {
     let array = batch
         .column_by_name(column)
         .and_then(|c| c.as_any().downcast_ref::<Int64Array>())
@@ -519,7 +553,7 @@ fn integer(batch: &RecordBatch, column: &str) -> Result<i64> {
     ensure!(!array.is_null(0), "Null {column}");
     Ok(array.value(0))
 }
-fn validate_common(batch: &RecordBatch) -> Result<()> {
+pub(super) fn validate_common(batch: &RecordBatch) -> Result<()> {
     validate_schema("files", batch)?;
     ensure!(
         batch.columns().iter().all(|c| !c.is_null(0)),
@@ -540,7 +574,7 @@ fn validate_common(batch: &RecordBatch) -> Result<()> {
 
 /// Closed v1 file-index schemas, independent of the live DDlog relation types.
 /// A malformed first caller must never determine the shared physical schema.
-fn validate_schema(name: &str, batch: &RecordBatch) -> Result<()> {
+pub(super) fn validate_schema(name: &str, batch: &RecordBatch) -> Result<()> {
     use DataType::{Boolean as B, Float64 as F, Int64 as I, Utf8 as S};
     let tail = match name {
         "files" => vec![
@@ -612,7 +646,7 @@ fn validate_schema(name: &str, batch: &RecordBatch) -> Result<()> {
     );
     Ok(())
 }
-fn append_string(batch: &RecordBatch, name: &str, value: &str) -> Result<RecordBatch> {
+pub(super) fn append_string(batch: &RecordBatch, name: &str, value: &str) -> Result<RecordBatch> {
     ensure!(
         batch.column_by_name(name).is_none(),
         "Reserved metadata column: {name}"
@@ -662,11 +696,11 @@ fn verify_scope(batch: &RecordBatch, cut: &CutReceipt) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use arrow_array::TimestampMicrosecondArray;
 
-    fn attachment(store: &CutStore, id: &str, value: &str) -> Result<Attachment> {
+    pub(crate) fn attachment(store: &CutStore, id: &str, value: &str) -> Result<Attachment> {
         let digest = crate::hash(value.as_bytes());
         let path = store
             .root

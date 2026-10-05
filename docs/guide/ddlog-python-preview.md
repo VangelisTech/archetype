@@ -1,7 +1,7 @@
 # DDlog Python preview
 
 Status: local, trusted, opt-in Python binding over DDlog Runtime
-`21634883fc3d6a9dd10ae37f3773d6f1acbea8d9` and the
+`48ea5115e827253df753466b6ecd60bfff813d50` and the
 [hosted cut publisher](ddlog-hosted-publisher.md). This is a separately installed
 preview, not a drop-in replacement for `ArchetypeRuntime`. The retained 0.6
 runtime still uses its existing engine. A separate local
@@ -12,8 +12,10 @@ production hosting and consumer migration remain unimplemented.
 
 The [cut-bound artifact workflow](ddlog-artifacts-preview.md) now reuses the
 artifact family's file pipeline through a narrow storage port over this Host.
-It adds trusted local attachments to exact committed cuts; artifact HTTP/MCP
-routes and public runtime migration remain separate work.
+It adds trusted local attachments to exact committed cuts. The additive
+[published-context contract](ddlog-published-contexts.md) supports collection-only
+storage, hosted cutless occurrences and safe artifact-page ingress. Public
+runtime migration remains separate work.
 
 ## Ownership and installation
 
@@ -50,10 +52,10 @@ absolute private registry/build/store roots and an installed DDlog build driver.
 There is no import-time library loading, automatic build/download or fallback
 implementation. The driver is trusted executable process configuration.
 
-The DDlog dependency commit remains unpublished. Local Git-cache objects permit
-offline validation; a clean external build cannot fetch this revision until
-separately authorized upstream publication. Neither the wheel nor local tests
-remove that release blocker.
+The pinned DDlog dependency is available from its canonical upstream Git
+repository. Upstream native CI and local installed-wheel checks are distinct
+evidence; neither substitutes for actual compiler acceptance of the final
+installed Archetype distribution.
 
 ## Explicit operation sequence
 
@@ -265,8 +267,8 @@ is distinct from simulated transport; a skipped opt-in is not native evidence.
 
 The original environment, old runtime, suspended duplicate-manager prototype
 and prior checkpoints remain separate. Broader query/Arrow types, sanctioned
-Daft analytical reads, production hosts, world-context
-artifacts and versioned consumer migration remain future scoped work.
+Daft analytical reads, production hosts and versioned consumer migration remain
+future scoped work.
 
 Historical source forks and explicit origin-only resume are described in the
 [historical fork contract](ddlog-historical-forks.md). They preserve latest-only

@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from archetype_ddlog_preview import NativeError
-from archetype_ddlog_preview.ingress import Grant, Ingress, Resource
+from archetype_ddlog_preview.ingress import ContextResource, Grant, Ingress, Resource
 from archetype_ddlog_preview.wire import CAPABILITIES, MAX_REQUEST_BYTES, Request
 
 # Reuse the actual stdlib verifier from source without importing app/wiring.
@@ -109,6 +109,136 @@ class Backend:
 
 
 class IngressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_context_and_source_grants_precede_every_lookup(self):
+        class NoLookup:
+            def __getitem__(self, key):
+                raise AssertionError("Unauthorized context lookup")
+
+        context = ContextResource("context", "alpha", "run_a", source_resource="alpha")
+        caps = frozenset({"artifacts:publish", "artifacts:read"})
+        for grant_names in [(), ("context",), ("alpha",)]:
+            ingress = Ingress(
+                Backend(),
+                verifier=directory(caps),
+                resources=(context, resource()),
+                grants=tuple(Grant("agent", name, caps) for name in grant_names),
+            )
+            ingress._resources = NoLookup()
+            result = json.loads(
+                await ingress.invoke(
+                    TOKEN, request("publish_context", {"source_resource": "alpha"}, "context")
+                )
+            )
+            self.assertEqual(result["error"], {"code": "forbidden", "outcome": "not_dispatched"})
+            await ingress.drain()
+        ingress = Ingress(
+            Backend(), verifier=directory(caps), resources=(context, resource()), grants=()
+        )
+        ingress._resources = NoLookup()
+        result = json.loads(await ingress.invoke(TOKEN, request("read_context", {}, "context")))
+        self.assertEqual(result["error"]["code"], "forbidden")
+        await ingress.drain()
+
+    async def test_hosted_context_origin_is_pinned_before_backend_dispatch(self):
+        backend = Backend()
+        context = ContextResource("context", "alpha", "run_a", source_resource="alpha")
+        other = replace(resource(), name="other", native_world="native-other", world="other")
+        caps = frozenset({"artifacts:publish"})
+        ingress = Ingress(
+            backend,
+            verifier=directory(caps),
+            resources=(context, resource(), other),
+            grants=tuple(Grant("agent", name, caps) for name in ("context", "alpha", "other")),
+        )
+        for source in (None, "other"):
+            result = json.loads(
+                await ingress.invoke(
+                    TOKEN, request("publish_context", {"source_resource": source}, "context")
+                )
+            )
+            self.assertEqual(
+                result["error"], {"code": "invalid_request", "outcome": "not_dispatched"}
+            )
+        self.assertEqual(backend.calls, [])
+        with self.assertRaises(ValueError):
+            Ingress(
+                backend,
+                verifier=directory(caps),
+                resources=(replace(context, source_resource=None), resource()),
+                grants=(),
+            )
+        await ingress.drain()
+
+    async def test_context_projection_strips_paths_and_preserves_exact_attribution(self):
+        class ContextBackend:
+            def context(self, world, run):
+                return {
+                    "version": 1,
+                    "world": world,
+                    "run": run,
+                    "context_id": DIGEST,
+                    "origin": {
+                        "kind": "hosted",
+                        "evidence": {"native_id": "private-native", "path": "/private/operator"},
+                    },
+                }
+
+            def request(self, operation, **kwargs):
+                return {
+                    "items": [
+                        {
+                            "receipt": {
+                                "version": 1,
+                                "artifact_id": "occurrence-1",
+                                "target": {"context": kwargs["context"], "exact_cut": None},
+                                "common": {"object": "/private/object"},
+                            },
+                            "common": "private-parquet",
+                            "typed": {"text": "private-metadata"},
+                            "sha256": "b" * 64,
+                            "media_type": "text/plain",
+                            "size_bytes": 2**53 + 1,
+                        }
+                    ],
+                    "total": 1,
+                    "next_offset": None,
+                }
+
+        context = ContextResource("context", "alpha", "run_a")
+        caps = frozenset({"artifacts:read"})
+        ingress = Ingress(
+            ContextBackend(),
+            verifier=directory(caps),
+            resources=(context,),
+            grants=(Grant("agent", "context", caps),),
+        )
+        result = json.loads(await ingress.invoke(TOKEN, request("read_context", {}, "context")))
+        self.assertEqual(
+            result["value"],
+            {"world": "alpha", "run": "run_a", "context_id": DIGEST, "origin": "hosted"},
+        )
+        args = {"context_id": DIGEST, "exact_cut": None, "all": True, "offset": "0", "limit": "32"}
+        result = json.loads(
+            await ingress.invoke(TOKEN, request("context_artifacts", args, "context"))
+        )
+        self.assertNotIn("private", json.dumps(result))
+        self.assertEqual(result["value"]["items"][0]["size_bytes"], str(2**53 + 1))
+        self.assertIsNone(result["value"]["items"][0]["exact_cut"])
+        args["all"] = False
+        args["exact_cut"] = {"tick": "1", "cut_id": "c" * 64}
+        result = json.loads(
+            await ingress.invoke(TOKEN, request("context_artifacts", args, "context"))
+        )
+        self.assertEqual(result["error"], {"code": "operation_failed", "outcome": "unknown"})
+        args["exact_cut"] = {"tick": 1, "cut_id": "c" * 64}
+        self.assertEqual(
+            json.loads(await ingress.invoke(TOKEN, request("context_artifacts", args, "context")))[
+                "error"
+            ]["code"],
+            "invalid_request",
+        )
+        await ingress.drain()
+
     async def test_fork_requires_both_exact_grants_before_either_lookup(self):
         class NoLookup:
             def __getitem__(self, key):

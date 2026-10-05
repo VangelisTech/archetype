@@ -42,6 +42,20 @@
 # the full detection logic.
 
 [[entries]]
+path = "packages/archetype-ecs/src/archetype/artifacts/context_attachments.py"
+symbol = "prepare_context_attachments"
+expr = "discovered.to_pydict"
+method = "to_pydict"
+reason = "Bounded submission validation after the storage port freezes occurrence UUIDs once; published target is verified before source discovery and content effects."
+
+[[entries]]
+path = "packages/archetype-ecs/src/archetype/artifacts/context_attachments.py"
+symbol = "prepare_context_attachments"
+expr = "stored.to_pydict"
+method = "to_pydict"
+reason = "At most 32 already-persisted file facts route typed scanners and immutable ArtifactRefs without a second content effect; optional cut attribution stays in the verified storage target."
+
+[[entries]]
 path = "packages/archetype-ecs/src/archetype/artifacts/cut_attachments.py"
 symbol = "prepare_attachments"
 expr = "discovered.to_pydict"

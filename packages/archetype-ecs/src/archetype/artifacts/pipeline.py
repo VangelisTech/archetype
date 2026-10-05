@@ -492,6 +492,22 @@ class FileIngestionPipeline:
         return diffs.select("artifact_id", col("_metadata").unnest())
 
     @staticmethod
+    def intrinsic_common_index(files: DataFrame) -> DataFrame:
+        """Project file occurrence metadata without simulation attribution."""
+        return files.select(
+            "artifact_id",
+            "ingested_at",
+            "source_uri",
+            "logical_path",
+            "object_uri",
+            "size_bytes",
+            "mime_type",
+            "media_family",
+            "sha256",
+            "xxhash3_64",
+        )
+
+    @staticmethod
     def common_index(files: DataFrame) -> DataFrame:
         """Project the common visibility root after all typed branches."""
 

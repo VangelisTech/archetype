@@ -215,8 +215,51 @@ class Fork:
     expected_generation: int
 
 
+@dataclass(frozen=True, slots=True)
+class PublishContext:
+    name: ClassVar[str] = "publish_context"
+    source_resource: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReadContext:
+    name: ClassVar[str] = "read_context"
+
+
+@dataclass(frozen=True, slots=True)
+class ContextArtifacts:
+    name: ClassVar[str] = "context_artifacts"
+    context_id: str
+    exact_cut: tuple[int, str] | None
+    all: bool
+    offset: int
+    limit: int
+
+    def selection(self) -> dict[str, Any]:
+        if self.all:
+            return {"kind": "all"}
+        return {
+            "kind": "target",
+            "exact_cut": None
+            if self.exact_cut is None
+            else {"tick": self.exact_cut[0], "cut_id": self.exact_cut[1]},
+        }
+
+
 type Operation = (
-    Status | Start | Stop | AdmissionStatus | Admit | Publish | Reconcile | Confirm | Restore | Fork
+    Status
+    | Start
+    | Stop
+    | AdmissionStatus
+    | Admit
+    | Publish
+    | Reconcile
+    | Confirm
+    | Restore
+    | Fork
+    | PublishContext
+    | ReadContext
+    | ContextArtifacts
 )
 
 CAPABILITIES: dict[type[Operation], str] = {
@@ -230,6 +273,9 @@ CAPABILITIES: dict[type[Operation], str] = {
     Confirm: "simulation:confirm",
     Restore: "simulation:restore",
     Fork: "simulation:fork",
+    PublishContext: "artifacts:publish",
+    ReadContext: "artifacts:read",
+    ContextArtifacts: "artifacts:read",
 }
 
 
@@ -311,6 +357,33 @@ class Request:
                 Receipt.decode(args["receipt"]),
                 identifier(args["request_key"]),
                 decimal(args["expected_generation"]),
+            )
+        elif name == "publish_context":
+            fields(args, "source_resource")
+            operation = PublishContext(
+                None if args["source_resource"] is None else identifier(args["source_resource"])
+            )
+        elif name == "read_context":
+            fields(args, "")
+            operation = ReadContext()
+        elif name == "context_artifacts":
+            fields(args, "context_id exact_cut all offset limit")
+            exact = None
+            if args["exact_cut"] is not None:
+                cut = fields(args["exact_cut"], "tick cut_id")
+                tick = decimal(cut["tick"])
+                if not 0 < tick < 2**63:
+                    raise ValueError("Invalid exact cut tick")
+                exact = (tick, digest(cut["cut_id"]))
+            offset, limit = decimal(args["offset"]), decimal(args["limit"])
+            if (
+                type(args["all"]) is not bool
+                or (args["all"] and exact is not None)
+                or not 1 <= limit <= 32
+            ):
+                raise ValueError("Invalid artifact selection")
+            operation = ContextArtifacts(
+                digest(args["context_id"]), exact, args["all"], offset, limit
             )
         else:
             raise ValueError("Unsupported operation")

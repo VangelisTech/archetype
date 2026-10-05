@@ -3,7 +3,14 @@ use anyhow::{Result, anyhow, ensure};
 use archetype_ddlog::{
     component::Component,
     hosted::{HostedCutAdapter, HostedScope, publication_policy},
-    store::{CutReceipt, CutStore, attachments::Attachment, bounds, origin::Scope},
+    store::{
+        CutReceipt, CutStore,
+        attachments::Attachment,
+        bounds,
+        context_attachments::ArtifactSelection,
+        contexts::{ArtifactTarget, ContextDraft, ContextRef},
+        origin::Scope,
+    },
 };
 use arrow_array::{Array, Int64Array, StringArray};
 use ddlog_runtime::{
@@ -24,9 +31,9 @@ use tokio::runtime::Runtime;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Open {
-    registry_root: PathBuf,
-    build_root: PathBuf,
-    driver: PathBuf,
+    registry_root: Option<PathBuf>,
+    build_root: Option<PathBuf>,
+    driver: Option<PathBuf>,
     store_root: PathBuf,
 }
 #[derive(Deserialize)]
@@ -137,10 +144,42 @@ pub enum Operation {
         offset: usize,
         limit: usize,
     },
+    PublishCollection {
+        world: String,
+        run: String,
+    },
+    PublishHostedContext {
+        binding: Binding,
+    },
+    ReadContext {
+        context: ContextRef,
+    },
+    ContextAt {
+        world: String,
+        run: String,
+    },
+    ContextArtifactTarget {
+        target: ArtifactTarget,
+    },
+    AttachContextArtifacts {
+        target: ArtifactTarget,
+        attachments: Vec<Attachment>,
+    },
+    ReadContextArtifacts {
+        context: ContextRef,
+        selection: ArtifactSelection,
+        offset: usize,
+        limit: usize,
+    },
+    ReadCutArtifacts {
+        receipt: ReceiptRef,
+        offset: usize,
+        limit: usize,
+    },
 }
 pub struct Resources {
     // Declaration order ensures native owner and store drop before executor.
-    pub manager: Mutex<WorldManager>,
+    manager: Option<Mutex<WorldManager>>,
     store: CutStore,
     runtime: Runtime,
 }
@@ -150,26 +189,32 @@ fn native<T>(value: Result<T, String>) -> Result<T> {
 impl Resources {
     pub fn open(config: Open) -> Result<Self> {
         ensure!(
-            [
-                &config.registry_root,
-                &config.build_root,
-                &config.driver,
-                &config.store_root
-            ]
-            .iter()
-            .all(|p| p.is_absolute()),
+            config.store_root.is_absolute()
+                && [&config.registry_root, &config.build_root, &config.driver]
+                    .iter()
+                    .all(|p| p.as_ref().is_none_or(|p| p.is_absolute())),
             "All operator paths must be absolute"
+        );
+        ensure!(
+            [&config.registry_root, &config.build_root, &config.driver]
+                .iter()
+                .filter(|p| p.is_some())
+                .count()
+                % 3
+                == 0,
+            "Native owner requires all three operator paths"
         );
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()?;
         let store = runtime.block_on(CutStore::open(&config.store_root))?;
-        let manager = Mutex::new(native(WorldManager::new(
-            config.registry_root,
-            config.build_root,
-            config.driver,
-        ))?);
+        let manager = match (config.registry_root, config.build_root, config.driver) {
+            (Some(registry), Some(build), Some(driver)) => Some(Mutex::new(native(
+                WorldManager::new(registry, build, driver),
+            )?)),
+            _ => None,
+        };
         Ok(Self {
             manager,
             store,
@@ -178,6 +223,8 @@ impl Resources {
     }
     pub fn manager(&self) -> Result<MutexGuard<'_, WorldManager>> {
         self.manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("Storage-only handle has no native owner"))?
             .lock()
             .map_err(|_| anyhow!("Native owner poisoned"))
     }
@@ -185,10 +232,20 @@ impl Resources {
         HostedCutAdapter::bind(&mut *self.manager()?, binding.scope, binding.components)
     }
     pub fn inventory(&self) -> Result<Value> {
+        if self.manager.is_none() {
+            return Ok(json!({"worlds":[]}));
+        }
         native(self.manager()?.inventory(&InventoryQuery {
             summary: true,
             ..Default::default()
         }))
+    }
+    pub fn shutdown(&self) -> Result<Option<ddlog_runtime::worlds::WorldShutdown>> {
+        if self.manager.is_none() {
+            Ok(None)
+        } else {
+            Ok(Some(self.manager()?.shutdown_handle()))
+        }
     }
     fn receipt(&self, store: &CutStore, key: ReceiptRef) -> Result<CutReceipt> {
         let history = self.runtime.block_on(store.history(&key.world, &key.run))?;
@@ -216,6 +273,57 @@ impl Resources {
             _ => self.runtime.block_on(self.store.read_scope())?,
         };
         match op {
+            Operation::PublishCollection { world, run } => {
+                Ok(serde_json::to_value(self.runtime.block_on(
+                    store.publish_context(&ContextDraft::artifact_collection(world, run)?),
+                )?)?)
+            }
+            Operation::PublishHostedContext { binding } => Ok(serde_json::to_value(
+                self.runtime
+                    .block_on(store.publish_context(&self.bind(binding)?.context_draft()?))?,
+            )?),
+            Operation::ReadContext { context } => Ok(serde_json::to_value(
+                self.runtime.block_on(store.context(&context))?,
+            )?),
+            Operation::ContextAt { world, run } => Ok(serde_json::to_value(
+                self.runtime.block_on(store.context_at(&world, &run))?,
+            )?),
+            Operation::ContextArtifactTarget { target } => Ok(
+                json!({"object_root":self.runtime.block_on(store.context_artifact_root(&target))?}),
+            ),
+            Operation::AttachContextArtifacts {
+                target,
+                attachments,
+            } => Ok(serde_json::to_value(
+                self.runtime
+                    .block_on(store.attach_context(&target, &attachments))?,
+            )?),
+            Operation::ReadContextArtifacts {
+                context,
+                selection,
+                offset,
+                limit,
+            } => {
+                let (items, total) = self
+                    .runtime
+                    .block_on(store.context_attachments(&context, &selection, offset, limit))?;
+                Ok(
+                    json!({"items":items,"total":total,"offset":offset,"next_offset":if offset+items.len()<total {Some(offset+items.len())} else {None}}),
+                )
+            }
+            Operation::ReadCutArtifacts {
+                receipt,
+                offset,
+                limit,
+            } => {
+                let cut = self.receipt(&store, receipt)?;
+                let (items, total) = self
+                    .runtime
+                    .block_on(store.attachments(&cut, offset, limit))?;
+                Ok(
+                    json!({"items":items,"total":total,"offset":offset,"next_offset":if offset+items.len()<total {Some(offset+items.len())} else {None}}),
+                )
+            }
             Operation::Register { request } => native(self.manager()?.register(request)),
             Operation::Definitions {} => native(self.manager()?.definitions()),
             Operation::Create {

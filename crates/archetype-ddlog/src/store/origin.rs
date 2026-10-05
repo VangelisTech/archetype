@@ -64,6 +64,19 @@ impl CutStore {
         source: &CutReceipt,
         source_scope: &Scope,
     ) -> Result<()> {
+        if let Some(context) = self.context_claim(&dest.world, &dest.run).await? {
+            ensure!(
+                matches!(
+                    context.origin,
+                    super::contexts::ContextOrigin::Hosted { .. }
+                ),
+                "Artifact collection cannot become a fork destination"
+            );
+            let existing = self.origin(&dest.world, &dest.run)?.ok_or_else(|| {
+                anyhow!("Hosted context already owns the destination before fork reservation")
+            })?;
+            self.check_context_origin(&existing).await?;
+        }
         self.check_new_origin_depth(source_scope)?;
         if let Some(existing) = self.origin(&dest.world, &dest.run)? {
             ensure!(
@@ -155,6 +168,7 @@ impl CutStore {
         let _guard = self.publication.lock().await;
         bounds::page(origin, self.budget.limits.metadata_bytes)?;
         self.validate_origin(origin)?;
+        self.check_context_origin(origin).await?;
         let dest = origin.destination()?;
         let source = origin.source_scope()?;
         self.check_new_origin_depth(&source)?;

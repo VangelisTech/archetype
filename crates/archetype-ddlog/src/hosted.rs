@@ -62,6 +62,112 @@ pub struct HostedCutAdapter {
     program: String,
 }
 
+/// Complete immutable declaration evidence for storage-only cold verification.
+/// It contains no tick, live revision, checkpoint or admission state.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedEvidence {
+    pub(crate) scope: HostedScope,
+    abi: String,
+    ddlog_revision: String,
+    processor: ProcessorReference,
+    schemas: BTreeMap<String, ComponentSchema>,
+    native_program: Value,
+    policy: ExternalPublicationPolicy,
+    program: String,
+}
+impl HostedEvidence {
+    pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            self.abi == ABI
+                && self.ddlog_revision.len() == 40
+                && self.ddlog_revision.bytes().all(|b| b.is_ascii_hexdigit())
+                && crate::identifier(&self.scope.world)
+                && crate::identifier(&self.scope.run)
+                && !self.scope.native_world.is_empty(),
+            "Invalid hosted context provenance"
+        );
+        ensure!(
+            !self.schemas.is_empty() && self.schemas.len() <= 64,
+            "Invalid context declarations"
+        );
+        let mut outputs = BTreeSet::new();
+        for (name, schema) in &self.schemas {
+            let checked = ComponentSchema::new(
+                schema.component.clone(),
+                &Schema {
+                    input: false,
+                    fields: schema.types.clone(),
+                },
+            )?;
+            ensure!(
+                *name == schema.component.name
+                    && checked == *schema
+                    && outputs.insert(schema.component.output.clone()),
+                "Invalid context component schema"
+            );
+            ensure!(
+                self.native_program["public_relations"]
+                    .as_array()
+                    .is_some_and(|relations| relations.iter().any(|r| r["name"]
+                        == schema.component.output
+                        && r["input"] == false
+                        && r["fields"]
+                            == serde_json::to_value(&schema.types).unwrap_or(Value::Null))),
+                "Context declarations differ from native program"
+            );
+        }
+        let components = self
+            .schemas
+            .values()
+            .map(|s| s.component.clone())
+            .collect::<Vec<_>>();
+        ensure!(
+            self.policy == publication_policy(&components)
+                && self.native_program["processor"] == serde_json::to_value(&self.processor)?,
+            "Context publication policy/processor mismatch"
+        );
+        ensure!(
+            self.program
+                == canonical_digest(
+                    &json!({"abi":self.abi,"ddlog":self.ddlog_revision,"native_program":self.native_program,"components":self.schemas})
+                )?,
+            "Context program digest mismatch"
+        );
+        Ok(())
+    }
+    pub(crate) fn check_cut(&self, cut: &FrozenCut, own_scope: bool) -> Result<()> {
+        cut.validate()?;
+        let manifest = cut
+            .hosted
+            .as_ref()
+            .ok_or_else(|| anyhow!("Hosted cut evidence required"))?;
+        ensure!(
+            manifest.policy == self.policy
+                && cut.program == self.program
+                && manifest.checkpoint_receipt["program"] == self.native_program
+                && cut
+                    .relations
+                    .iter()
+                    .map(|(n, r)| (n, &r.schema))
+                    .collect::<BTreeMap<_, _>>()
+                    == self.schemas.iter().collect::<BTreeMap<_, _>>(),
+            "Cut differs from published context"
+        );
+        if own_scope {
+            ensure!(
+                cut.world == self.scope.world
+                    && cut.run == self.scope.run
+                    && manifest.key.world_id == self.scope.native_world
+                    && manifest.binding.context
+                        == json!({"abi":self.abi,"scope":self.scope,"program":self.program,"tick":cut.tick,"parent_cut":cut.parent}),
+                "Cut belongs to another hosted context"
+            );
+        }
+        Ok(())
+    }
+}
+
 pub fn publication_policy(components: &[Component]) -> ExternalPublicationPolicy {
     let mut outputs: Vec<_> = components.iter().map(|c| c.output.clone()).collect();
     outputs.sort();
@@ -82,6 +188,18 @@ fn program_digest(native: &Value, schemas: &BTreeMap<String, ComponentSchema>) -
 }
 
 impl HostedCutAdapter {
+    pub fn context_draft(&self) -> Result<crate::store::contexts::ContextDraft> {
+        crate::store::contexts::ContextDraft::hosted(HostedEvidence {
+            scope: self.scope.clone(),
+            abi: ABI.into(),
+            ddlog_revision: crate::DDLOG_REVISION.into(),
+            processor: self.processor.clone(),
+            schemas: self.schemas.clone(),
+            native_program: self.native_program.clone(),
+            policy: self.policy.clone(),
+            program: self.program.clone(),
+        })
+    }
     pub fn bind(
         manager: &mut WorldManager,
         scope: HostedScope,

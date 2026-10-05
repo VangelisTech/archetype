@@ -131,6 +131,22 @@ class Resource:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextResource:
+    """Configured data scope and immutable optional hosted publication source."""
+
+    name: str
+    world: str
+    run: str
+    source_resource: str | None = None
+
+    def __post_init__(self) -> None:
+        for value in (self.name, self.world, self.run):
+            w.identifier(value)
+        if self.source_resource is not None:
+            w.identifier(self.source_resource)
+
+
+@dataclass(frozen=True, slots=True)
 class Grant:
     principal_id: str
     resource: str
@@ -168,7 +184,7 @@ class Ingress:
         host: Host,
         *,
         verifier: PrincipalVerifier,
-        resources: tuple[Resource, ...],
+        resources: tuple[Resource | ContextResource, ...],
         grants: tuple[Grant, ...],
         max_inflight: int = 4,
     ):
@@ -179,12 +195,31 @@ class Ingress:
         # Snapshots contain composition and access configuration, never world state.
         for keys in (
             [r.name for r in resources],
-            [r.native_world for r in resources if r.native_world is not None],
-            [(r.world, r.run) for r in resources],
+            [
+                r.native_world
+                for r in resources
+                if isinstance(r, Resource) and r.native_world is not None
+            ],
+            [(type(r), r.world, r.run) for r in resources],
         ):
             if len(set(keys)) != len(keys):
                 raise ValueError("Conflicting resource binding")
         configured = {r.name: r for r in resources}
+        for resource in resources:
+            if not isinstance(resource, ContextResource):
+                continue
+            source = configured.get(resource.source_resource)
+            if resource.source_resource is not None and (
+                not isinstance(source, Resource)
+                or (source.world, source.run) != (resource.world, resource.run)
+            ):
+                raise ValueError("Context requires its configured execution source")
+            if resource.source_resource is None and any(
+                isinstance(other, Resource)
+                and (other.world, other.run) == (resource.world, resource.run)
+                for other in resources
+            ):
+                raise ValueError("Shared execution scope requires a hosted context source")
         allowed = {}
         for grant in grants:
             key = (grant.principal_id, grant.resource)
@@ -247,19 +282,33 @@ class Ingress:
             (principal_id, decoded.resource), frozenset()
         ):
             return _error("forbidden")
-        if isinstance(decoded.operation, w.Fork) and capability not in self._grants.get(
-            (principal_id, decoded.operation.source_resource), frozenset()
-        ):
-            return _error("forbidden")
+        if isinstance(decoded.operation, (w.Fork, w.PublishContext)):
+            source_name = decoded.operation.source_resource
+            if source_name is not None and capability not in self._grants.get(
+                (principal_id, source_name), frozenset()
+            ):
+                return _error("forbidden")
         # No native lookup, even status, happens before BOTH exact grants.
         resource = self._resources[decoded.resource]
         try:
             if isinstance(decoded.operation, w.Fork):
                 source = self._resources[decoded.operation.source_resource]
+                if not isinstance(resource, Resource) or not isinstance(source, Resource):
+                    raise ValueError("Fork requires execution resources")
                 if source.name == resource.name or resource.native_world is not None:
                     raise ValueError("Fork requires a distinct configured destination")
                 if source.components != resource.components or source.inputs != resource.inputs:
                     raise ValueError("Fork destination configuration must match source")
+            if (
+                isinstance(decoded.operation, w.PublishContext)
+                and decoded.operation.source_resource is not None
+            ):
+                source = self._resources[decoded.operation.source_resource]
+                if not isinstance(source, Resource) or (source.world, source.run) != (
+                    resource.world,
+                    resource.run,
+                ):
+                    raise ValueError("Hosted context must match the granted source scope")
             self._validate_scope(resource, decoded.operation)
         except (ValueError, TypeError):
             return _error("invalid_request")
@@ -273,7 +322,15 @@ class Ingress:
         return await asyncio.shield(task)
 
     @staticmethod
-    def _validate_scope(resource: Resource, op: w.Operation) -> None:
+    def _validate_scope(resource: Resource | ContextResource, op: w.Operation) -> None:
+        if isinstance(op, (w.PublishContext, w.ReadContext, w.ContextArtifacts)):
+            if not isinstance(resource, ContextResource):
+                raise ValueError("Context resource required")
+            if isinstance(op, w.PublishContext) and op.source_resource != resource.source_resource:
+                raise ValueError("Context publication must use its configured origin")
+            return
+        if not isinstance(resource, Resource):
+            raise ValueError("Execution resource required")
         if isinstance(op, w.Admit):
             schemas = dict(resource.inputs)
             for change in op.changes:
@@ -285,7 +342,7 @@ class Ingress:
         ):
             raise ValueError("Receipt outside configured scope")
 
-    async def _call(self, resource: Resource, op: w.Operation) -> bytes:
+    async def _call(self, resource: Resource | ContextResource, op: w.Operation) -> bytes:
         try:
             resource, value = await asyncio.to_thread(self._dispatch, resource, op)
             projected = _project(resource, op, value)
@@ -326,9 +383,37 @@ class Ingress:
             raise ValueError("Resolved fork resource mismatch")
         return resolved
 
-    def _dispatch(self, resource: Resource, op: w.Operation) -> tuple[Resource, Any]:
+    def _dispatch(
+        self, resource: Resource | ContextResource, op: w.Operation
+    ) -> tuple[Resource | ContextResource, Any]:
+        if isinstance(resource, ContextResource):
+            if isinstance(op, w.PublishContext):
+                if op.source_resource is None:
+                    return resource, self._host.publish_collection(resource.world, resource.run)
+                source = self._resources[op.source_resource]
+                if not isinstance(source, Resource):
+                    raise ValueError("Execution source required")
+                return resource, self._host.publish_hosted_context(self._resolve(source).binding())
+            if isinstance(op, w.ReadContext):
+                return resource, self._host.context(resource.world, resource.run)
+            if isinstance(op, w.ContextArtifacts):
+                return resource, self._host.request(
+                    "read_context_artifacts",
+                    context={
+                        "world": resource.world,
+                        "run": resource.run,
+                        "context_id": op.context_id,
+                    },
+                    selection=op.selection(),
+                    offset=op.offset,
+                    limit=op.limit,
+                )
+            raise ValueError("Unknown context operation")
         if isinstance(op, w.Fork):
-            source = self._resolve(self._resources[op.source_resource])
+            configured_source = self._resources[op.source_resource]
+            if not isinstance(configured_source, Resource):
+                raise ValueError("Execution source required")
+            source = self._resolve(configured_source)
             return resource, self._host.fork(
                 source.binding(),
                 op.receipt.native(),
@@ -413,7 +498,61 @@ def _boundary(resource: Resource, raw: Any) -> dict[str, Any]:
     }
 
 
-def _project(resource: Resource, op: w.Operation, raw: Any) -> dict[str, Any]:
+def _project(resource: Resource | ContextResource, op: w.Operation, raw: Any) -> dict[str, Any]:
+    if isinstance(resource, ContextResource):
+        if isinstance(op, (w.PublishContext, w.ReadContext)):
+            if raw["version"] != 1 or (raw["world"], raw["run"]) != (resource.world, resource.run):
+                raise ValueError("Published context scope mismatch")
+            origin = _choice(raw["origin"]["kind"], "hosted artifact_collection")
+            if isinstance(op, w.PublishContext) and origin != (
+                "artifact_collection" if op.source_resource is None else "hosted"
+            ):
+                raise ValueError("Published context origin mismatch")
+            return {
+                "context_id": w.digest(raw["context_id"]),
+                "world": resource.world,
+                "run": resource.run,
+                "origin": origin,
+            }
+        if isinstance(op, w.ContextArtifacts):
+            if type(raw["items"]) is not list or len(raw["items"]) > op.limit:
+                raise ValueError("Invalid artifact result count")
+            items = []
+            for item in raw["items"]:
+                receipt = item["receipt"]
+                target = receipt["target"]
+                if receipt["version"] != 1 or target["context"] != {
+                    "world": resource.world,
+                    "run": resource.run,
+                    "context_id": op.context_id,
+                }:
+                    raise ValueError("Artifact context mismatch")
+                exact = target["exact_cut"]
+                if not op.all and exact != op.selection()["exact_cut"]:
+                    raise ValueError("Artifact cut attribution mismatch")
+                public_cut = (
+                    None
+                    if exact is None
+                    else {"tick": w.unsigned(exact["tick"]), "cut_id": w.digest(exact["cut_id"])}
+                )
+                items.append(
+                    {
+                        "artifact_id": w.identifier(receipt["artifact_id"]),
+                        "context_id": op.context_id,
+                        "exact_cut": public_cut,
+                        "sha256": w.digest(item["sha256"]),
+                        "media_type": w.string_cell(item["media_type"]),
+                        "size_bytes": w.unsigned(item["size_bytes"]),
+                    }
+                )
+            return {
+                "items": items,
+                "total": w.unsigned(raw["total"]),
+                "next_offset": None
+                if raw["next_offset"] is None
+                else w.unsigned(raw["next_offset"]),
+            }
+        raise ValueError("Unknown context projection")
     if isinstance(op, w.Fork):
         destination = {"world": resource.world, "run": resource.run}
         origin, status = raw["origin"], raw["status"]
@@ -477,6 +616,8 @@ def _project(resource: Resource, op: w.Operation, raw: Any) -> dict[str, Any]:
                 raise ValueError("Invalid fork readiness")
             result["lineage_ready"] = fork["ready"]
         return result
+    if not isinstance(op, (w.AdmissionStatus, w.Admit, w.Confirm)):
+        raise ValueError("Expected admission operation")
     result: dict[str, Any] = {
         "generation": generation,
         "admission_key": w.identifier(raw["admission_key"]),

@@ -6,6 +6,10 @@ source revision and the matching `archetype-ecs` artifact/storage modules. The
 stdlib-only `archetype-ddlog-preview` wheel is version 0.1.2. Its raw
 request method is an internal integration port, not the intended beginner API.
 
+The additive [published-context format](ddlog-published-contexts.md) supports
+artifact collections without execution and optional exact-cut attribution for
+hosted contexts. This page retains the unchanged v1 cut-bound contract.
+
 ## Exact attribution and ownership
 
 An attachment names an existing `{world, run, tick, cut_id}`. Native storage

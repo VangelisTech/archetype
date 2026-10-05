@@ -4,9 +4,8 @@ Status: version 0.1.2 local transport-neutral contract over the tested Python `H
 existing Rust owner. Optional [local HTTP/MCP adapters](ddlog-transports-preview.md)
 now consume it. This shared package supplies no listener, production credential
 provisioning, supported-runtime replacement or consumer migration.
-The upstream pinned DDlog revision remains unpublished, blocking clean external
-builds. Native compilation is not required to validate this Python-only change
-against an existing compatible library.
+The pinned DDlog revision is available upstream. Native compilation is not
+required to validate Python-only changes against an existing compatible library.
 
 ## Ownership and authority
 
@@ -44,7 +43,9 @@ validation for transport authentication/context only. It authorizes no operation
 
 Resource bindings retain native world, analytical world/run, component
 declarations and allowed input predicate schemas. Native-world and analytical
-world/run aliases must be unique. Configured declarations come from trusted
+world/run aliases must be unique within each resource kind. Separate
+[context resources](ddlog-published-contexts.md) pin a collection or exact hosted
+publication source; hosted publication requires both exact grants. Configured declarations come from trusted
 `Host.bind`; configuration alone is not native validation. Ingress checks
 restore receipt world/run before dispatch and constructs native boundary world
 identity from the authorized binding. Native fences and verified Rust tickets
@@ -71,6 +72,9 @@ checks before information is lost. Version 1 has exactly four envelope fields:
 | `confirm` | `boundary`, `tick`, `expected_parent` | `simulation:confirm` |
 | `restore` | `receipt`, `expected_generation` | `simulation:restore` |
 | `fork` | `source_resource`, `receipt`, `request_key`, `expected_generation` | `simulation:fork` on source and destination |
+| `publish_context` | `source_resource` matching configured origin | `artifacts:publish` on context and any hosted source |
+| `read_context` | none | `artifacts:read` |
+| `context_artifacts` | `context_id`, `exact_cut`, `all`, `offset`, `limit` | `artifacts:read` |
 
 Every capability also requires an exact `(principal_id, resource)` grant.
 `start` can invoke the operator's existing compiler driver. `stop` controls only

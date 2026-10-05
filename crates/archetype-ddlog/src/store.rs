@@ -33,6 +33,10 @@ mod bounded_io;
 #[cfg(test)]
 mod bounded_reads;
 pub mod bounds;
+pub mod context_attachments;
+#[cfg(test)]
+mod context_tests;
+pub mod contexts;
 pub mod origin;
 mod preflight;
 
@@ -96,7 +100,7 @@ impl CutStore {
         owner
             .try_lock()
             .map_err(|e| anyhow!("Store already owned: {e}"))?;
-        for dir in ["warehouse", "objects", "cuts", "origins"] {
+        for dir in ["warehouse", "objects", "cuts", "origins", "contexts"] {
             fs::create_dir_all(root.join(dir))?;
         }
         File::open(&root)?.sync_all()?;
@@ -226,6 +230,7 @@ impl CutStore {
             self.budget.limits.metadata_bytes,
         )?;
         cut.validate()?;
+        self.check_context_cut(cut).await?;
         let cut_id = cut.identity()?;
         let journal = bounds::encode_metadata(
             &Journal {
@@ -600,12 +605,15 @@ impl CutStore {
         batch: &RecordBatch,
     ) -> Result<(String, String)> {
         let bytes = encode_batch(batch)?;
-        let digest = crate::hash(&bytes);
+        self.stage_bytes(table, cut_id, &bytes)
+    }
+    fn stage_bytes(&self, table: &str, cut_id: &str, bytes: &[u8]) -> Result<(String, String)> {
+        let digest = crate::hash(bytes);
         let path = self
             .root
             .join("objects")
             .join(format!("{table}.{cut_id}.{digest}.parquet"));
-        immutable(&path, &bytes)?;
+        immutable(&path, bytes)?;
         Ok((path.to_string_lossy().into_owned(), digest))
     }
 

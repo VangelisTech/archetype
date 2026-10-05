@@ -41,6 +41,7 @@ The current contract set is split across design docs and executable tests.
 | [DDlog Local Transports Preview](ddlog-transports-preview.md) | Optional local HTTP/MCP adapters | Actual SDK auth/context and lifespan over shared ingress; no production host or consumer migration. |
 | [DDlog Historical Forks](ddlog-historical-forks.md) | Exact source cut inheritance | Native durable child reservation/readiness and immutable analytical origin, with explicit resume and bounded ancestry. |
 | [DDlog Cut Artifacts Preview](ddlog-artifacts-preview.md) | Trusted local batch attachments | Exact committed-cut attribution, durable original files, versioned typed/common indexes and exact-occurrence retries. |
+| [DDlog Published Contexts](ddlog-published-contexts.md) | Nonexecuting artifact collections and hosted declarations | Immutable scope publication, optional exact-cut occurrence attribution and storage-only cold reads. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
 | [Storage Migration](storage-migration.md) | Local whole-storage administration | Offline Iceberg-to-Iceberg and SQLite-to-SQLite migration, empty-destination activation, Artifact relocation, exact identity preservation, and cold verification. |
 | [Activities](activities.md) | Work between committed states | Resource/Activity boundary, post-commit admission, fenced attempts, provider reconciliation, result references, and later-receipt settlement. |

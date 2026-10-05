@@ -16,7 +16,7 @@ struct Gate {
 }
 pub struct Host {
     resources: Mutex<Option<Arc<Resources>>>,
-    shutdown: WorldShutdown,
+    shutdown: Option<WorldShutdown>,
     gate: Mutex<Gate>,
     changed: Condvar,
 }
@@ -34,7 +34,7 @@ impl Drop for Lease {
 }
 impl Host {
     pub fn new(resources: Resources) -> Result<Self> {
-        let shutdown = resources.manager()?.shutdown_handle();
+        let shutdown = resources.shutdown()?;
         Ok(Self {
             resources: Mutex::new(Some(Arc::new(resources))),
             shutdown,
@@ -66,7 +66,9 @@ impl Host {
             gate.closing = true;
             self.changed.notify_all();
         }
-        self.shutdown.stop_all();
+        if let Some(shutdown) = &self.shutdown {
+            shutdown.stop_all();
+        }
     }
     pub fn close(&self) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -101,7 +103,9 @@ impl Host {
             }
         }
         let _closing = Closing(self);
-        self.shutdown.stop_all(); // independent of manager and active-call locks
+        if let Some(shutdown) = &self.shutdown {
+            shutdown.stop_all();
+        } // independent of manager and active-call locks
         {
             let mut gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
             while gate.active != 0 {
