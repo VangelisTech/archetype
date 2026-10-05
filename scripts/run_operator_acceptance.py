@@ -244,7 +244,7 @@ def main():
                 )
             success = True
         except Exception as error:
-            failure = f"{type(error).__name__}: {error}"
+            failure = f"Operator acceptance failed: {type(error).__name__}"
         finally:
             if server.poll() is None:
                 server.terminate()
