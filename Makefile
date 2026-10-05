@@ -371,7 +371,7 @@ build: clean
 
 .PHONY: package-smoke
 package-smoke: build
-	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/package_smoke.py dist --out package-smoke-results.json
+	@$(if $(PACKAGE_SMOKE_TMPDIR),TMPDIR="$(PACKAGE_SMOKE_TMPDIR)") PYTHONPATH=$(PYTHONPATH):. uv run python scripts/package_smoke.py dist --out package-smoke-results.json
 
 .PHONY: examples-local
 examples-local: installed-native-acceptance

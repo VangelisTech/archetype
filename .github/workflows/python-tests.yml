@@ -129,21 +129,29 @@ jobs:
           set -euo pipefail
           uv sync --frozen --all-packages --all-extras --group dev --group docs
           make current-reliability current-coverage docs
+          mkdir -p "$RUNNER_TEMP/package-smoke"
+          make package-smoke PACKAGE_SMOKE_TMPDIR="$RUNNER_TEMP/package-smoke"
           uv run python -m evals.run --profile conformance --trials 1 --out eval-conformance-results.json
-      - name: Exact-wheel installed public runtime, cold HTTP/MCP and example
+      - name: Seal the package-smoked eight-artifact release candidate
+        run: |
+          set -euo pipefail
+          uv run python scripts/release_artifact.py record --dist dist --manifest release-artifact.json
+          uv run python scripts/release_artifact.py verify --dist dist --manifest release-artifact.json
+      - name: Exact candidate installed public runtime, cold HTTP/MCP, example and consumers
         env:
           DDLOG_ACCEPTANCE_TOOLCHAIN: ${{ runner.temp }}/ddlog-native
           DDLOG_ACCEPTANCE_UPSTREAM: ${{ github.workspace }}/native-upstream
         run: |
-          python3 scripts/run_native_acceptance.py \
+          uv run python scripts/run_native_acceptance.py \
             --stage "$RUNNER_TEMP/installed-native" \
             --library "$PWD/target/debug/libarchetype_ddlog_python.so" \
-            --driver "$RUNNER_TEMP/actual-driver.sh"
-      - name: Record and verify exact release artifacts
+            --driver "$RUNNER_TEMP/actual-driver.sh" \
+            --candidate-dir dist --candidate-manifest release-artifact.json
+      - name: Verify original and installed candidate artifacts after acceptance
         run: |
           set -euo pipefail
-          uv run python scripts/release_artifact.py record --dist "$RUNNER_TEMP/installed-native/wheels" --manifest "$RUNNER_TEMP/installed-native/release-artifact.json"
-          uv run python scripts/release_artifact.py verify --dist "$RUNNER_TEMP/installed-native/wheels" --manifest "$RUNNER_TEMP/installed-native/release-artifact.json"
+          uv run python scripts/release_artifact.py verify --dist dist --manifest release-artifact.json
+          uv run python scripts/release_artifact.py verify --dist "$RUNNER_TEMP/installed-native/wheels" --manifest release-artifact.json
       - name: Retain actual acceptance evidence on success or failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -160,6 +168,10 @@ jobs:
             archetype/current-coverage.json
             archetype/eval-conformance-results.json
             archetype/site
+            archetype/dist
+            archetype/release-artifact.json
+            archetype/package-smoke-results.json
+            ${{ runner.temp }}/package-smoke
             native-upstream/scripts
           if-no-files-found: error
           retention-days: 14

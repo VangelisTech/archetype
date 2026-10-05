@@ -126,11 +126,13 @@ jobs:
           DDLOG_PYTHON_LIBRARY: ${{ github.workspace }}/archetype/target/debug/libarchetype_ddlog_python.so
           ARCHETYPE_ACCEPTANCE_DRIVER: ${{ runner.temp }}/actual-driver.sh
           ACCEPTANCE_STAGE: ${{ runner.temp }}/installed-release
+          PACKAGE_SMOKE_TMPDIR: ${{ runner.temp }}/package-smoke
           DDLOG_ACCEPTANCE_TOOLCHAIN: ${{ runner.temp }}/ddlog-native
           DDLOG_ACCEPTANCE_UPSTREAM: ${{ github.workspace }}/native-upstream
         run: |
           set -euo pipefail
           uv sync --frozen --all-packages --all-extras --group dev --group docs
+          mkdir -p "$PACKAGE_SMOKE_TMPDIR"
           make verify-release
       - name: Retain exact artifacts and release evidence
         if: always()
@@ -143,6 +145,7 @@ jobs:
             archetype/current-reliability-results.json
             archetype/current-coverage.json
             archetype/package-smoke-results.json
+            ${{ runner.temp }}/package-smoke
             archetype/site/
             ${{ runner.temp }}/installed-release
             ${{ runner.temp }}/ddlog-native/receipt.json
