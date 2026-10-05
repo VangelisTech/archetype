@@ -188,7 +188,7 @@ async fn remote_recovery_process_entry() -> Result<()> {
             assert_eq!(rows[0].sha256, fixture.sha256);
             assert_eq!(
                 rows[0].typed_facts["text"]["text_kind"],
-                serde_json::json!("plain")
+                serde_json::json!({"string": "plain"})
             );
             assert_eq!(
                 cold.history(&fixture.cut.world, &fixture.cut.run).await?,
@@ -379,7 +379,7 @@ async fn cold_remote_context_verifies_common_typed_and_original_without_staged_b
     assert_eq!(rows[0].sha256, digest);
     assert_eq!(
         rows[0].typed_facts["text"]["text_kind"],
-        serde_json::json!("plain")
+        serde_json::json!({"string": "plain"})
     );
     assert_eq!(cold.history("test", "run_a").await?.len(), 0); // unrelated scope stays empty
     cold.verified_cut(&cut).await?;
