@@ -16,18 +16,14 @@ def test_current_authority_layout_keeps_world_libraries_out_of_framework_tree() 
     remainder = guide.split("The current distribution and authority layout is:", 1)[1]
     layout = remainder.split("```text", 1)[1].split("```", 1)[0]
     framework_tree = layout.split(
-        "packages/archetype-missions/src/archetype/missions/",
+        "packages/archetype-research/src/archetype/research/",
         1,
     )[0]
 
     for stale_directory in ("  missions/", "  physical_ai/", "  research/"):
         assert stale_directory not in framework_tree
 
-    for distribution_root in (
-        "packages/archetype-missions/src/archetype/missions/",
-        "packages/archetype-physical-ai/src/archetype/physical_ai/",
-        "packages/archetype-research/src/archetype/research/",
-    ):
+    for distribution_root in ("packages/archetype-research/src/archetype/research/",):
         assert distribution_root in layout
 
 
@@ -38,11 +34,7 @@ def test_guides_assign_library_construction_to_private_extension_adapters() -> N
     research = (GUIDE_ROOT / "autoresearch.md").read_text(encoding="utf-8")
     composition_guidance = "\n".join((architecture, services, protocols, research))
 
-    for adapter in (
-        "archetype.missions._extension",
-        "archetype.physical_ai._extension",
-        "archetype.research._extension",
-    ):
+    for adapter in ("archetype.research._extension",):
         assert adapter in composition_guidance
 
     for stale_claim in (

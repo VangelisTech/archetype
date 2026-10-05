@@ -49,62 +49,23 @@ experimental may change without the compatibility guarantees of the main API.
 
 ### Reviewed capability packages
 
-The 0.6 distribution split preserves `archetype.missions`,
-`archetype.physical_ai`, and `archetype.research` while moving them to separate
-wheels. New code imports domain values and adapters from those namespaces.
-The split is a clean pre-1.0 break: manifests do not contribute domain values
-to `archetype`, and installed libraries do not add domain methods to generic
-runtime or world handles. See [Archetype 0.6](release-0.6.md).
+Research is the retained separately distributed world library. Its values and
+adapter are imported from `archetype.research`; installation contributes no
+dynamic root exports or world methods. The framework owns execution episodes,
+generic evaluation, artifacts, and storage. `ResearchCandidateContext` is the
+supported preparation callback value. Concrete workflow implementations remain
+internal.
 
-`archetype.episodes` has been removed. Execution episodes remain under
-`archetype.world`; coding-session transcript and trajectory contracts are
-canonical under `archetype.missions.trajectories`.
+Missions and Physical AI products are removed in the DDlog migration branch.
+This is an intentional breaking change for a future versioned release, not a
+compatibility promise for previously published 0.6 wheels. Old consumers must
+keep their pinned environment until migrated. See
+[World libraries](world-libraries.md) for stale entry-point rejection and the
+[DDlog migration](ddlog-runtime.md) for the separate preview contract.
+Historical release notes describe what those releases shipped.
 
-The provisional production `archetype.experiments` package has been removed.
-Standalone scripts under the repository-root `experiments/` directory are
-consumers of the shipped library; they do not define an importable domain
-family or application authority.
-
-`ClaudeTranscriptSource` and `TranscriptIngestionResult` are supported types
-in the `MissionWorld.ingest_claude_transcript()` signature. They remain
-namespaced under `archetype.missions.trajectories`; support does not require
-promotion to the framework root. The parser's in-memory `LoadedSession` and
-the concrete transcript composition plus artifact-family handlers remain
-implementation details.
-
-`archetype.physical_ai` is the reviewed owner for reusable physical state,
-hosted episode contracts, provider reconciliation, and pure instruction
-optimization. `HostedEpisodeRequest`, `HostedEpisodeObservation`, and
-`ModalHostedEpisodeConfig` are supported from the `archetype.physical_ai`
-family facade and appear in `PhysicalAI.run_hosted_episode()`. The family
-workflow, Activity binding, worker, and exact operation model remain internal.
-Raw-client environment and policy processors are internal in-process
-implementation details and are not a distributed runtime surface.
-
-`FrameGrader`, `Outcome`, `GraderContract`, and `EvalReceipt` are supported
-top-level evaluation contracts. `TrajectoryGrader` remains an object-identical
-namespaced alias of `FrameGrader` for the existing trajectory consumer; the
-evaluation workflow itself is implemented by family-owned free handlers.
-
-The ownership trajectory is recorded in
-[Agent Missions V1, section 9](agent-missions.md#9-family-direction-after-v1),
-and the named family moves are complete. Dataset evidence identity now lives in
-`archetype.evaluation.contracts`, and the former `archetype.datasets` package is
-gone. The former `archetype.htn` resolver now lives under
-`archetype.missions.planning`; its future adapter to mission task entities is
-not yet a supported authoring surface. Trajectory schemas, Claude source
-parsing, and pure transforms live under `archetype.missions.trajectories`;
-physical state and the hosted episode workflow live in `physical_ai`; that
-workflow is registered behind one exact trusted-only direct operation; and
-research values, ledger state, views, decoder, and free workflow handler live
-in `archetype.research`. `ResearchCandidateContext` is the canonical supported
-preparer-callback value. It is not the persisted
-`archetype.missions.Candidate` review subject.
-
-Do not build a compatibility promise around the planning adapter or concrete
-application module paths. New applications use `ArchetypeRuntime` and the
-supported extension/signature types inventoried by the generated reference. A
-future graduation must name an owning domain family and enter that inventory.
+The provisional production `archetype.experiments` package remains removed;
+repository-root experiments are consumers of the shipped library.
 
 Supported exports are additive within a release line. Removing or changing
 their meaning requires a versioned migration. Every classification or export
@@ -114,7 +75,7 @@ missing or stale entries.
 The file-artifact consolidation is the recorded `0.4.1` to `0.5` migration.
 Its removed bundle, claim, receipt, and reconciliation contracts must not ship
 in another `0.4.x` release. The replacement surface and direct call mapping are
-documented in [Artifacts and ingestion](artifacts.md#11-migration-from-the-04-artifact-surface).
+documented in [Artifacts and ingestion](../compatibility/0.6/guide/artifacts.md#11-migration-from-the-04-artifact-surface).
 
 The authoritative boundary and dependency rules are in
 [Application Architecture](application-architecture.md).

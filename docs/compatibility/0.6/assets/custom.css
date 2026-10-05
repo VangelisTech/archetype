@@ -1,0 +1,22 @@
+/* Vangelis.Tech docs — Helvetica font override */
+
+:root {
+  --font-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "SF Mono", "Fira Code", "Cascadia Code", "JetBrains Mono", monospace;
+}
+
+body,
+html {
+  font-family: var(--font-sans);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-sans);
+  font-weight: 700;
+}
+
+/* Sidebar site title */
+.font-semibold {
+  font-family: var(--font-sans);
+  font-weight: 600;
+}

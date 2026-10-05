@@ -1,6 +1,12 @@
 name: Docs
 
 on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy the built documentation to production"
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -23,8 +29,9 @@ on:
       - ".github/workflows/docs.yml"
 
 concurrency:
-  group: docs-${{ github.ref }}
-  cancel-in-progress: true
+  # Production dispatches retain their running deployment when docs builds arrive.
+  group: docs-${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true && 'production' || 'build' }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.deploy != true }}
 
 jobs:
   # --------------------------------------------------------------------------
@@ -37,6 +44,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: crate-ci/typos@bee27e3a4fd1ea2111cf90ab89cd076c870fce14 # v1.48.0
         with:
           config: ./_typos.toml
@@ -51,6 +60,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: DavidAnson/markdownlint-cli2-action@05f32210e84442804257b2a6f20b273450ec8265 # v19.1.0
         with:
           config: .markdownlint.yaml
@@ -68,6 +79,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           args: >-
@@ -88,6 +101,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
@@ -118,17 +133,13 @@ jobs:
 
   # --------------------------------------------------------------------------
   # Deploy to Cloudflare Pages
-  #   push to main  → production (archetype.vangelis.tech)
-  #   pull request   → preview   (<hash>.archetype-docs.pages.dev)
+  #   Explicit manual deployment only; PR and push runs build evidence.
   # --------------------------------------------------------------------------
   deploy:
     name: Deploy to Cloudflare Pages
     needs: build
-    # Skip on fork PRs — secrets are not available.
-    if: |
-      github.event_name == 'push' ||
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name == github.repository)
+    # Public writes require an explicit manual run. PR/push still build docs.
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy == true && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -172,7 +183,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: f11df81ebc1ba9b7450c59398474827a
-          DOCS_DEPLOY_BRANCH: ${{ github.head_ref || 'main' }}
+          DOCS_DEPLOY_BRANCH: main
         run: |
           set -o pipefail
           npx --yes wrangler pages deploy site/ \
@@ -191,7 +202,7 @@ jobs:
       # association in the deployment workflow so the real custom-domain
       # configuration cannot drift from the public site URL in mkdocs.yml.
       - name: Ensure production custom domain
-        if: github.event_name == 'push'
+        if: github.event_name == 'workflow_dispatch'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: f11df81ebc1ba9b7450c59398474827a
@@ -229,7 +240,7 @@ jobs:
       # here as well so the public hostname cannot remain pending after a
       # successful production deploy.
       - name: Ensure production DNS record
-        if: github.event_name == 'push'
+        if: github.event_name == 'workflow_dispatch'
         env:
           CLOUDFLARE_DNS_API_TOKEN: ${{ secrets.CLOUDFLARE_DNS_API_TOKEN }}
           CUSTOM_DOMAIN: archetype.vangelis.tech

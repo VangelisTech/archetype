@@ -12,7 +12,6 @@ runtime-owned world locks that PR-4 removes.
 from __future__ import annotations
 
 import ast
-import asyncio
 import inspect
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
@@ -34,17 +33,6 @@ _PULL_FORWARD_MODELS = (
     ("archetype.evaluation.models", "RunGraders"),
     ("archetype.evaluation.models", "Evaluate"),
     ("archetype.research.models", "AutoResearch"),
-    ("archetype.physical_ai.models", "RunHostedEpisode"),
-    ("archetype.missions.trajectories.models", "IngestClaudeTranscript"),
-    ("archetype.missions.trajectories.models", "QueryTranscriptRows"),
-    ("archetype.missions.trajectories.models", "QueryTrajectory"),
-    ("archetype.missions.trajectories.models", "GradeTrajectory"),
-    ("archetype.missions.models", "SubmitMission"),
-    ("archetype.missions.models", "RunMission"),
-    ("archetype.missions.models", "RestoreMissionSandbox"),
-    ("archetype.missions.models", "AcceptMissionRun"),
-    ("archetype.missions.models", "GetMissionRun"),
-    ("archetype.missions.models", "CancelMissionRun"),
 )
 
 
@@ -89,34 +77,15 @@ class _DispatchProbe:
 
 class _AdmissionResources:
     def __init__(self, dispatcher: _DispatchProbe) -> None:
-        from archetype.missions._extension import get_manifest as missions_manifest
-        from archetype.missions.runtime import Missions, MissionWorld
-        from archetype.physical_ai._extension import get_manifest as physical_ai_manifest
-        from archetype.physical_ai.runtime import PhysicalAI
         from archetype.research._extension import get_manifest as research_manifest
         from archetype.research.runtime import Research
 
         self.dispatcher = dispatcher
-        self.world_library_manifests = (
-            missions_manifest(),
-            physical_ai_manifest(),
-            research_manifest(),
-        )
+        self.world_library_manifests = (research_manifest(),)
         self._world_libraries = {
-            "missions": SimpleNamespace(
-                runtime_adapter=Missions,
-                world_adapter=MissionWorld,
-            ),
-            "physical-ai": SimpleNamespace(runtime_adapter=None, world_adapter=PhysicalAI),
             "research": SimpleNamespace(runtime_adapter=None, world_adapter=Research),
         }
         self._operations = OperationAdmission(closed_message="runtime is closed")
-        self.reservations: list[_MissionReservationProbe] = []
-
-    def reserve_owner(self, *_args: object, **_kwargs: object) -> _MissionReservationProbe:
-        reservation = _MissionReservationProbe()
-        self.reservations.append(reservation)
-        return reservation
 
     def world_library(self, name: str) -> object:
         return self._world_libraries[name]
@@ -124,28 +93,8 @@ class _AdmissionResources:
     def admit_operation(self):
         return self._operations.admit()
 
-    def admit_owner_operation(self, reservation: _MissionReservationProbe):
-        return reservation.admit_operation()
-
     def operation_admitted(self) -> bool:
         return self._operations.admitted_by_current_task()
-
-
-class _MissionReservationProbe:
-    def __init__(self) -> None:
-        self.released = False
-        self.operation_admission = OperationAdmission(
-            closed_message="Agent Missions handle is closed"
-        )
-
-    def admit_operation(self):
-        return self.operation_admission.admit()
-
-    def operation_admitted(self) -> bool:
-        return self.operation_admission.admitted_by_current_task()
-
-    def retain_anchor(self, _anchor: object) -> None:
-        return None
 
 
 class _RuntimeProbe:
@@ -254,32 +203,16 @@ def _runtime_shell(dispatcher: _DispatchProbe) -> Any:
     runtime._shutdown_started = False
     runtime._closed = False
     runtime._handles = WeakSet()
-    runtime._mission_handles = set()
     return runtime
 
 
 def test_generic_library_lookup_constructs_installed_typed_adapters() -> None:
-    from archetype.missions import AgentMissionConfig, Missions, MissionWorld
-    from archetype.physical_ai import PhysicalAI
     from archetype.research import Research
 
     dispatcher = _DispatchProbe()
     runtime = _runtime_shell(dispatcher)
     world, _state = _runtime_world(dispatcher)
 
-    config = AgentMissionConfig(
-        sandbox_backend=cast("Any", object()),
-        sandbox_environment="lookup-contract",
-    )
-    assert isinstance(
-        runtime.library(
-            "missions",
-            config=config,
-        ),
-        Missions,
-    )
-    assert isinstance(world.library("missions"), MissionWorld)
-    assert isinstance(world.library("physical-ai"), PhysicalAI)
     assert isinstance(world.library("research"), Research)
     with pytest.raises(TypeError, match="has no runtime adapter"):
         runtime.library("research")
@@ -364,38 +297,6 @@ async def test_cold_attached_artifacts_without_storage_fail_before_dispatch(
 
 
 @pytest.mark.asyncio
-async def test_attached_transcript_operations_without_storage_fail_before_dispatch(
-    tmp_path: Path,
-) -> None:
-    """Transcript capabilities cannot recover coordinates through live state."""
-
-    from archetype.missions.runtime import MissionWorld
-    from archetype.missions.trajectories.contracts import ClaudeTranscriptSource
-
-    dispatcher = _DispatchProbe()
-    world, _state = _runtime_world(dispatcher)
-    source = ClaudeTranscriptSource(
-        tmp_path / "never-read.jsonl",
-        project="runtime-contract",
-        session_id="missing-storage",
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="ingest_claude_transcript requires explicit storage coordinates",
-    ):
-        await MissionWorld(world).ingest_claude_transcript(source)
-    with pytest.raises(
-        ValueError,
-        match="query_transcript_rows requires explicit storage coordinates",
-    ):
-        await MissionWorld(world).transcript_rows()
-
-    assert dispatcher.trusted == []
-    assert not source.path.exists()
-
-
-@pytest.mark.asyncio
 async def test_resume_retains_the_exact_explicit_storage_on_its_handle(
     tmp_path: Path,
 ) -> None:
@@ -435,38 +336,6 @@ async def test_resume_retains_its_effective_default_storage_on_the_handle() -> N
     assert state.storage_config is resume.storage_config
 
 
-def _mission_shell(
-    runtime: Any,
-    *,
-    owner_id: str,
-    name: str,
-    config: object,
-    storage: StorageConfig,
-) -> Any:
-    mission_type = import_module("archetype.missions.runtime").Missions
-    handle = object.__new__(mission_type)
-    handle._runtime = runtime
-    handle._resources = runtime._resources
-    handle._dispatcher = runtime._resources.dispatcher
-    handle._owner_id = owner_id
-    handle.owner_id = owner_id
-    handle._name = name
-    handle.name = name
-    handle._config = config
-    handle.config = config
-    handle._storage = storage
-    handle._storage_config = storage
-    handle.storage = storage
-    handle._reservation = _MissionReservationProbe()
-    handle._operation_admission = handle._reservation.operation_admission
-    handle._close_lock = asyncio.Lock()
-    handle._public_closing = False
-    handle._public_closed = False
-    handle._service = _EffectTrap()
-    handle._closed = False
-    return handle
-
-
 def _assert_exact_pull_forward_dispatch(
     operations: Sequence[object],
     models: dict[str, type[Any]],
@@ -482,19 +351,6 @@ def _assert_exact_pull_forward_dispatch(
         models["RunGraders"],
         models["Evaluate"],
         models["AutoResearch"],
-        models["RunHostedEpisode"],
-        models["IngestClaudeTranscript"],
-        models["QueryTranscriptRows"],
-        get_world_info,
-        models["QueryTrajectory"],
-        get_world_info,
-        models["GradeTrajectory"],
-        models["SubmitMission"],
-        models["RunMission"],
-        models["RestoreMissionSandbox"],
-        models["AcceptMissionRun"],
-        models["GetMissionRun"],
-        models["CancelMissionRun"],
     )
     actual_types = tuple(type(operation) for operation in operations)
     assert actual_types == expected_types, (
@@ -545,29 +401,12 @@ async def test_runtime_world_constructs_exact_registered_family_models() -> None
 async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
     tmp_path: Path,
 ) -> None:
-    """All sixteen supported methods construct their canonical operation."""
+    """All five supported workflow methods construct their canonical operation."""
 
     from daft import from_pydict
 
     from archetype.artifacts.models import ArtifactSource
     from archetype.evaluation.contracts import GraderContract
-    from archetype.missions.contracts import (
-        AgentMissionConfig,
-        AgentTask,
-        CommandValidator,
-        SubmittedMission,
-    )
-    from archetype.missions.runtime import MissionWorld
-    from archetype.missions.sandboxes import CheckpointRef
-    from archetype.missions.trajectories import (
-        ClaudeTranscriptSource,
-        TrajectorySelection,
-    )
-    from archetype.physical_ai.models import (
-        HostedEpisodeRequest,
-        ModalHostedEpisodeConfig,
-    )
-    from archetype.physical_ai.runtime import PhysicalAI
     from archetype.research.models import AutoResearchConfig
     from archetype.research.runtime import Research
     from archetype.world.models import GetWorldInfo, QueryComponents
@@ -588,14 +427,8 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         namespace="runtime-dispatch-red",
     )
     world, _state = _runtime_world(dispatcher, storage=storage)
-    runtime = _runtime_shell(dispatcher)
 
     artifact = ArtifactSource(source_uri=str(tmp_path / "artifact.txt"))
-    transcript = ClaudeTranscriptSource(
-        tmp_path / "session.jsonl",
-        project="project",
-        session_id="session",
-    )
 
     def grader(_df: object) -> object:
         return object()
@@ -613,7 +446,6 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         grader_id="runtime-dispatch",
         implementation_version="1",
     )
-    selection = TrajectorySelection(episode_ids=("episode-1",))
     research_config = AutoResearchConfig(
         experiment_name="runtime-dispatch",
         experiment_id="runtime-dispatch-1",
@@ -622,25 +454,6 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         max_iterations=1,
         num_episodes=1,
     )
-    hosted_request = HostedEpisodeRequest(
-        trial_id=0,
-        suite="suite",
-        task_id=1,
-        seed=1,
-        instruction="reach",
-        max_transitions=1,
-        environment_id="environment@v1",
-        policy_id="policy@v1",
-    )
-    provider_config = ModalHostedEpisodeConfig(
-        workspace_name="workspace",
-        environment_name="environment",
-        app_name="app",
-        function_name="function",
-        result_dict_name="results",
-        result_volume_name="values",
-    )
-
     assert await world.ingest_artifacts(artifact) is results["ingest_artifacts"]
     assert await world.artifacts() is results["query_artifacts"]
     assert await world.grade(DispatchMetric, graders=(grader,)) is results["run_graders"]
@@ -665,110 +478,13 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         )
         is results["autoresearch"]
     )
-    assert (
-        await PhysicalAI(world).run_hosted_episode(
-            [hosted_request],
-            provider=provider_config,
-            activity_id="activity-1",
-        )
-        is results["run_hosted_episode"]
-    )
-    missions_world = MissionWorld(world)
-    assert (
-        await missions_world.ingest_claude_transcript(transcript)
-        is results["ingest_claude_transcript"]
-    )
-    assert await missions_world.transcript_rows() is results["query_transcript_rows"]
-    assert (
-        await missions_world.query_trajectory(
-            DispatchMetric,
-            selection=selection,
-            ticks=[4],
-            entity_ids=[5],
-        )
-        is results["query_trajectory"]
-    )
-    assert (
-        await missions_world.grade_trajectory(
-            DispatchMetric,
-            graders=(grader,),
-            selection=selection,
-            ticks=[6],
-            entity_ids=[7],
-        )
-        is results["grade_trajectory"]
-    )
-
-    mission_config = AgentMissionConfig(
-        sandbox_backend=cast("Any", object()),
-        sandbox_environment="provider:v1",
-    )
-    missions = _mission_shell(
-        runtime,
-        owner_id="mission-owner-1",
-        name="mission-runtime",
-        config=mission_config,
-        storage=storage,
-    )
-    task = AgentTask(
-        name="task-1",
-        prompt="Implement the requested change.",
-        validators=(
-            CommandValidator(
-                name="tests",
-                command=("pytest", "-q"),
-            ),
-        ),
-    )
-    submitted = SubmittedMission(
-        mission_id=17,
-        task_ids=(("task-1", 18),),
-        episode_id="mission-episode-runtime",
-        repository="repo",
-        branch="branch",
-    )
-    checkpoint = CheckpointRef(
-        provider="provider",
-        checkpoint_id="checkpoint-1",
-        uri="provider://checkpoint-1",
-        created_at_ms=1,
-    )
-    assert (
-        await missions.submit(
-            repository="repo",
-            branch="branch",
-            tasks=(task,),
-            name="mission-submission",
-            base_ref="main",
-        )
-        is results["submit_mission"]
-    )
-    assert await missions.run(submitted, max_ticks=9) is results["run_mission"]
-    assert (
-        await missions.restore_sandbox(submitted, checkpoint) is results["restore_mission_sandbox"]
-    )
-    assert (
-        await missions.accept(
-            repository="repo",
-            branch="branch",
-            tasks=(task,),
-            principal="agent:runtime-dispatch",
-            idempotency_key="mission-run-1",
-            name="mission-submission",
-            base_ref="main",
-        )
-        is results["accept_mission_run"]
-    )
-    assert await missions.get_run("run-1") is results["get_mission_run"]
-    assert await missions.cancel_run("run-1", reason="stop") is results["cancel_mission_run"]
-
     operations = _assert_exact_pull_forward_dispatch(
         dispatcher.trusted,
         models,
         get_world_info=GetWorldInfo,
         query_components=QueryComponents,
     )
-    assert len(operations) == 16
+    assert len(operations) == 5
     assert all(
         model.model_fields["operation"].default == operations[model_name].operation
         for model_name, model in models.items()
@@ -819,114 +535,16 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
     assert operations["AutoResearch"].prepare_candidate is prepare_candidate
     assert operations["AutoResearch"].lab_world_id == "lab-world-1"
     assert operations["AutoResearch"].on_iteration is on_iteration
-    assert operations["RunHostedEpisode"].world_id == "world-1"
-    assert operations["RunHostedEpisode"].storage_config is storage
-    assert operations["RunHostedEpisode"].activity_id == "activity-1"
-    assert operations["RunHostedEpisode"].requests == (hosted_request,)
-    assert operations["RunHostedEpisode"].provider is provider_config
-    assert operations["IngestClaudeTranscript"].world_id == "world-1"
-    assert operations["IngestClaudeTranscript"].source is transcript
-    assert operations["IngestClaudeTranscript"].storage_config is storage
-    assert operations["QueryTranscriptRows"].world_id == "world-1"
-    assert operations["QueryTranscriptRows"].storage_config is storage
-    assert operations["QueryTrajectory"].component is DispatchMetric
-    assert operations["QueryTrajectory"].world_id == "world-1"
-    assert operations["QueryTrajectory"].run_id == "run-1"
-    assert operations["QueryTrajectory"].storage_config is storage
-    assert operations["QueryTrajectory"].selection is selection
-    assert operations["QueryTrajectory"].ticks == (4,)
-    assert operations["QueryTrajectory"].entity_ids == (5,)
-    assert operations["GradeTrajectory"].component is DispatchMetric
-    assert operations["GradeTrajectory"].world_id == "world-1"
-    assert operations["GradeTrajectory"].run_id == "run-1"
-    assert operations["GradeTrajectory"].graders == (grader,)
-    assert operations["GradeTrajectory"].storage_config is storage
-    assert operations["GradeTrajectory"].selection is selection
-    assert operations["GradeTrajectory"].ticks == (6,)
-    assert operations["GradeTrajectory"].entity_ids == (7,)
-
-    submit = operations["SubmitMission"]
-    assert submit.owner_id == "mission-owner-1"
-    assert submit.name == "mission-runtime"
-    assert submit.config is mission_config
-    assert submit.storage is storage
-    assert submit.submission.repository == "repo"
-    assert submit.submission.branch == "branch"
-    assert submit.submission.tasks == (task,)
-    assert submit.submission.name == "mission-submission"
-    assert submit.submission.base_ref == "main"
-    assert submit.predetermined_world_id == ""
-    assert operations["RunMission"].owner_id == "mission-owner-1"
-    assert operations["RunMission"].mission is submitted
-    assert operations["RunMission"].max_ticks == 9
-    assert operations["RestoreMissionSandbox"].owner_id == "mission-owner-1"
-    assert operations["RestoreMissionSandbox"].mission is submitted
-    assert operations["RestoreMissionSandbox"].checkpoint is checkpoint
-    accept = operations["AcceptMissionRun"]
-    assert accept.owner_id == "mission-owner-1"
-    assert accept.name == "mission-runtime"
-    assert accept.config is mission_config
-    assert accept.storage is storage
-    assert accept.request.principal == "agent:runtime-dispatch"
-    assert accept.request.idempotency_key == "mission-run-1"
-    assert accept.request.submission.repository == "repo"
-    assert accept.request.submission.tasks == (task,)
-    assert operations["GetMissionRun"].run_id == "run-1"
-    assert operations["GetMissionRun"].owner_id == "mission-owner-1"
-    assert operations["CancelMissionRun"].run_id == "run-1"
-    assert operations["CancelMissionRun"].reason == "stop"
-    assert dispatcher.actor_aware == []
 
 
 @pytest.mark.asyncio
 async def test_runtime_has_no_actor_or_access_decision_evidence() -> None:
-    """Trusted calls use apply, never invent an ActorCtx or access decision."""
-
-    from archetype.physical_ai.models import (
-        HostedEpisodeRequest,
-        ModalHostedEpisodeConfig,
-    )
-    from archetype.physical_ai.runtime import PhysicalAI
-
-    models = _canonical_pull_forward_models()
     dispatcher = _DispatchProbe()
-    expected = object()
-    dispatcher.results["run_hosted_episode"] = expected
-    world, _state = _runtime_world(dispatcher, storage=StorageConfig())
-    request = HostedEpisodeRequest(
-        trial_id=0,
-        suite="suite",
-        task_id=1,
-        seed=1,
-        instruction="reach",
-        max_transitions=1,
-        environment_id="environment@v1",
-        policy_id="policy@v1",
-    )
-    provider = ModalHostedEpisodeConfig(
-        workspace_name="workspace",
-        environment_name="environment",
-        app_name="app",
-        function_name="function",
-        result_dict_name="results",
-        result_volume_name="values",
-    )
-
-    assert (
-        await PhysicalAI(world).run_hosted_episode(
-            [request],
-            provider=provider,
-            activity_id="activity-1",
-        )
-        is expected
-    )
-    assert [type(operation) for operation in dispatcher.trusted] == [models["RunHostedEpisode"]]
-    operation = dispatcher.trusted[0]
-    assert operation.requests == (request,)
-    assert operation.provider is provider
+    world, _state = _runtime_world(dispatcher)
+    await world.step()
     assert dispatcher.actor_aware == []
-    assert "actor" not in type(operation).model_fields
-    assert "actor_id" not in type(operation).model_fields
+    assert len(dispatcher.trusted) == 1
+    assert not hasattr(dispatcher.trusted[0], "actor")
 
 
 def test_runtime_world_has_no_duplicate_world_operation_lock_or_context_authority() -> None:

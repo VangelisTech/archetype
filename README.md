@@ -1,225 +1,82 @@
 # Archetype
 
-[![CI](https://github.com/VangelisTech/archetype/actions/workflows/python-tests.yml/badge.svg)](https://github.com/VangelisTech/archetype/actions/workflows/python-tests.yml)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+ECS simulations with DDlog execution and typed Iceberg history. Python, HTTP and
+MCP share one operation contract. Daft analyzes durable results outside live
+execution. Archetype remains active with limited investment.
 
-Archetype is a dataframe-first ECS framework for simulations and agent
-workflows. Define state with components, transform populations with processors,
-and keep each tick as queryable history. Use a fork to continue from an earlier
-state without overwriting the original run.
+This tree implements the **0.7 release candidate**. Publication and release
+acceptance must be recorded before calling it a released version. The 0.6 Daft
+runtime is an explicit compatibility line; 0.7 changes its execution contract.
 
-It is built on [Daft](https://www.daft.ai/) and Iceberg/LanceDB. The default Python
-entry point is `ArchetypeRuntime`; HTTP services and the CLI use the same
-command layer when you need a multi-user host.
-
-## Install
-
-Install only the generic ECS framework for simulations, storage, migration,
-evaluation, the runtime, API, and CLI:
-
-```bash
-uv add archetype-ecs
+```mermaid
+flowchart LR
+  Python[ArchetypeRuntime] --> Operations[Shared operations]
+  HTTP[Authenticated HTTP /invoke] --> Operations
+  MCP[Official MCP /mcp] --> Operations
+  Operations --> Native[Existing DDlog WorldManager]
+  Native --> Storage[Complete Iceberg cuts and artifact indexes]
+  Storage --> Analysis[Bounded reads and optional Daft analysis]
 ```
 
-World libraries are separate distributions that preserve their
-`archetype.<family>` imports. Installing one also installs a compatible
-`archetype-ecs`:
+Install matching built wheels for `archetype-native==0.7.0` and
+`archetype-ecs==0.7.0`. Add `archetype-transports==0.7.0` for HTTP/MCP and
+`archetype-ecs[analysis]` for file ingestion, media indexes or Daft analysis.
+The default Python live surface does not install Daft. These candidate wheels
+are not claimed to exist on a public package index yet.
 
-```bash
-uv add archetype-missions
-uv add archetype-physical-ai
-uv add archetype-research
+From this checkout, `uv sync --all-packages --all-extras --group dev` installs
+the development environment. `uv build --all-packages` builds ECS, private
+native infrastructure, optional transports and independent Smol. Research stays
+on matched 0.6 source/wheels; it is not silently installed into 0.7.
+
+The private native library is a separate, matched build prerequisite:
+
+```sh
+cargo +1.95.0 build --locked -p archetype-ddlog-python
+export ARCHETYPE_NATIVE_LIBRARY="$PWD/target/debug/libarchetype_ddlog_python.dylib"
+# Linux uses target/debug/libarchetype_ddlog_python.so.
+export ARCHETYPE_STORE=/absolute/path/to/storage
+export ARCHETYPE_REGISTRY=/absolute/path/to/registry
+export ARCHETYPE_BUILDS=/absolute/path/to/builds
+export ARCHETYPE_NATIVE_DRIVER=/absolute/path/to/pinned-ddlog-runtime/scripts/build-ddlog.sh
+uv run python examples/native_simulation.py
 ```
 
-Install all three first-party libraries through the framework convenience
-extra:
+The driver needs the DDlog toolchain configured by the pinned upstream runtime.
+Use Rust 1.95.0 for the Archetype C ABI. The compiled-program driver follows its
+own toolchain contract. The package loader requires ABI 1 and pure contract 3
+before opening storage, registry or worlds. Supported lock platforms are macOS
+and Linux. See [installation and native ownership](docs/guide/runtime.md).
 
-```bash
-uv add "archetype-ecs[all]"
-```
+The [quickstart](docs/guide/quickstart.md) composes two immutable programs,
+creates a world, submits exact Bool/Float64 values, publishes a complete cut and
+reads its typed values. World handles are lazy and world-local. Closing the
+runtime drains its owned work. Cancellation ends the caller's wait while the
+runtime continues supervising the underlying call.
 
-For a small synchronous, in-memory teaching engine with no framework
-dependency, install Smol separately:
+[Artifacts](docs/guide/artifacts.md) support hosted contexts, cutless occurrences,
+artifact-only collections, exact cut attribution, retained batch publication
+retries and cold common/typed facts. [History and forks](docs/guide/history-and-forks.md)
+select complete cuts, including empty outputs after retractions.
 
-```bash
-uv add archetype-smol
-```
+Limits are explicit: 64 KiB requests, 16 KiB responses, at most 32 rows per public
+page, 32 KiB inline uploads, and 1–16 retained in-flight calls. Local file batches
+use the existing analytical graph and native publication budgets: 32 occurrences,
+64 MiB per content file and 256 MiB aggregate admitted file reads. These limits
+do not bound live execution time or Daft scan memory. Distributed fencing,
+administrative resolution and garbage collection are not promised.
 
-Smol is not selected by `archetype-ecs[all]` and is not a compatibility layer
-for the production engine.
+Use [HTTP/MCP](docs/guide/transports.md) with real configured principals and exact
+resource grants. `archetype serve` owns the same native runtime; other CLI
+commands are HTTP clients. Removed `spawn`, `run` and `step` commands do not
+fall back to a second tick engine.
 
-The same package specifiers work with `pip install`. Selective framework extras
-are also available as `missions`, `physical-ai`, and `research`, for example
-`uv add "archetype-ecs[missions,research]"`. Installed libraries are discovered
-when an `ArchetypeRuntime` or API host is composed; the base framework starts
-with none installed.
+[Migration](docs/guide/migration-0.7.md) records breaking changes and consumer
+version decisions. Research, Smol and generic Biome/inference teaching material
+retain their stated roles. Missions and Physical AI evaluation products are
+outside the active package and documentation surface.
 
-Version 0.6 is a clean pre-1.0 split with no world-library import or
-runtime-method shims and no automatic migration for older Research ledgers.
-See the [0.6 release note](docs/guide/release-0.6.md) for the exact source and
-storage changes.
-
-For a checkout, install the development environment with `make sync-dev`.
-The repository is one uv workspace containing all five distributions: the
-framework, three world libraries, and the independent Smol teaching engine.
-
-## Run a simulation
-
-The example runs a chaotic map, forks the world, and nudges the fork's state
-by 1e-9. Both branches run forward. Every tick persists as immutable rows, so
-the divergence is a join over the two histories, not a re-run.
-
-```python
-import asyncio
-import os
-
-from daft import DataFrame, col
-from daft.functions import prompt
-
-from archetype import ArchetypeRuntime, AsyncProcessor, Component
-
-
-class Node(Component):
-    x: float = 0.5
-
-
-class LogisticMap(AsyncProcessor):
-    components = (Node,)
-
-    async def process(self, df: DataFrame, **_) -> DataFrame:
-        x = col("node__x")
-        return df.with_column("node__x", 3.9999 * x * (1.0 - x))
-
-
-class Analyst(Component):
-    evidence: str = ""
-    verdict: str = ""
-
-
-class Review(AsyncProcessor):
-    components = (Analyst,)
-
-    async def process(self, df: DataFrame, **_) -> DataFrame:
-        ask = "In one sentence, what does this divergence imply? " + col("analyst__evidence")
-        return df.with_column("analyst__verdict", prompt(ask, model="gpt-5-mini"))
-
-
-async def main() -> None:
-    async with ArchetypeRuntime() as runtime:
-        prime = runtime.world("prime", processors=[LogisticMap()])
-        node = await prime.spawn(Node())
-        await prime.run(steps=13)
-
-        # Fork at tick 12; nudge the fork.
-        x12 = (await prime.query(Node)).where(col("tick") == 12).to_pylist()[0]["node__x"]
-        fork = await prime.fork("nudged")
-        await fork.update(node, Node(x=x12 + 1e-9))
-        await prime.run(steps=24)
-        await fork.run(steps=25)  # updates persist first, so the fork runs one tick behind
-
-        # The counterfactual is a join of the two histories.
-        base = (await prime.query(Node)).select("tick", "node__x")
-        nudged = (await fork.query(Node)).select(
-            (col("tick") - 1).alias("tick"), col("node__x").alias("nudged")
-        )
-        deltas = (
-            base.join(nudged, on="tick")
-            .where(col("tick") >= 12)
-            .with_column("delta", (col("node__x") - col("nudged")).abs())
-            .sort("tick")
-            .to_pylist()
-        )
-        print("  ".join(f"t{r['tick']}: {r['delta']:.0e}" for r in deltas[::6]))
-
-        # Optional: an agent reviews the divergence. Its verdict is world state too.
-        if os.getenv("OPENAI_API_KEY"):
-            analyst = runtime.world("analyst", processors=[Review()])
-            await analyst.spawn(Analyst(evidence=", ".join(f"{r['delta']:.0e}" for r in deltas)))
-            await analyst.run(steps=2)
-            report = (await analyst.query(Analyst)).where(col("tick") == 1)
-            print(report.to_pylist()[0]["analyst__verdict"])
-
-
-asyncio.run(main())
-```
-
-```text
-t12: 1e-09  t18: 3e-08  t24: 1e-06  t30: 3e-04  t36: 2e-02
-```
-
-The nudge doubles every tick. Without `OPENAI_API_KEY`, the script prints the
-divergence and skips the agent.
-[`examples/02_fork_counterfactual.py`](examples/02_fork_counterfactual.py)
-runs three regimes;
-[`examples/05_llm_agents.py`](examples/05_llm_agents.py) shows richer agent
-patterns.
-
-For a regular script without `async`, use `with ArchetypeRuntime.sync() as
-runtime:` and omit `await`.
-
-## What it gives you
-
-- Columnar processors run one DataFrame transform over every matching entity.
-- Every tick is append-only, so historical reads are ordinary queries.
-- Forks inherit source history and create an independent future.
-- Agents are entities: an LLM call is one more columnar processor writing to
-  the same history.
-- The optional Agent Missions library turns repository work into a typed task
-  graph whose transitions are gated by the repository's own validators.
-- The service layer can authorize and audit mutations before a tick applies
-  them.
-
-## Documentation
-
-Start with the [quickstart](https://archetype.vangelis.tech/docs/guide/quickstart/),
-then read [World Libraries](https://archetype.vangelis.tech/docs/guide/world-libraries/)
-to choose an installation,
-then use the guides for [components](https://archetype.vangelis.tech/docs/guide/components/),
-[processors](https://archetype.vangelis.tech/docs/guide/processors/), and
-[worlds](https://archetype.vangelis.tech/docs/guide/working-with-worlds/).
-For coding-agent workflows, see
-[Agent Missions V1](https://archetype.vangelis.tech/docs/guide/agent-missions/).
-
-The site also includes the current [Python API](https://archetype.vangelis.tech/docs/reference/python-api/),
-[CLI](https://archetype.vangelis.tech/docs/reference/cli/), and
-[REST API](https://archetype.vangelis.tech/docs/reference/rest-api/) references.
-
-Runnable examples live in [`examples/`](examples/README.md). Most run without
-credentials:
-
-```bash
-uv run python examples/01_world_mutations.py
-uv run python examples/02_fork_counterfactual.py
-uv run python examples/03_time_travel.py
-uv run python examples/04_messaging.py
-uv run python examples/07_hooks.py
-uv run python examples/11_coding_agent_mission.py --dry-run
-```
-
-`examples/05_llm_agents.py` and parts of `examples/06_trajectory_analysis.py`
-require `OPENAI_API_KEY`.
-
-## Development
-
-```bash
-make sync-dev  # install development dependencies
-make test      # run the fast test suite
-make check     # format and lint
-make docs      # generate references and build the docs site
-make ci        # run required static checks and fast tests
-```
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the engine. The
-normative contracts are under [`docs/guide/`](docs/guide/specification.md).
-
-## Status
-
-Archetype is alpha software. The append-only world, history, and fork paths
-are the most mature parts of the project. The HTTP layer uses development-mode
-authentication by default; supply your own authentication before exposing it
-to untrusted users.
-
-## License
-
-Apache-2.0. See [LICENSE](LICENSE).
+`make ci` validates the current source and package contract. `make verify-full`
+and `make verify-release` require installed real-native evidence in addition to
+routine tests; simulated compiler fixtures are labelled separately. Production
+docs deployment is a separate explicit manual action.

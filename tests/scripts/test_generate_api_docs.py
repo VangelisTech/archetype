@@ -10,7 +10,6 @@ from copy import deepcopy
 import pytest
 
 from scripts.generate_api_docs import (
-    MISSIONS_OUTPUT,
     OUTPUT,
     _validate_extension_composition,
     generate,
@@ -29,11 +28,6 @@ def rest_reference(rest_references: dict) -> str:
     return rest_references[OUTPUT]
 
 
-@pytest.fixture(scope="module")
-def missions_rest_reference(rest_references: dict) -> str:
-    return rest_references[MISSIONS_OUTPUT]
-
-
 def _operation(reference: str, heading: str) -> str:
     start = reference.index(f"### {heading}\n")
     end = reference.index("\n---\n", start)
@@ -42,28 +36,16 @@ def _operation(reference: str, heading: str) -> str:
 
 def test_committed_rest_references_match_openapi(rest_references: dict) -> None:
     assert OUTPUT.read_text(encoding="utf-8") == rest_references[OUTPUT]
-    assert MISSIONS_OUTPUT.read_text(encoding="utf-8") == rest_references[MISSIONS_OUTPUT]
+    assert set(rest_references) == {OUTPUT}
     assert generate() == rest_references[OUTPUT]
 
 
-def test_framework_and_missions_routes_use_explicit_compositions(
-    rest_reference: str,
-    missions_rest_reference: str,
-) -> None:
-    from archetype.missions._extension import get_manifest
-
+def test_framework_routes_exclude_removed_products(rest_reference: str) -> None:
     base_paths = get_openapi_schema(world_libraries=())["paths"]
-    missions_paths = get_openapi_schema(world_libraries=(get_manifest(),))["paths"]
-
-    assert "/worlds/{world_id}/missions" not in base_paths
-    assert "/worlds/{world_id}/missions" in missions_paths
+    assert not any("mission" in path or "physical" in path for path in base_paths)
     assert "# Framework REST API Reference" in rest_reference
     assert "| Distribution | `archetype-ecs` |" in rest_reference
     assert "GET /worlds/{world_id}/missions" not in rest_reference
-    assert "# Agent Missions REST API Reference" in missions_rest_reference
-    assert "| Distribution | `archetype-missions` |" in missions_rest_reference
-    assert "GET /worlds/{world_id}/missions" in missions_rest_reference
-    assert "GET /healthz" not in missions_rest_reference
 
 
 def test_extension_coordinate_collision_fails_closed() -> None:

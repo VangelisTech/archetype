@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
@@ -144,6 +146,43 @@ def test_local_persistence_cleans_staging_file_when_publish_fails(
 
     staging = store / "objects" / ".staging"
     assert not [path for path in staging.iterdir() if path.is_file()]
+
+
+def test_local_persistence_syncs_file_before_publish_and_directories_after(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    original_sync = os.fsync
+    original_replace = os.replace
+
+    def sync(fd: int) -> None:
+        events.append("directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+        original_sync(fd)
+
+    def replace(source: str, destination: Path) -> None:
+        events.append("publish")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(pipeline_module.os, "fsync", sync)
+    monkeypatch.setattr(pipeline_module.os, "replace", replace)
+    _persist_local_file(cast(Any, _TrackingFile(b"durable")), str(tmp_path / "store"))
+
+    assert events[:2] == ["file", "publish"]
+    assert events[2:] == ["directory"] * 5
+
+
+def test_local_persistence_does_not_publish_when_file_sync_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_sync(_fd: int) -> None:
+        raise OSError("sync failed")
+
+    monkeypatch.setattr(pipeline_module.os, "fsync", fail_sync)
+    with pytest.raises(OSError, match="sync failed"):
+        _persist_local_file(cast(Any, _TrackingFile(b"durable")), str(tmp_path / "store"))
+    assert not _object_path(tmp_path / "store", b"durable").exists()
 
 
 def test_binary_upload_addresses_bytes_read_at_persist_time(tmp_path: Path) -> None:

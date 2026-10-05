@@ -20,8 +20,6 @@ from griffe import Extension, GriffeLoader, Module
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _LIBRARY_SOURCE_ROOTS = {
-    "missions": _REPOSITORY_ROOT / "packages/archetype-missions/src",
-    "physical_ai": _REPOSITORY_ROOT / "packages/archetype-physical-ai/src",
     "research": _REPOSITORY_ROOT / "packages/archetype-research/src",
 }
 

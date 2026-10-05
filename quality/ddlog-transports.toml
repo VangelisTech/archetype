@@ -1,0 +1,6 @@
+# Optional local ingress adapters, outside the retained archetype family DAG.
+classification = "native-transport-adapter"
+distribution = "archetype-transports"
+module = "archetype_transports"
+package = "packages/archetype-transports"
+contract = "docs/guide/transports.md"

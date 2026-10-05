@@ -27,14 +27,7 @@ def test_error_taxonomy_governs_registered_family_exceptions() -> None:
         "archetype.world.errors.WorldClosingError",
         "archetype.world.simulation.PostCommitProjectionError",
     } <= classes.keys()
-    assert set(checker.INTERNAL_ONLY_EXCEPTIONS) == {
-        "archetype.missions.coding_agents.app_server.CodexAppServerError",
-        "archetype.missions.coding_agents.app_server.CodexTurnCompletionBarrierError",
-        "archetype.missions.critics.harness._UnverifiableReview",
-        "archetype.missions.mcp.client.MissionToolError",
-        "archetype.missions.sandboxes._subprocess._CleanupTimeout",
-        "archetype.missions.sandboxes._subprocess._JoinTimeout",
-    }
+    assert checker.INTERNAL_ONLY_EXCEPTIONS == {}
     assert checker.check_error_taxonomy() == []
 
 
@@ -44,4 +37,4 @@ def test_full_composition_discovers_every_first_party_world_library() -> None:
     registry, installed = checker._composed_registry()
 
     assert installed == checker.EXPECTED_WORLD_LIBRARIES
-    assert len(registry.specs) == 51
+    assert len(registry.specs) == 38

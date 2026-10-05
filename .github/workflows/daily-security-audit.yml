@@ -59,12 +59,6 @@ jobs:
             printf "uv export failed; dependency graph may be unsatisfiable\n" > .github/security-artifacts/dependency-audit-status.txt
           fi
 
-          if python3 scripts/scan_pinned_artifacts.py --fail-on-findings --out .github/security-artifacts/pinned-artifact-osv.json > .github/security-artifacts/pinned-artifact-osv.stdout 2> .github/security-artifacts/pinned-artifact-osv.stderr; then
-            printf "pinned-artifact OSV scan succeeded\n" >> .github/security-artifacts/dependency-audit-status.txt
-          else
-            printf "pinned-artifact OSV scan reported findings or failed; inspect pinned-artifact-osv.json and stderr\n" >> .github/security-artifacts/dependency-audit-status.txt
-          fi
-
       - name: Build bounded audit schema
         id: schema
         run: python3 scripts/daily_security_audit.py schema >> "${GITHUB_OUTPUT}"
@@ -91,8 +85,7 @@ jobs:
             - security-relevant durability, redaction, and audit boundaries under packages/archetype-ecs/src/archetype/storage/, packages/archetype-ecs/src/archetype/artifacts/, packages/archetype-ecs/src/archetype/activities/, and packages/archetype-ecs/src/archetype/redaction/
             - concrete composition in packages/archetype-ecs/src/archetype/wiring.py and packages/archetype-ecs/src/archetype/runtime_resources.py
             - trusted extension discovery under packages/archetype-ecs/src/archetype/world_libraries/ and each packages/archetype-*/src/archetype/*/_extension.py manifest adapter
-            - the pinned execution-environment inventory at packages/archetype-missions/src/archetype/missions/sandboxes/versions.toml
-            - dependency evidence under .github/security-artifacts/, including the pinned-artifact OSV scan
+            - dependency evidence under .github/security-artifacts/
 
             Requirements:
             - Focus on outstanding security findings, noteworthy positive design decisions, dependency CVEs/advisories, dependency-resolution failures, and the highest-priority next actions

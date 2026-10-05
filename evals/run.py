@@ -30,8 +30,8 @@ from evals.types import TaskResult, aggregate_pass_at_k
 from quality.results import build_result_envelope, utc_now
 from scripts.validate_contracts import contract_eval_map
 
-REQUIRED_SUITES = frozenset({"regression", "spec", "idempotency", "capability"})
-KNOWN_SUITES = ("regression", "spec", "idempotency", "capability")
+REQUIRED_SUITES = frozenset({"native"})
+KNOWN_SUITES = ("native",)
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_REGISTRY = ROOT / "quality" / "eval_profiles.toml"
 

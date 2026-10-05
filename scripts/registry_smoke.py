@@ -117,8 +117,6 @@ def _requirements(matrix: str, version: str) -> tuple[str, ...]:
     }
     selected = {
         "base": (exact["archetype-ecs"],),
-        "missions": (exact["archetype-ecs"], exact["archetype-missions"]),
-        "physical-ai": (exact["archetype-ecs"], exact["archetype-physical-ai"]),
         "research": (exact["archetype-ecs"], exact["archetype-research"]),
         "all": tuple(exact[distribution] for distribution in _WORLD_STACK_DISTRIBUTIONS),
         "smol": (exact["archetype-smol"],),
@@ -216,10 +214,8 @@ def _probe_source(matrix: str, version: str) -> str:
 
     expected_libraries = {
         "base": [],
-        "missions": ["missions"],
-        "physical-ai": ["physical-ai"],
         "research": ["research"],
-        "all": ["missions", "physical-ai", "research"],
+        "all": ["research"],
     }[matrix]
     return f"""
 import asyncio
@@ -269,8 +265,8 @@ assert "__getattr__" not in RuntimeWorld.__dict__
 assert "__getattr__" not in SyncRuntimeWorld.__dict__
 assert "library" not in SyncRuntimeWorld.__dict__
 assert "library" not in SyncArchetypeRuntime.__dict__
-if "missions" in expected:
-    assert not hasattr(importlib.import_module("archetype.missions"), "RuntimeMissions")
+assert importlib.util.find_spec("archetype.missions") is None
+assert importlib.util.find_spec("archetype.physical_ai") is None
 if "research" in expected:
     research = importlib.import_module("archetype.research")
     assert not hasattr(research, "CandidateContext")

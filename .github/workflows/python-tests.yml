@@ -23,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -36,9 +38,12 @@ jobs:
 
   tests:
     name: Tests (3.12)
+    needs: ddlog-storage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -48,5 +53,125 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --all-packages --all-extras --group dev
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: native-cabi
+          path: target/debug
       - run: make test
+        env:
+          DDLOG_PYTHON_LIBRARY: ${{ github.workspace }}/target/debug/libarchetype_ddlog_python.so
       - run: make package-smoke
+
+  ddlog-storage:
+    name: DDlog storage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install Rust
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+      - run: cargo +1.95.0 fmt -p archetype-ddlog -- --check
+      - run: cargo +1.95.0 clippy -p archetype-ddlog --all-targets --locked -- -D warnings
+      - run: cargo +1.95.0 test -p archetype-ddlog --locked
+      - run: cargo +1.95.0 fmt -p archetype-ddlog-python -- --check
+      - run: cargo +1.95.0 clippy -p archetype-ddlog-python --all-targets --locked -- -D warnings
+      - run: cargo +1.95.0 test -p archetype-ddlog-python --locked
+      - run: cargo +1.95.0 build -p archetype-ddlog-python --locked
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-cabi
+          path: target/debug/libarchetype_ddlog_python.so
+          if-no-files-found: error
+
+  installed-native:
+    name: Installed native acceptance
+    needs: ddlog-storage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: archetype
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          path: archetype
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: everettVT/ddlog-runtime
+          ref: e7bec261336ac5cdaa6d99778feeaedcb03a73ae
+          path: native-upstream
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: native-cabi
+          path: archetype/target/debug
+      - name: Bootstrap pinned actual DDlog toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+          python3 ../native-upstream/scripts/bootstrap-native.py "$RUNNER_TEMP/ddlog-native"
+          cat > "$RUNNER_TEMP/actual-driver.sh" <<'DRIVER'
+          #!/bin/sh
+          set -eu
+          . "$DDLOG_ACCEPTANCE_TOOLCHAIN/env.sh"
+          exec "$DDLOG_ACCEPTANCE_UPSTREAM/scripts/build-ddlog.sh" "$@"
+          DRIVER
+          chmod +x "$RUNNER_TEMP/actual-driver.sh"
+      - name: Current full/release source evidence
+        env:
+          DDLOG_PYTHON_LIBRARY: ${{ github.workspace }}/archetype/target/debug/libarchetype_ddlog_python.so
+        run: |
+          set -euo pipefail
+          uv sync --frozen --all-packages --all-extras --group dev --group docs
+          make current-reliability current-coverage docs
+          mkdir -p "$RUNNER_TEMP/package-smoke"
+          make package-smoke PACKAGE_SMOKE_TMPDIR="$RUNNER_TEMP/package-smoke"
+          uv run python -m evals.run --profile conformance --trials 1 --out eval-conformance-results.json
+      - name: Seal the package-smoked eight-artifact release candidate
+        run: |
+          set -euo pipefail
+          uv run python scripts/release_artifact.py record --dist dist --manifest release-artifact.json
+          uv run python scripts/release_artifact.py verify --dist dist --manifest release-artifact.json
+      - name: Exact candidate installed public runtime, cold HTTP/MCP, example and consumers
+        env:
+          DDLOG_ACCEPTANCE_TOOLCHAIN: ${{ runner.temp }}/ddlog-native
+          DDLOG_ACCEPTANCE_UPSTREAM: ${{ github.workspace }}/native-upstream
+        run: |
+          uv run python scripts/run_native_acceptance.py \
+            --stage "$RUNNER_TEMP/installed-native" \
+            --library "$PWD/target/debug/libarchetype_ddlog_python.so" \
+            --driver "$RUNNER_TEMP/actual-driver.sh" \
+            --candidate-dir dist --candidate-manifest release-artifact.json
+      - name: Verify original and installed candidate artifacts after acceptance
+        run: |
+          set -euo pipefail
+          uv run python scripts/release_artifact.py verify --dist dist --manifest release-artifact.json
+          uv run python scripts/release_artifact.py verify --dist "$RUNNER_TEMP/installed-native/wheels" --manifest release-artifact.json
+      - name: Retain actual acceptance evidence on success or failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: installed-native-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/installed-native
+            ${{ runner.temp }}/ddlog-native/receipt.json
+            ${{ runner.temp }}/actual-driver.sh
+            archetype/target/debug/libarchetype_ddlog_python.so
+            archetype/packages/*/src
+            archetype/crates/*/src
+            archetype/current-reliability-results.json
+            archetype/current-coverage.json
+            archetype/eval-conformance-results.json
+            archetype/site
+            archetype/dist
+            archetype/release-artifact.json
+            archetype/package-smoke-results.json
+            ${{ runner.temp }}/package-smoke
+            native-upstream/scripts
+          if-no-files-found: error
+          retention-days: 14

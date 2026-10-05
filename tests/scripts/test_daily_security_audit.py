@@ -162,7 +162,6 @@ def test_workflow_uses_current_read_only_scope_and_fail_loud_publication() -> No
         "packages/archetype-ecs/src/archetype/wiring.py",
         "packages/archetype-ecs/src/archetype/world_libraries/",
         "packages/archetype-*/src/archetype/*/_extension.py",
-        "packages/archetype-missions/src/archetype/missions/sandboxes/versions.toml",
     ):
         assert current_path in workflow
     assert '--allowedTools "Read,Grep,Glob"' in workflow

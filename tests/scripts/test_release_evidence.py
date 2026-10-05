@@ -119,13 +119,13 @@ def _receipt(
     )
 
 
-def test_release_artifact_verification_accepts_exact_five_distribution_matrix(
+def test_release_artifact_verification_accepts_exact_three_distribution_matrix(
     tmp_path: Path,
 ) -> None:
     dist, manifest_path, _wheels = _artifact(tmp_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    assert len(_distribution_files(dist)) == 10
+    assert len(_distribution_files(dist)) == 6
     assert verify_artifact(manifest, dist, expected_commit="a" * 40) is manifest
 
 
@@ -159,8 +159,8 @@ def test_release_artifact_verification_rejects_changed_bytes(tmp_path: Path) -> 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     verify_artifact(manifest, dist, expected_commit="a" * 40)
 
-    (dist / "archetype_missions-0.6.0-py3-none-any.whl").write_bytes(b"other")
-    with pytest.raises(ValueError, match="archetype-missions wheel sha256 mismatch"):
+    (dist / "archetype_research-0.6.0-py3-none-any.whl").write_bytes(b"other")
+    with pytest.raises(ValueError, match="archetype-research wheel sha256 mismatch"):
         verify_artifact(manifest, dist, expected_commit="a" * 40)
 
 
@@ -301,7 +301,7 @@ def test_release_evidence_requires_every_scenario_on_framework_wheel(tmp_path: P
     assert summary["version"] == "0.6.0"
     assert summary["passed_scenarios"] == 2
     assert summary["framework_wheel_sha256"] == wheels["archetype-ecs"]["digest"].split(":")[1]
-    assert len(summary["wheel_artifacts"]) == 5
+    assert len(summary["wheel_artifacts"]) == 3
 
 
 def test_release_evidence_requires_exact_wheel_artifact_set(tmp_path: Path) -> None:
@@ -323,7 +323,7 @@ def test_release_evidence_rejects_legacy_single_wheel_anchor(tmp_path: Path) -> 
 
     with pytest.raises(
         ValueError,
-        match="artifact set must contain all four world-stack distributions",
+        match="artifact set must contain both world-stack distributions",
     ):
         verify(registry=registry, manifest_path=manifest_path, receipt_paths=[receipt])
 

@@ -34,7 +34,6 @@ from archetype.migration import (
     plan_storage_migration,
     verify_storage_migration,
 )
-from archetype.missions.trajectories import CLAUDE_TRANSCRIPT_TABLE
 from archetype.storage.catalog import CommandAdmission, control_snapshot_digest
 from archetype.storage.service import StorageService
 from archetype.storage.session import configure_session
@@ -358,7 +357,7 @@ async def test_local_whole_storage_identity_migrates_and_cold_resumes(
 
         await source_service.append_table(
             source_storage,
-            CLAUDE_TRANSCRIPT_TABLE,
+            "migration_test_rows",
             daft.from_pydict(
                 {
                     "session_id": ["session-migration"],
@@ -535,7 +534,7 @@ async def test_local_whole_storage_identity_migrates_and_cold_resumes(
         planned_names = tuple(table.name for table in plan.tables)
         assert ARTIFACT_FILES in planned_names
         assert ARTIFACT_TEXT in planned_names
-        assert CLAUDE_TRANSCRIPT_TABLE in planned_names
+        assert "migration_test_rows" in planned_names
         assert "audit_rows" in planned_names
         assert "future_family_state" in planned_names
         assert len([table for table in plan.tables if table.classification == "ecs"]) >= 3
@@ -658,7 +657,7 @@ async def test_local_whole_storage_identity_migrates_and_cold_resumes(
             await fresh_destination.read_table(destination_storage, ARTIFACT_TEXT)
         ).count_rows() == 2
         assert (
-            await fresh_destination.read_table(destination_storage, CLAUDE_TRANSCRIPT_TABLE)
+            await fresh_destination.read_table(destination_storage, "migration_test_rows")
         ).to_pydict()["content"] == ["durable transcript evidence"]
         assert (await fresh_destination.read_table(destination_storage, "audit_rows")).to_pydict()[
             "event_id"

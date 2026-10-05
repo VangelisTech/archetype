@@ -1,11 +1,12 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Verified service principals for future mission-control transports.
+"""Generic verifier-backed service principals.
 
-Existing ECS routes intentionally retain their loopback developer identity.
-Mission-control transports use this separate verifier-backed directory and
-never interpret a role label as proof of identity.
+The directory authenticates an opaque credential and returns explicitly
+provisioned capability names. A consuming transport must check its own exact
+capability; a role label is never proof of identity. The existing developer
+ECS routes do not automatically use this directory.
 """
 
 from __future__ import annotations
@@ -23,18 +24,8 @@ from pathlib import Path
 from typing import Any
 
 DEVELOPER_ROLE_LABELS = frozenset({"admin", "operator", "player", "viewer"})
-MISSION_CAPABILITIES = frozenset(
-    {
-        "mission:submit",
-        "mission:read",
-        "mission:cancel",
-        "mission:attach",
-        "mission:steer",
-        "mission:takeover",
-    }
-)
 _MIN_CREDENTIAL_LENGTH = 24
-_PRINCIPALS_PATH_ENV = "ARCHETYPE_MISSION_PRINCIPALS_PATH"
+_PRINCIPALS_PATH_ENV = "ARCHETYPE_PRINCIPALS_PATH"
 _BIND_HOST_ENV = "ARCHETYPE_BIND_HOST"
 _SHA256_HEX_LENGTH = 64
 
@@ -131,9 +122,9 @@ def _verifier_from_mapping(raw: Mapping[str, Any], environ: Mapping[str, str]) -
             or credential.strip() != credential
             or any(character.isspace() for character in credential)
         ):
-            raise RuntimeError(f"{name} must contain a strong opaque mission credential")
+            raise RuntimeError(f"{name} must contain a strong opaque service credential")
         if credential.lower() in DEVELOPER_ROLE_LABELS:
-            raise ValueError("mission credential must not be a developer role label")
+            raise ValueError("service credential must not be a developer role label")
         return _credential_verifier(credential)
     if not isinstance(verifier_hex, str):
         raise ValueError("credential_sha256 must be a lowercase SHA-256 verifier")
@@ -147,29 +138,25 @@ def _verifier_from_mapping(raw: Mapping[str, Any], environ: Mapping[str, str]) -
 
 
 @dataclass(frozen=True, slots=True)
-class MissionPrincipal:
-    """Stable authenticated identity and its explicit mission grants."""
+class Principal:
+    """Stable authenticated identity and its explicit capability grants."""
 
     principal_id: str
     capabilities: frozenset[str]
-    allowed_profile_ids: frozenset[str]
 
     def __post_init__(self) -> None:
         principal_id = _require_identifier(self.principal_id, label="principal_id")
         if principal_id.lower() in DEVELOPER_ROLE_LABELS:
             raise ValueError("principal_id must not be a developer role label")
         capabilities = frozenset(self.capabilities)
-        unknown = sorted(capabilities - MISSION_CAPABILITIES)
-        if unknown:
-            raise ValueError(f"unsupported mission capabilities: {', '.join(unknown)}")
+        _frozen_strings(list(capabilities), label="capabilities")
         object.__setattr__(self, "principal_id", principal_id)
         object.__setattr__(self, "capabilities", capabilities)
-        object.__setattr__(self, "allowed_profile_ids", frozenset(self.allowed_profile_ids))
 
 
 @dataclass(frozen=True, slots=True)
 class _PrincipalRecord:
-    principal: MissionPrincipal
+    principal: Principal
     verifier: bytes = field(repr=False)
     expires_at: datetime | None = None
     revoked: bool = False
@@ -180,13 +167,9 @@ def _record_from_mapping(
     environ: Mapping[str, str],
 ) -> _PrincipalRecord:
     return _PrincipalRecord(
-        principal=MissionPrincipal(
+        principal=Principal(
             principal_id=_require_identifier(raw.get("id"), label="principal id"),
             capabilities=_frozen_strings(raw.get("capabilities"), label="capabilities"),
-            allowed_profile_ids=_frozen_strings(
-                raw.get("allowed_profile_ids"),
-                label="allowed_profile_ids",
-            ),
         ),
         verifier=_verifier_from_mapping(raw, environ),
         expires_at=_parse_expiry(raw.get("expires_at")),
@@ -195,8 +178,8 @@ def _record_from_mapping(
 
 
 @dataclass(frozen=True, slots=True)
-class MissionPrincipalDirectory:
-    """Immutable process-owned verifier set for mission service principals."""
+class PrincipalDirectory:
+    """Immutable process-owned verifier set for service principals."""
 
     _records: tuple[_PrincipalRecord, ...] = ()
 
@@ -204,19 +187,19 @@ class MissionPrincipalDirectory:
         ids = tuple(record.principal.principal_id for record in self._records)
         verifiers = tuple(record.verifier for record in self._records)
         if len(set(ids)) != len(ids):
-            raise ValueError("mission principal ids must be unique")
+            raise ValueError("service principal ids must be unique")
         if len(set(verifiers)) != len(verifiers):
-            raise ValueError("mission principal credentials must be unique")
+            raise ValueError("service principal credentials must be unique")
 
     @classmethod
-    def empty(cls) -> MissionPrincipalDirectory:
+    def empty(cls) -> PrincipalDirectory:
         return cls()
 
     @classmethod
     def from_env(
         cls,
         environ: Mapping[str, str] | None = None,
-    ) -> MissionPrincipalDirectory:
+    ) -> PrincipalDirectory:
         """Load verifier records from the configured provisioning document."""
 
         source = os.environ if environ is None else environ
@@ -226,7 +209,7 @@ class MissionPrincipalDirectory:
         document = tomllib.loads(Path(configured).expanduser().read_text(encoding="utf-8"))
         rows = document.get("principal", [])
         if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
-            raise ValueError("mission principal document must contain [[principal]] tables")
+            raise ValueError("service principal document must contain [[principal]] tables")
         return cls(tuple(_record_from_mapping(row, source) for row in rows))
 
     @classmethod
@@ -234,7 +217,7 @@ class MissionPrincipalDirectory:
         cls,
         rows: tuple[Mapping[str, Any], ...],
         environ: Mapping[str, str] | None = None,
-    ) -> MissionPrincipalDirectory:
+    ) -> PrincipalDirectory:
         source = os.environ if environ is None else environ
         return cls(tuple(_record_from_mapping(row, source) for row in rows))
 
@@ -247,7 +230,7 @@ class MissionPrincipalDirectory:
         credential: str,
         *,
         now: datetime | None = None,
-    ) -> MissionPrincipal:
+    ) -> Principal:
         """Resolve a credential without retaining or reflecting it."""
 
         offered = _credential_verifier(credential)
@@ -283,10 +266,9 @@ def bind_host_from_env(environ: Mapping[str, str] | None = None) -> str:
 
 __all__ = [
     "DEVELOPER_ROLE_LABELS",
-    "MISSION_CAPABILITIES",
     "AuthenticationError",
-    "MissionPrincipal",
-    "MissionPrincipalDirectory",
+    "Principal",
+    "PrincipalDirectory",
     "bind_host_from_env",
     "is_loopback_host",
     "parse_bearer_credential",

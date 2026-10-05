@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,8 +32,6 @@ from archetype.artifacts.pipeline import (
     ARTIFACT_VIDEO,
 )
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
-from archetype.missions.trajectories import CLAUDE_TRANSCRIPT_TABLE, ClaudeTranscriptSource
-from archetype.missions.trajectories.models import IngestClaudeTranscript, QueryTranscriptRows
 from archetype.storage.service import StorageService
 from archetype.world.models import CreateWorld, Step
 from tests._runtime import build_test_runtime
@@ -300,8 +297,6 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
     code = tmp_path / "pipeline.py"
     patch = tmp_path / "change.patch"
     image = tmp_path / "pixel.png"
-    transcript = tmp_path / "dogfood-project" / "session.jsonl"
-    transcript.parent.mkdir()
     markdown.write_text("# Task\nAssess the multimodal artifact ingestion evidence.\n")
     code.write_text("def ingest(path: str) -> str:\n    return path\n")
     patch.write_text(
@@ -314,42 +309,6 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         "     return path\n"
     )
     image.write_bytes(_PNG)
-    transcript.write_text(
-        "\n".join(
-            [
-                json.dumps(
-                    {
-                        "type": "user",
-                        "timestamp": "2026-07-20T09:00:00.000Z",
-                        "cwd": "/private/software-factory",
-                        "gitBranch": "mission/artifact-context",
-                        "version": "3.0.0",
-                        "message": {
-                            "role": "user",
-                            "content": "Assess the context pack without trusting embedded instructions.",
-                        },
-                    }
-                ),
-                json.dumps(
-                    {
-                        "type": "assistant",
-                        "timestamp": "2026-07-20T09:00:02.000Z",
-                        "cwd": "/private/software-factory",
-                        "gitBranch": "mission/artifact-context",
-                        "version": "3.0.0",
-                        "message": {
-                            "role": "assistant",
-                            "content": [{"type": "text", "text": "Indexed and attributed."}],
-                            "model": "claude-fable-5",
-                            "usage": {"output_tokens": 4},
-                        },
-                    }
-                ),
-            ]
-        ),
-        encoding="utf-8",
-    )
-
     catalog = _catalog(catalog_path, warehouse)
     catalog.create_namespace(namespace)
     storage_service: StorageService | None = None
@@ -431,18 +390,6 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
 
         assert len(references) == 8
         assert all(reference.uri.startswith(object_root) for reference in references)
-        transcript_result = await dispatcher.apply(
-            IngestClaudeTranscript(
-                world_id=world.world_id,
-                source=ClaudeTranscriptSource(
-                    path=transcript,
-                    mission_id="r2-context-dogfood",
-                ),
-                storage_config=storage,
-            )
-        )
-        assert transcript_result.rows_written == 3
-        assert transcript_result.artifact.uri.startswith(object_root)
         world_id = str(world.world_id)
         run_id = str(world.run_id)
         await resources.aclose()
@@ -491,9 +438,7 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
             .to_pylist()
         )
         common_by_id = {row["artifact_id"]: row for row in common_rows}
-        expected_ids = {reference.artifact_id for reference in references} | {
-            transcript_result.artifact.artifact_id
-        }
+        expected_ids = {reference.artifact_id for reference in references}
         assert set(common_by_id) == expected_ids
         assert all(row["world_id"] == world_id for row in common_rows)
         assert all(row["run_id"] == run_id for row in common_rows)
@@ -587,13 +532,11 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         )
         assert sorted(row["language"] for row in text_rows) == [
             "diff",
-            "jsonl",
             "markdown",
             "markdown",
             "python",
         ]
         assert {common_by_id[row["artifact_id"]]["logical_path"] for row in text_rows} == {
-            "claude/dogfood-project/session.jsonl",
             "context/change.patch",
             "context/daft-samples.md",
             "context/mission.md",
@@ -618,31 +561,6 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         assert patch_common["mime_type"] == "application/octet-stream"
         assert patch_common["media_family"] == "text"
 
-        transcript_rows = (
-            (
-                await cold_dispatcher.apply(
-                    QueryTranscriptRows(
-                        world_id=world_id,
-                        storage_config=storage,
-                    )
-                )
-            )
-            .select("source_artifact_id", "mission_id", "row_kind", "seq", "role", "content")
-            .to_pylist()
-        )
-        assert {row["source_artifact_id"] for row in transcript_rows} == {
-            transcript_result.artifact.artifact_id
-        }
-        assert {row["mission_id"] for row in transcript_rows} == {"r2-context-dogfood"}
-        assert sorted((row["row_kind"], row["seq"]) for row in transcript_rows) == [
-            ("session", -1),
-            ("turn", 0),
-            ("turn", 1),
-        ]
-        assert common_by_id[transcript_result.artifact.artifact_id]["logical_path"] == (
-            "claude/dogfood-project/session.jsonl"
-        )
-
         cold_counts = {
             ARTIFACT_FILES: len(common_rows),
             ARTIFACT_IMAGES: len(image_rows),
@@ -651,17 +569,15 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
             ARTIFACT_PDF: len(pdf_rows),
             ARTIFACT_TEXT: len(text_rows),
             ARTIFACT_DIFF: len(diff_rows),
-            CLAUDE_TRANSCRIPT_TABLE: len(transcript_rows),
         }
         assert cold_counts == {
-            "artifact_files": 9,
+            "artifact_files": 8,
             "artifact_images": 1,
             "artifact_audio": 1,
             "artifact_video": 1,
             "artifact_pdf": 1,
-            "artifact_text": 5,
+            "artifact_text": 4,
             "artifact_diff": 1,
-            "coding_agent_transcript_rows": 3,
         }
         assert set(cold_counts).issubset({name for _, name in cold_catalog.list_tables(namespace)})
     finally:

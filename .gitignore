@@ -101,3 +101,8 @@ bench/libero/out/
 # Rust
 target/
 **/target/
+
+# Current exact-source verification receipts
+/current-reliability-results.json
+/current-coverage.json
+/package-smoke-results.json

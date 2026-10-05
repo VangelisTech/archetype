@@ -1,5 +1,5 @@
 site_name: Archetype
-site_description: Dataframe-first simulations and agent workflows in Python
+site_description: Typed simulations, world history, and durable artifacts
 site_url: https://archetype.vangelis.tech/docs
 repo_url: https://github.com/VangelisTech/archetype
 repo_name: VangelisTech/archetype
@@ -13,6 +13,15 @@ site_dir: site/docs
 not_in_nav: |
   design/**
   planning/**
+  compatibility/**
+  guide/**
+  reference/**
+  framework/**
+  research/**
+  smol/**
+  incidents/**
+  reports/**
+  maintainers/**
 
 theme:
   name: material
@@ -52,143 +61,28 @@ copyright: Copyright &copy; 2026 Vangelis Tech
 
 nav:
   - Start:
-      - index.md
-      - Install World Libraries: guide/world-libraries.md
-      - Framework Quickstart: guide/quickstart.md
-      - Choose an Example: guide/examples.md
-      - Python API Map: reference/python-api.md
-      - Upgrade to Archetype 0.6: guide/release-0.6.md
-  - Framework:
-      - framework/index.md
-      - Learn:
-          - Core Architecture: guide/core-architecture.md
-          - Building Simulations: guide/building-simulations.md
-          - Components: guide/components.md
-          - Processors: guide/processors.md
-          - Worlds: guide/working-with-worlds.md
-          - History and Forks: guide/history-and-forks.md
-      - Build and Extend:
-          - Prefab Libraries: guide/prefab-libraries.md
-          - Authoring Prefab Libraries: guide/authoring-prefab-libraries.md
-          - Resources: guide/resources.md
-          - Lifecycle Hooks: guide/hooks.md
-          - Configuration: guide/run-config.md
-      - Runtime and Operations:
-          - Application Overview: guide/app-overview.md
-          - Runtime Contract: guide/runtime.md
-          - Activities: guide/activities.md
-          - Access Control and Audit: guide/command-gate.md
-          - Audit Log: guide/audit-log.md
-          - Custom Commands: guide/custom-commands.md
-          - Token Quotas: guide/token-quotas.md
-          - Storage: guide/stores.md
-          - Storage Migration: guide/storage-migration.md
-          - Artifacts: guide/artifacts.md
-          - Dataset and Evaluation Ontology: guide/dataset-eval-ontology.md
-          - Running a Server: guide/api-layer.md
-      - Examples:
-          - Tragedy of the Commons: experiments/tragedy-of-the-commons.md
-      - Reference:
-          - Runtime: reference/python/runtime.md
-          - World Handle: reference/python/world-handle.md
-          - Runtime Models: reference/python/runtime-models.md
-          - File Artifacts: reference/python/artifacts.md
-          - Building Blocks: reference/python/building-blocks.md
-          - Hooks and Identity: reference/python/hooks.md
-          - Configuration: reference/python/configuration.md
-          - Framework Evaluation: reference/python/evaluation.md
-          - Core Engine: reference/python/core.md
-          - Storage Backends: reference/python/storage.md
-          - REST API: reference/rest-api.md
-          - CLI: reference/cli.md
-      - Specifications:
-          - Execution Hierarchy: guide/execution-hierarchy.md
-          - World Lifecycle: guide/world-lifecycle.md
-          - Durable Discovery: guide/durable-discovery.md
-          - Atomic Visibility: guide/atomic-visibility.md
-  - Smol:
-      - smol/index.md
-  - Missions:
-      - missions/index.md
-      - Agent Missions: guide/agent-missions.md
-      - Mission Activity Recovery: missions/recovery.md
-      - Trajectories: guide/trajectories.md
-      - Transcript Ingestion: missions/transcripts.md
-      - Mission Factory Assets: guide/mission-factory-assets.md
-      - Python API:
-          - Missions: reference/python/missions.md
-          - Transcripts: reference/python/transcripts.md
-      - REST API: reference/rest-api-missions.md
-  - Physical AI:
-      - physical-ai/index.md
-      - Physical AI: guide/physical-ai.md
-      - Python API:
-          - Core Surface: reference/python/physical-ai.md
-          - Optimization: reference/python/physical-ai-optimization.md
-          - Host Configuration: reference/python/physical-ai-host.md
-  - Research:
-      - research/index.md
-      - AutoResearch: guide/autoresearch.md
-      - Python API: reference/python/autoresearch.md
-  - Maintainers:
-      - maintainers/index.md
-      - Architecture and Contracts:
-          - Architecture Overview: guide/architecture.md
-          - Application Architecture: guide/application-architecture.md
-          - Specifications: guide/specification.md
-          - Service Protocols: guide/service-protocols.md
-          - Observability: guide/observability.md
-          - Contract Traceability: reference/contract-traceability.md
-      - Development:
-          - Contributing: guide/contributing.md
-          - API Stability and Docstrings: guide/api-stability.md
-          - Repository Harness: guide/repository-harness.md
-          - Repository Checks: guide/evals.md
-          - Performance Benchmarking: guide/benchmarking.md
-          - Benchmark Runs:
-              - Modal OpenCode Single-H200 (2026-07-18): guide/benchmark-runs/modal-opencode-single-h200-2026-07-18.md
-          - Mutation Testing: guide/mutation-testing.md
-          - Version Inventory: reference/version-inventory.md
-      - Core Internals:
-          - Archetypes: guide/archetype.md
-          - Systems: guide/system-execution.md
-          - World Internals: guide/worlds.md
-          - Queries: guide/querier.md
-          - Updates: guide/updater.md
-          - Data Flow: guide/data-flow.md
-          - Durable Commands: guide/durable-commands.md
-          - Services: guide/services.md
-      - History:
-          - About Historical Records: history/index.md
-          - Agent Debriefs:
-              - Coding-Agent Missions (2026-07-18): history/agent-debriefs/2026-07-18-coding-agent-missions.md
-          - Readiness Inventories:
-              - Coding-Agent Mission Readiness (2026-07-18): history/readiness/2026-07-18-coding-agent-missions.md
-          - Architecture Reports:
-              - Security Program Review (2026-03-28): reports/2026-03-28-security-program-review.md
-              - Service-Layer Redesign (2026-04-25): reports/2026-04-25-service-layer-redesign.md
-              - Robot Evals Extraction (2026-07-16): reports/2026-07-16-robot-evals-extraction.md
-              - Contract-Centered Quality System (2026-07-17): reports/2026-07-17-contract-centered-quality-system.md
-
-markdown_extensions:
-  - admonition
-  - attr_list
-  - footnotes
-  - md_in_html
-  - tables
-  - toc:
-      permalink: true
-  - pymdownx.details
-  - pymdownx.highlight:
-      anchor_linenums: true
-  - pymdownx.inlinehilite
-  - pymdownx.tabbed:
-      alternate_style: true
-  - pymdownx.superfences:
-      custom_fences:
-        - name: mermaid
-          class: mermaid
-          format: !!python/name:mermaid2.fence_mermaid
+      - Overview: index.md
+      - Quickstart: guide/quickstart.md
+      - Runtime: guide/runtime.md
+      - Durability: guide/durability.md
+      - Artifacts: guide/artifacts.md
+      - History and Forks: guide/history-and-forks.md
+      - HTTP and MCP: guide/transports.md
+  - Reference:
+      - Specification: guide/specification.md
+      - Python API: reference/python-api.md
+      - Runtime: reference/python/runtime.md
+      - World Handles: reference/python/world-handle.md
+      - Values: reference/python/runtime-models.md
+      - Offline Contracts: reference/python/artifacts.md
+      - CLI: reference/cli.md
+      - Operations: reference/native-operations.md
+      - Contract Evidence: reference/contract-traceability.md
+  - Compatibility:
+      - Migration to 0.7: guide/migration-0.7.md
+      - Example Roles: guide/examples.md
+      - Version 0.6 Runtime: compatibility/0.6/guide/runtime.md
+      - Version 0.6 Research: compatibility/0.6/guide/autoresearch.md
 
 plugins:
   - search

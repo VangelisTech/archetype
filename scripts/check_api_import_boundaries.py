@@ -34,8 +34,6 @@ DEFAULT_POLICY = ROOT / "quality" / "api_import_boundaries.toml"
 SUPPORTED_POLICY_VERSION = 1
 WORKSPACE_SOURCE_ROOTS = (
     Path("packages/archetype-ecs/src"),
-    Path("packages/archetype-missions/src"),
-    Path("packages/archetype-physical-ai/src"),
     Path("packages/archetype-research/src"),
     Path("packages/archetype-smol/src"),
 )

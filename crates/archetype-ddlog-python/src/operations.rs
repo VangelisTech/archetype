@@ -1,0 +1,638 @@
+//! Calls existing authorities. No cached head, generation, admission or job state.
+use anyhow::{Result, anyhow, ensure};
+use archetype_ddlog::{
+    component::Component,
+    hosted::{HostedCutAdapter, HostedScope, publication_policy},
+    store::{
+        CutReceipt, CutStore,
+        attachments::Attachment,
+        bounds,
+        context_attachments::ArtifactSelection,
+        contexts::{ArtifactTarget, ContextDraft, ContextRef},
+        origin::Scope,
+    },
+};
+use arrow_array::{Array, BooleanArray, Float64Array, Int64Array, StringArray};
+use ddlog_runtime::{
+    registry::ProcessorReference,
+    worlds::{
+        AdmissionQuery, AdmitInputs, BoundaryKey, InventoryQuery, RegisterRequest, WorldDefinition,
+        WorldManager,
+    },
+};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::{
+    path::PathBuf,
+    sync::{Mutex, MutexGuard},
+};
+use tokio::runtime::Runtime;
+
+#[path = "logical.rs"]
+mod logical;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Open {
+    registry_root: Option<PathBuf>,
+    build_root: Option<PathBuf>,
+    driver: Option<PathBuf>,
+    store_root: PathBuf,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Binding {
+    scope: HostedScope,
+    components: Vec<Component>,
+}
+/// Compact immutable catalog identity, never caller-supplied table authority.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReceiptRef {
+    world: String,
+    run: String,
+    tick: u64,
+    cut_id: String,
+}
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Operation {
+    Logical {
+        request: logical::Request,
+    },
+    Register {
+        request: RegisterRequest,
+    },
+    Definitions {},
+    Create {
+        label: String,
+        processor: ProcessorReference,
+        outputs: Vec<String>,
+    },
+    Bind {
+        binding: Binding,
+    },
+    Start {
+        id: String,
+    },
+    Status {
+        id: String,
+    },
+    Stop {
+        id: String,
+    },
+    Inventory {},
+    Admit {
+        binding: Binding,
+        expected_head: Option<String>,
+        admission: AdmitInputs,
+    },
+    AdmissionStatus {
+        query: AdmissionQuery,
+    },
+    Publish {
+        binding: Binding,
+        key: BoundaryKey,
+    },
+    Reconcile {
+        binding: Binding,
+        key: BoundaryKey,
+        tick: u64,
+        expected_parent: Option<String>,
+    },
+    Confirm {
+        binding: Binding,
+        key: BoundaryKey,
+        tick: u64,
+        expected_parent: Option<String>,
+    },
+    History {
+        world: String,
+        run: String,
+        offset: usize,
+        limit: usize,
+    },
+    Read {
+        receipt: ReceiptRef,
+        component: String,
+        offset: usize,
+        limit: usize,
+    },
+    Restore {
+        binding: Binding,
+        receipt: ReceiptRef,
+        expected_generation: u64,
+    },
+    Fork {
+        binding: Binding,
+        receipt: ReceiptRef,
+        destination: Scope,
+        label: String,
+        request_key: String,
+        expected_generation: u64,
+    },
+    ForkBinding {
+        destination: Scope,
+        components: Vec<Component>,
+    },
+    ArtifactCut {
+        binding: Binding,
+        receipt: ReceiptRef,
+    },
+    AttachArtifacts {
+        binding: Binding,
+        receipt: ReceiptRef,
+        attachments: Vec<Attachment>,
+    },
+    ReadArtifacts {
+        binding: Binding,
+        receipt: ReceiptRef,
+        offset: usize,
+        limit: usize,
+    },
+    PublishCollection {
+        world: String,
+        run: String,
+    },
+    PublishHostedContext {
+        binding: Binding,
+    },
+    ReadContext {
+        context: ContextRef,
+    },
+    ContextAt {
+        world: String,
+        run: String,
+    },
+    ContextArtifactTarget {
+        target: ArtifactTarget,
+    },
+    AttachContextArtifacts {
+        target: ArtifactTarget,
+        attachments: Vec<Attachment>,
+    },
+    ReadContextArtifacts {
+        context: ContextRef,
+        selection: ArtifactSelection,
+        offset: usize,
+        limit: usize,
+    },
+    ReadCutArtifacts {
+        receipt: ReceiptRef,
+        offset: usize,
+        limit: usize,
+    },
+}
+pub struct Resources {
+    // Declaration order ensures native owner and store drop before executor.
+    manager: Option<Mutex<WorldManager>>,
+    store: CutStore,
+    runtime: Runtime,
+}
+fn native<T>(value: Result<T, String>) -> Result<T> {
+    value.map_err(|e| anyhow!(e))
+}
+impl Resources {
+    pub fn open(config: Open) -> Result<Self> {
+        ensure!(
+            config.store_root.is_absolute()
+                && [&config.registry_root, &config.build_root, &config.driver]
+                    .iter()
+                    .all(|p| p.as_ref().is_none_or(|p| p.is_absolute())),
+            "All operator paths must be absolute"
+        );
+        ensure!(
+            [&config.registry_root, &config.build_root, &config.driver]
+                .iter()
+                .filter(|p| p.is_some())
+                .count()
+                % 3
+                == 0,
+            "Native owner requires all three operator paths"
+        );
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
+        let store = runtime.block_on(CutStore::open(&config.store_root))?;
+        let manager = match (config.registry_root, config.build_root, config.driver) {
+            (Some(registry), Some(build), Some(driver)) => Some(Mutex::new(native(
+                WorldManager::new(registry, build, driver),
+            )?)),
+            _ => None,
+        };
+        Ok(Self {
+            manager,
+            store,
+            runtime,
+        })
+    }
+    pub fn manager(&self) -> Result<MutexGuard<'_, WorldManager>> {
+        self.manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("Storage-only handle has no native owner"))?
+            .lock()
+            .map_err(|_| anyhow!("Native owner poisoned"))
+    }
+    fn bind(&self, binding: Binding) -> Result<HostedCutAdapter> {
+        HostedCutAdapter::bind(&mut *self.manager()?, binding.scope, binding.components)
+    }
+    pub fn inventory(&self) -> Result<Value> {
+        if self.manager.is_none() {
+            return Ok(json!({"worlds":[]}));
+        }
+        native(self.manager()?.inventory(&InventoryQuery {
+            summary: true,
+            ..Default::default()
+        }))
+    }
+    pub fn shutdown(&self) -> Result<Option<ddlog_runtime::worlds::WorldShutdown>> {
+        if self.manager.is_none() {
+            Ok(None)
+        } else {
+            Ok(Some(self.manager()?.shutdown_handle()))
+        }
+    }
+    fn receipt(&self, store: &CutStore, key: ReceiptRef) -> Result<CutReceipt> {
+        let history = self.runtime.block_on(store.history(&key.world, &key.run))?;
+        history
+            .into_iter()
+            .find(|r| r.tick == key.tick && r.cut_id == key.cut_id)
+            .ok_or_else(|| {
+                bounds::fault(
+                    bounds::FaultCode::InvalidRequest,
+                    "Unknown exact published cut identity",
+                )
+            })
+    }
+    pub fn call(&self, op: Operation) -> Result<Value> {
+        let store = match &op {
+            Operation::Logical { request } if !request.uses_store() => self.store.clone(),
+            Operation::Register { .. }
+            | Operation::Definitions { .. }
+            | Operation::Create { .. }
+            | Operation::Bind { .. }
+            | Operation::Start { .. }
+            | Operation::Status { .. }
+            | Operation::Stop { .. }
+            | Operation::Inventory { .. }
+            | Operation::AdmissionStatus { .. } => self.store.clone(),
+            _ => self.runtime.block_on(self.store.read_scope())?,
+        };
+        match op {
+            Operation::Logical { request } => self.logical(&store, request),
+            Operation::PublishCollection { world, run } => {
+                Ok(serde_json::to_value(self.runtime.block_on(
+                    store.publish_context(&ContextDraft::artifact_collection(world, run)?),
+                )?)?)
+            }
+            Operation::PublishHostedContext { binding } => Ok(serde_json::to_value(
+                self.runtime
+                    .block_on(store.publish_context(&self.bind(binding)?.context_draft()?))?,
+            )?),
+            Operation::ReadContext { context } => Ok(serde_json::to_value(
+                self.runtime.block_on(store.context(&context))?,
+            )?),
+            Operation::ContextAt { world, run } => Ok(serde_json::to_value(
+                self.runtime.block_on(store.context_at(&world, &run))?,
+            )?),
+            Operation::ContextArtifactTarget { target } => Ok(
+                json!({"object_root":self.runtime.block_on(store.context_artifact_root(&target))?}),
+            ),
+            Operation::AttachContextArtifacts {
+                target,
+                attachments,
+            } => Ok(serde_json::to_value(
+                self.runtime
+                    .block_on(store.attach_context(&target, &attachments))?,
+            )?),
+            Operation::ReadContextArtifacts {
+                context,
+                selection,
+                offset,
+                limit,
+            } => {
+                let (items, total) = self
+                    .runtime
+                    .block_on(store.context_attachments(&context, &selection, offset, limit))?;
+                Ok(
+                    json!({"items":items,"total":total,"offset":offset,"next_offset":if offset+items.len()<total {Some(offset+items.len())} else {None}}),
+                )
+            }
+            Operation::ReadCutArtifacts {
+                receipt,
+                offset,
+                limit,
+            } => {
+                let cut = self.receipt(&store, receipt)?;
+                let (items, total) = self
+                    .runtime
+                    .block_on(store.attachments(&cut, offset, limit))?;
+                Ok(
+                    json!({"items":items,"total":total,"offset":offset,"next_offset":if offset+items.len()<total {Some(offset+items.len())} else {None}}),
+                )
+            }
+            Operation::Register { request } => native(self.manager()?.register(request)),
+            Operation::Definitions {} => native(self.manager()?.definitions()),
+            Operation::Create {
+                label,
+                processor,
+                outputs,
+            } => {
+                let components: Vec<_> = outputs
+                    .into_iter()
+                    .map(|output| Component {
+                        name: String::new(),
+                        output,
+                        fields: vec![],
+                        entity_field: 0,
+                    })
+                    .collect();
+                let id = native(self.manager()?.create(WorldDefinition {
+                    label,
+                    processor,
+                    external_publication: Some(publication_policy(&components)),
+                    purpose: "instance".into(),
+                    scenarios: vec![],
+                }))?;
+                Ok(json!({"id":id}))
+            }
+            Operation::Bind { binding } => {
+                self.bind(binding)?;
+                Ok(json!({"bound":true}))
+            }
+            Operation::Start { id } => native(self.manager()?.start_async(&id)),
+            Operation::Status { id } => native(self.manager()?.status(&id)),
+            Operation::Stop { id } => native(self.manager()?.stop(&id)),
+            Operation::Inventory {} => self.inventory(),
+            Operation::AdmissionStatus { query } => native(self.manager()?.admission_status(query)),
+            Operation::Admit {
+                binding,
+                expected_head,
+                admission,
+            } => {
+                bounds::request(
+                    admission.changes.iter().flat_map(|c| &c.values).all(|v| {
+                        v.is_string()
+                            || v.as_i64().is_some()
+                            || v.is_boolean()
+                            || v.is_f64() && v.as_f64().is_some_and(f64::is_finite)
+                    }),
+                    "Cells must be signed Int64, string, Bool or finite Float64",
+                )?;
+                let a = self.bind(binding)?;
+                let ticket = self.runtime.block_on(a.prepare_admission(
+                    &store,
+                    expected_head.as_deref(),
+                    admission,
+                ))?;
+                ticket.submit(&mut *self.manager()?)
+            }
+            Operation::Publish { binding, key } => {
+                let a = self.bind(binding)?;
+                let mut capture = a.capture(&mut *self.manager()?, &key)?;
+                loop {
+                    if capture.advance(&mut *self.manager()?)? {
+                        break;
+                    }
+                    std::thread::yield_now();
+                }
+                let cut = capture.finish()?;
+                let published = self.runtime.block_on(a.publish(&store, &cut))?;
+                Ok(json!(published.receipt()))
+            }
+            Operation::Reconcile {
+                binding,
+                key,
+                tick,
+                expected_parent,
+            } => {
+                let a = self.bind(binding)?;
+                let published = self.runtime.block_on(a.reconcile(
+                    &store,
+                    tick,
+                    expected_parent.as_deref(),
+                    &key,
+                ))?;
+                Ok(json!(published.receipt()))
+            }
+            Operation::Confirm {
+                binding,
+                key,
+                tick,
+                expected_parent,
+            } => {
+                // Confirmation cannot make an invisible cut visible. Reconcile
+                // only reconstructs private authority for the existing exact head.
+                let history = self
+                    .runtime
+                    .block_on(store.history(&binding.scope.world, &binding.scope.run))?;
+                ensure!(
+                    history
+                        .last()
+                        .is_some_and(|r| r.tick == tick && r.parent == expected_parent),
+                    "Confirmation requires the visible latest cut"
+                );
+                let a = self.bind(binding)?;
+                let published = self.runtime.block_on(a.reconcile(
+                    &store,
+                    tick,
+                    expected_parent.as_deref(),
+                    &key,
+                ))?;
+                published.confirm(&mut *self.manager()?)
+            }
+            Operation::History {
+                world,
+                run,
+                offset,
+                limit,
+            } => {
+                bounds::request((1..=100).contains(&limit), "History limit must be 1..100")?;
+                let (history, total) = self
+                    .runtime
+                    .block_on(store.history_page(&world, &run, offset, limit))?;
+                let end = offset + history.len();
+                Ok(
+                    json!({"receipts":history,"next_offset":(end<total).then_some(end),"total":total}),
+                )
+            }
+            Operation::Read {
+                receipt,
+                component,
+                offset,
+                limit,
+            } => {
+                bounds::request((1..=1000).contains(&limit), "Read limit must be 1..1000")?;
+                let receipt = self.receipt(&store, receipt)?;
+                let batches = self
+                    .runtime
+                    .block_on(store.read_page(&receipt, &component, offset, limit))?;
+                let table = &receipt.components[&component];
+                let mut rows = Vec::new();
+                for batch in batches {
+                    for index in 0..batch.num_rows() {
+                        let mut row = Vec::new();
+                        for column in batch.columns().iter().skip(1) {
+                            ensure!(!column.is_null(index), "Null component cell");
+                            if let Some(c) = column.as_any().downcast_ref::<Int64Array>() {
+                                row.push(json!(c.value(index)));
+                            } else if let Some(c) = column.as_any().downcast_ref::<StringArray>() {
+                                row.push(json!(c.value(index)));
+                            } else if let Some(c) = column.as_any().downcast_ref::<BooleanArray>() {
+                                row.push(json!(c.value(index)));
+                            } else if let Some(c) = column.as_any().downcast_ref::<Float64Array>() {
+                                let value = c.value(index);
+                                ensure!(
+                                    value.is_finite()
+                                        && (value != 0.0 || !value.is_sign_negative()),
+                                    "Noncanonical Float64 component cell"
+                                );
+                                row.push(json!(value));
+                            } else {
+                                anyhow::bail!("Unsupported Arrow component type");
+                            }
+                        }
+                        rows.push(row);
+                    }
+                }
+                let end = offset + rows.len();
+                Ok(
+                    json!({"schema":table.schema,"rows":rows,"next_offset":(end<table.rows).then_some(end),"total_rows":table.rows,"cut_id":receipt.cut_id}),
+                )
+            }
+            Operation::ForkBinding {
+                destination,
+                components,
+            } => {
+                let origin = store
+                    .origin(&destination.world, &destination.run)?
+                    .ok_or_else(|| anyhow!("Fork origin is not published"))?;
+                let scope = HostedScope {
+                    native_world: origin.reservation.child_world_id,
+                    world: destination.world,
+                    run: destination.run,
+                };
+                let adapter = HostedCutAdapter::bind(
+                    &mut *self.manager()?,
+                    scope.clone(),
+                    components.clone(),
+                )?;
+                self.runtime.block_on(adapter.verify_origin(&store))?;
+                Ok(json!({"scope":scope,"components":components}))
+            }
+            Operation::Fork {
+                binding,
+                receipt,
+                destination,
+                label,
+                request_key,
+                expected_generation,
+            } => {
+                // Resolve inside the trusted source binding first. A caller's
+                // physical receipt scope may be an ancestor, never an authority
+                // to open an unrelated lineage before admission checks.
+                let source = self
+                    .runtime
+                    .block_on(store.history(&binding.scope.world, &binding.scope.run))?
+                    .into_iter()
+                    .find(|r| {
+                        r.world == receipt.world
+                            && r.run == receipt.run
+                            && r.tick == receipt.tick
+                            && r.cut_id == receipt.cut_id
+                    })
+                    .ok_or_else(|| {
+                        bounds::fault(
+                            bounds::FaultCode::InvalidRequest,
+                            "Cut is outside bound source lineage",
+                        )
+                    })?;
+                let adapter = self.bind(binding)?;
+                let prepared = self.runtime.block_on(adapter.prepare_fork(
+                    &store,
+                    &source,
+                    request_key.clone(),
+                    destination.clone(),
+                    label,
+                ))?;
+                let reserved = prepared.reserve(&mut *self.manager()?)?;
+                self.runtime.block_on(reserved.publish_origin(&store))?;
+                let id = &reserved.reservation().child_world_id;
+                let mut status = native(self.manager()?.status(id))?;
+                let origin_only_resume = status["generation"].as_u64() == Some(expected_generation)
+                    && matches!(
+                        status["state"].as_str(),
+                        Some("stopped" | "failed" | "interrupted")
+                    )
+                    && self
+                        .runtime
+                        .block_on(store.history(&destination.world, &destination.run))?
+                        .last()
+                        == Some(&source);
+                if status["external_publication"]["fork"]["ready"] != true || origin_only_resume {
+                    status = reserved.restore(&mut *self.manager()?, expected_generation)?;
+                    if status["state"] == "running" {
+                        let confirmation = self
+                            .runtime
+                            .block_on(reserved.prepare_confirmation(&store))?;
+                        status = confirmation.confirm(&mut *self.manager()?)?;
+                    }
+                }
+                Ok(json!({"request_key":request_key,"destination":destination,
+                    "source":{"world":source.world,"run":source.run,"tick":source.tick,"cut_id":source.cut_id},
+                    "origin":reserved.origin(),"status":status}))
+            }
+            Operation::Restore {
+                binding,
+                receipt,
+                expected_generation,
+            } => {
+                let a = self.bind(binding)?;
+                let receipt = self.receipt(&store, receipt)?;
+                let ticket = self.runtime.block_on(a.prepare_restore(&store, &receipt))?;
+                ticket.restore(&mut *self.manager()?, expected_generation)
+            }
+            Operation::ArtifactCut { binding, receipt } => {
+                let a = self.bind(binding)?;
+                let receipt = self.receipt(&store, receipt)?;
+                self.runtime
+                    .block_on(a.verify_attachment_cut(&store, &receipt))?;
+                let root = self.runtime.block_on(store.attachment_root(&receipt))?;
+                Ok(json!({"object_root": root}))
+            }
+            Operation::AttachArtifacts {
+                binding,
+                receipt,
+                attachments,
+            } => {
+                let a = self.bind(binding)?;
+                let receipt = self.receipt(&store, receipt)?;
+                self.runtime
+                    .block_on(a.verify_attachment_cut(&store, &receipt))?;
+                Ok(json!(
+                    self.runtime
+                        .block_on(store.attach(&receipt, &attachments))?
+                ))
+            }
+            Operation::ReadArtifacts {
+                binding,
+                receipt,
+                offset,
+                limit,
+            } => {
+                let a = self.bind(binding)?;
+                let receipt = self.receipt(&store, receipt)?;
+                self.runtime
+                    .block_on(a.verify_attachment_cut(&store, &receipt))?;
+                let (items, total) = self
+                    .runtime
+                    .block_on(store.attachments(&receipt, offset, limit))?;
+                let end = offset + items.len();
+                Ok(
+                    json!({"items": items, "total": total, "next_offset": (end < total).then_some(end)}),
+                )
+            }
+        }
+    }
+}

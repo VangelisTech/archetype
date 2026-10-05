@@ -52,8 +52,7 @@ def _smol_wheel(path: Path, *, requirement: str | None = None) -> Path:
 
 def _framework_wheel(path: Path, *, include_smol: bool = False) -> Path:
     requirements = [
-        f'Requires-Dist: archetype-{library}<0.7,>=0.6; extra == "all"'
-        for library in ("missions", "physical-ai", "research")
+        f'Requires-Dist: archetype-{library}<0.7,>=0.6; extra == "all"' for library in ("research",)
     ]
     if include_smol:
         requirements.append('Requires-Dist: archetype-smol<0.7,>=0.6; extra == "all"')
@@ -260,15 +259,13 @@ def test_smoke_runs_world_stack_and_smol_probes_against_rebuilt_sdist_wheels(
 
     assert [result["matrix"] for result in results] == [
         "base",
-        "missions",
-        "physical-ai",
         "research",
         "all",
         "smol",
         "sdist-all",
         "sdist-smol",
     ]
-    assert len(probes) == 8
+    assert len(probes) == 6
     assert probes[-2]["matrix"] == "all"
     assert probes[-1]["matrix"] == "sdist-smol"
     assert all(probe["version"] == "0.6.0" for probe in probes)

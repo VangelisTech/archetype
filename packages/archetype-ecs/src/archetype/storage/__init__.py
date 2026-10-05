@@ -3,15 +3,8 @@
 
 """Physical storage, visibility, and durable control authority."""
 
-from archetype.storage.config import ControlCatalogConfig
-from archetype.storage.service import (
-    AmbiguousCommitError,
-    PinnedVisibility,
-    StorageService,
-    VisibleTableRows,
-    VisibleWorldRows,
-    create_async_store,
-)
+from importlib import import_module
+from typing import Any
 
 __all__ = [
     "AmbiguousCommitError",
@@ -22,3 +15,14 @@ __all__ = [
     "VisibleWorldRows",
     "create_async_store",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    # A storage port must not initialize the retained execution engine merely
+    # because Python first imports its parent package.
+    if name not in __all__:
+        raise AttributeError(name)
+    module = "config" if name == "ControlCatalogConfig" else "service"
+    value = getattr(import_module(f"archetype.storage.{module}"), name)
+    globals()[name] = value
+    return value

@@ -39,39 +39,6 @@ _PULL_FORWARD_MODEL_BOUNDARIES = (
     ("archetype.evaluation.models", "RunGraders", "run_graders"),
     ("archetype.evaluation.models", "Evaluate", "evaluate"),
     ("archetype.research.models", "AutoResearch", "autoresearch"),
-    (
-        "archetype.physical_ai.models",
-        "RunHostedEpisode",
-        "run_hosted_episode",
-    ),
-    (
-        "archetype.missions.trajectories.models",
-        "IngestClaudeTranscript",
-        "ingest_claude_transcript",
-    ),
-    (
-        "archetype.missions.trajectories.models",
-        "QueryTranscriptRows",
-        "query_transcript_rows",
-    ),
-    ("archetype.missions.trajectories.models", "QueryTrajectory", "query_trajectory"),
-    ("archetype.missions.trajectories.models", "GradeTrajectory", "grade_trajectory"),
-    ("archetype.missions.models", "SubmitMission", "submit_mission"),
-    ("archetype.missions.models", "RunMission", "run_mission"),
-    (
-        "archetype.missions.models",
-        "RestoreMissionSandbox",
-        "restore_mission_sandbox",
-    ),
-    ("archetype.missions.models", "AcceptMissionRun", "accept_mission_run"),
-    ("archetype.missions.models", "GetMissionRun", "get_mission_run"),
-    ("archetype.missions.models", "CancelMissionRun", "cancel_mission_run"),
-    (
-        "archetype.missions.models",
-        "GetMissionRunEvents",
-        "get_mission_run_events",
-    ),
-    ("archetype.missions.models", "ListMissionRuns", "list_mission_runs"),
 )
 _ACTOR_MODEL_BOUNDARIES = (
     ("archetype.research.models", "AutoResearch", "autoresearch"),
@@ -296,19 +263,13 @@ async def test_actor_aware_ingress_uses_apply_as_for_exact_four_pull_forward_mod
     from archetype.storage.config import ControlCatalogConfig
 
     models = _canonical_pull_forward_models()
-    from archetype.missions._extension import get_manifest as missions_manifest
-    from archetype.physical_ai._extension import get_manifest as physical_ai_manifest
     from archetype.research._extension import get_manifest as research_manifest
 
     config = wiring.RuntimeBootstrapConfig(
         control_catalog_config=ControlCatalogConfig(
             catalog_dir=tmp_path / "catalogs",
         ),
-        world_libraries=(
-            missions_manifest(),
-            physical_ai_manifest(),
-            research_manifest(),
-        ),
+        world_libraries=(research_manifest(),),
     )
     resources = wiring.build_runtime_resources(config)
     try:
@@ -807,15 +768,6 @@ _EXPECTED_DECLARED_ROUTES = {
     ("GET", "/worlds/{world_id}/hooks"): 200,
     ("GET", "/worlds/{world_id}/resources"): 200,
     ("GET", "/signatures"): 200,
-    ("GET", "/worlds/{world_id}/missions"): 200,
-    ("GET", "/worlds/{world_id}/missions/{mission_id}/tasks"): 200,
-    ("GET", "/worlds/{world_id}/tasks/{task_id}"): 200,
-    ("POST", "/v1/mission-runs"): 202,
-    ("GET", "/v1/mission-runs"): 200,
-    ("GET", "/v1/mission-runs/{run_id}"): 200,
-    ("GET", "/v1/mission-runs/{run_id}/events"): 200,
-    ("GET", "/v1/mission-runs/{run_id}/result"): 200,
-    ("POST", "/v1/mission-runs/{run_id}/cancel"): 202,
     ("GET", "/"): 200,
     ("GET", "/healthz"): 200,
 }
@@ -852,25 +804,9 @@ def test_supported_paths_statuses_and_response_shapes_are_unchanged() -> None:
     schema = app.openapi()
     actual = _declared_openapi_routes(schema)
 
-    mission_routes = {
-        key: value
-        for key, value in _EXPECTED_DECLARED_ROUTES.items()
-        if "/missions" in key[1] or "/tasks/{task_id}" in key[1] or "/mission-runs" in key[1]
-    }
-    framework_routes = {
-        key: value for key, value in _EXPECTED_DECLARED_ROUTES.items() if key not in mission_routes
-    }
     assert len(actual) == 27
-    assert actual == framework_routes
+    assert actual == _EXPECTED_DECLARED_ROUTES
 
-    from archetype.missions._extension import get_manifest as missions_manifest
-
-    missions_app = api_app.create_app(world_libraries=(missions_manifest(),))
-    missions_actual = _declared_openapi_routes(missions_app.openapi())
-    declared_missions = {
-        key: status for key, status in missions_actual.items() if key in mission_routes
-    }
-    assert declared_missions == mission_routes
     assert not any(
         literal.replace("_", "-") in path or literal in path
         for _method, path in actual

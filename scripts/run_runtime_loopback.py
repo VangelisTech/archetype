@@ -304,11 +304,9 @@ def run_runtime_loopback(workspace: Path) -> dict[str, object]:
                 component_payload = json.dumps(
                     [
                         {
-                            "type": "Mission",
-                            "name": "runtime-loopback",
-                            "repository": "local",
-                            "branch": "main",
-                            "base_ref": "main",
+                            "type": "EvalReceipt",
+                            "evaluation_id": "runtime-loopback",
+                            "outcome": "fixture",
                         }
                     ],
                     sort_keys=True,
@@ -348,7 +346,7 @@ def run_runtime_loopback(workspace: Path) -> dict[str, object]:
                     cli(
                         "query",
                         world_id,
-                        "Mission",
+                        "EvalReceipt",
                         "--json",
                         "--url",
                         base_url,
@@ -377,7 +375,7 @@ def run_runtime_loopback(workspace: Path) -> dict[str, object]:
                     cli(
                         "query",
                         fork_id,
-                        "Mission",
+                        "EvalReceipt",
                         "--json",
                         "--url",
                         base_url,

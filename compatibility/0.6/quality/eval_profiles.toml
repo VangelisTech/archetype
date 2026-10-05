@@ -1,0 +1,35 @@
+version = 1
+
+[profile.conformance]
+suites = ["regression", "spec"]
+blocking = true
+failure_policy = "every required task and every trial passes"
+default_trials = 1
+
+[profile.reliability]
+suites = ["idempotency"]
+blocking = true
+failure_policy = "every required retry, replay, crash, race, and recovery trial passes"
+default_trials = 1
+
+[profile.capability]
+suites = ["capability"]
+blocking = true
+failure_policy = "every architectural capability task and every trial passes"
+default_trials = 1
+
+[suite.regression]
+profile = "conformance"
+blocking = true
+
+[suite.spec]
+profile = "conformance"
+blocking = true
+
+[suite.idempotency]
+profile = "reliability"
+blocking = true
+
+[suite.capability]
+profile = "capability"
+blocking = true

@@ -26,8 +26,6 @@ COPYRIGHT_RE = re.compile(r"Copyright \d{4}(?:-\d{4})? Vangelis Technologies Inc
 LICENSE_MARKERS = ("SPDX-License-Identifier: Apache-2.0", "Apache License")
 WORKSPACE_SOURCE_ROOTS = (
     Path("packages/archetype-ecs/src"),
-    Path("packages/archetype-missions/src"),
-    Path("packages/archetype-physical-ai/src"),
     Path("packages/archetype-research/src"),
     Path("packages/archetype-smol/src"),
 )
@@ -151,7 +149,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if not args.files:
-        # If no files are specified, audit all five published source trees.
+        # If no files are specified, audit all three published source trees.
         project_root = Path(__file__).parent.parent
         try:
             python_files = default_python_files(project_root)

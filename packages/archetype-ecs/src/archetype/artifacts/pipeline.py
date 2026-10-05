@@ -214,8 +214,11 @@ def _persist_local_file(
     file: daft.File,
     root: str,
 ) -> dict[str, str | int]:
-    """Stage, identify, and atomically publish one local object in one read."""
+    """Stage, identify, and durably publish one local object in one read."""
 
+    durable_parent = Path(root).absolute()
+    while not durable_parent.exists():
+        durable_parent = durable_parent.parent
     staging = Path(root) / "objects" / ".staging"
     staging.mkdir(parents=True, exist_ok=True)
     temporary: str | None = None
@@ -228,12 +231,25 @@ def _persist_local_file(
         ) as target:
             temporary = target.name
             identity = _copy_and_hash(file, cast(BinaryIO, target))
+            target.flush()
+            os.fsync(target.fileno())
 
         sha256 = str(identity["sha256"])
         destination = Path(root) / "objects" / "sha256" / sha256[:2] / sha256
         destination.parent.mkdir(parents=True, exist_ok=True)
         os.replace(temporary, destination)
         temporary = None
+        # Persist the new filename and every newly created directory link.
+        directory = destination.parent.absolute()
+        while True:
+            fd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            if directory == durable_parent:
+                break
+            directory = directory.parent
         return identity | {"object_uri": destination.resolve().as_uri()}
     finally:
         if temporary is not None:
@@ -474,6 +490,22 @@ class FileIngestionPipeline:
         diffs = files.where(_is_diff(col("logical_path")))
         diffs = diffs.with_column("_metadata", _diff_metadata(col("file")))
         return diffs.select("artifact_id", col("_metadata").unnest())
+
+    @staticmethod
+    def intrinsic_common_index(files: DataFrame) -> DataFrame:
+        """Project file occurrence metadata without simulation attribution."""
+        return files.select(
+            "artifact_id",
+            "ingested_at",
+            "source_uri",
+            "logical_path",
+            "object_uri",
+            "size_bytes",
+            "mime_type",
+            "media_family",
+            "sha256",
+            "xxhash3_64",
+        )
 
     @staticmethod
     def common_index(files: DataFrame) -> DataFrame:

@@ -1,475 +1,390 @@
-# Copyright 2025 Vangelis Technologies Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-"""Process-level runtime and synchronous facade."""
+# Copyright 2026 Vangelis Technologies Inc.
+# SPDX-License-Identifier: Apache-2.0
+"""One lazy native process owner and its blocking facade."""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
-from importlib import import_module
+import os
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from uuid_utils import UUID, uuid7
-
-from archetype._logging import configure_host_observability
-from archetype.artifacts.models import ArtifactStoreConfig
-from archetype.core.config import CacheConfig, StorageConfig
-from archetype.core.hooks import HookEvent
-from archetype.runtime._config import coerce_cache, coerce_storage
-from archetype.runtime.world import (
-    RuntimeWorld,
-    SyncRuntimeWorld,
-    _adapt_sync_hook,
-    _RuntimeWorldState,
-)
-from archetype.runtime_resources import RuntimeCloseState
-from archetype.world.models import DiscoverWorlds, ResumeWorld, WorldInfo
-
 if TYPE_CHECKING:
-    from archetype.world_libraries import WorldLibraryManifest
+    from archetype_native import Host
+
+from archetype_native import ConstructionCleanupError, NativeError, ProtocolError
+from archetype_native import wire as w
+from archetype_native.ingress import (
+    ContextResource,
+    LogicalResource,
+    ProgramResource,
+    Resource,
+    _Executor,
+    _validate_request,
+)
+
+from archetype.runtime._native import open_host
+from archetype.runtime.contracts import ComponentProjection
 
 
-def _bootstrap_config(
-    *,
-    artifact_store: ArtifactStoreConfig | None,
-    world_libraries: tuple[WorldLibraryManifest, ...] | None,
-    world_library_configs: Mapping[str, object],
-) -> Any:
-    """Resolve the optional wiring module only when a runtime is constructed."""
+class RuntimeOperationError(RuntimeError):
+    """A bounded failure; dispatched failures never imply permission to replay."""
 
-    wiring = import_module("archetype.wiring")
-    return wiring.RuntimeBootstrapConfig.from_env(
-        artifact_store_config=artifact_store,
-        world_libraries=world_libraries,
-        world_library_configs=world_library_configs,
-    )
-
-
-def build_runtime_resources(config: Any) -> Any:
-    """Late-bound construction seam shared with tests and downstream hosts."""
-
-    return import_module("archetype.wiring").build_runtime_resources(config)
-
-
-def _bind_world_state(resources: Any, state: _RuntimeWorldState) -> RuntimeWorld:
-    """Strongly register one inert world handle with the process owner."""
-
-    reservation = resources.reserve_owner(
-        f"world:{uuid7()}",
-        phase="world-handles",
-    )
-    handle = RuntimeWorld(state=state, reservation=reservation)
-    reservation.bind(handle, close=handle._close_owned)
-    return handle
-
-
-class _RuntimeResourceHost:
-    """Minimal host used by wiring-created workflows that need a world handle."""
-
-    def __init__(self, resources: Any) -> None:
-        self._resources = resources
-
-    def _ensure_open(self) -> None:
-        if (
-            self._resources.close_state is not RuntimeCloseState.OPEN
-            and not self._resources.operation_admitted()
-        ):
-            raise RuntimeError("Runtime resources are closed")
-
-    def _bind_world_state(self, state: _RuntimeWorldState) -> RuntimeWorld:
-        return _bind_world_state(self._resources, state)
-
-
-def _runtime_world_for_resources(
-    runtime_resources: Any,
-    name: str = "world",
-    *,
-    storage: str | Path | StorageConfig | None = None,
-    cache: CacheConfig | None = None,
-    processors: list | None = None,
-    resources: list | None = None,
-    hooks: list[tuple[type[HookEvent], Any]] | None = None,
-    world_id: str | UUID | None = None,
-    install_initializers: bool = False,
-) -> RuntimeWorld:
-    """Construct the narrow world surface used by wiring-owned workflows."""
-
-    host = _RuntimeResourceHost(runtime_resources)
-    state = _RuntimeWorldState(
-        runtime=host,
-        name=name,
-        storage_config=coerce_storage(storage),
-        cache_config=coerce_cache(cache),
-        init_processors=list(processors or []),
-        init_resources=list(resources or []),
-        init_hooks=list(hooks or []),
-        world_id=world_id,
-        install_initializers=install_initializers,
-    )
-    return host._bind_world_state(state)
+    def __init__(self, code: str, *, outcome: str):
+        super().__init__(code)
+        self.code, self.outcome = code, outcome
 
 
 class ArchetypeRuntime:
-    """Own process-level services and create world handles.
+    """Version 0.7 runtime over the existing DDlog WorldManager and CutStore.
 
-    Use one runtime for a related set of worlds and close it with an async
-    context manager. Calling `world()` only creates a handle; the world is
-    activated on its first operation.
-
-    Examples:
-        >>> async with ArchetypeRuntime() as runtime:
-        ...     world = runtime.world("experiment")
-        ...     entity_id = await world.spawn()
-        ...     result = await world.run(steps=10)
+    Construction and context entry are inert. The first operation checks the
+    installed native ABI and contract before opening one process owner. Paths
+    configure that private owner; they are never exposed by resource handles.
+    Omit all three live paths for a storage-only reader.
     """
 
     def __init__(
         self,
         *,
-        log: str | None = None,
-        artifact_store: ArtifactStoreConfig | None = None,
-        world_libraries: tuple[WorldLibraryManifest, ...] | None = None,
-        world_library_configs: Mapping[str, object] | None = None,
-    ) -> None:
-        """Initialize the runtime.
+        library: str | Path | None = None,
+        store: str | Path | None = None,
+        registry: str | Path | None = None,
+        builds: str | Path | None = None,
+        driver: str | Path | None = None,
+        max_inflight: int = 4,
+        storage_only: bool = False,
+    ):
+        if type(max_inflight) is not int or not 1 <= max_inflight <= 16:
+            raise ValueError("max_inflight must be 1..16")
+        if type(storage_only) is not bool or (
+            storage_only and any(value is not None for value in (registry, builds, driver))
+        ):
+            raise ValueError("storage_only requires no explicit live paths")
+        self._config = {
+            "library": library or os.environ.get("ARCHETYPE_NATIVE_LIBRARY"),
+            "store_root": store or os.environ.get("ARCHETYPE_STORE"),
+            "registry_root": None
+            if storage_only
+            else registry or os.environ.get("ARCHETYPE_REGISTRY"),
+            "build_root": None if storage_only else builds or os.environ.get("ARCHETYPE_BUILDS"),
+            "driver": None if storage_only else driver or os.environ.get("ARCHETYPE_NATIVE_DRIVER"),
+        }
+        self._host: Host | None = None
+        self._opening: asyncio.Task[Host] | None = None
+        self._closing: asyncio.Task[None] | None = None
+        self._resources: dict[str, Any] = {}
+        self._pending: dict[asyncio.Task[Any], str] = {}
+        self._world_closes: dict[str, asyncio.Task[None]] = {}
+        self._active_worlds: set[str] = set()
+        self._closed_worlds: set[str] = set()
+        self._draining_worlds: set[str] = set()
+        self._max_inflight = max_inflight
+        self._accepting, self._closed = True, False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._pid = os.getpid()
 
-        Args:
-            log: Package log level: `debug`, `info`, `warning`, or `error`.
-                When omitted, `ARCHETYPE_LOG` is used and logging stays quiet
-                if that variable is unset.
-            artifact_store: Optional content-addressed object-store bounds.
-            world_libraries: Explicit trusted manifests, primarily for tests or
-                embedded hosts. Installed entry points are discovered when omitted.
-            world_library_configs: Family-name to typed extension-configuration
-                values consumed while trusted libraries are installed.
-        """
-        # This constructor is an explicit trusted-script process host. Quiet
-        # remains the default; stdlib logging and vendor-neutral tracing are
-        # configured together only here, never by an imported family module.
-        configure_host_observability(
-            service_name="archetype-runtime",
-            log=log,
-        )
+    def _process_owner(self) -> None:
+        if os.getpid() != self._pid:
+            raise RuntimeError("Runtime belongs to its creating process")
 
-        self._resources = build_runtime_resources(
-            _bootstrap_config(
-                artifact_store=artifact_store,
-                world_libraries=world_libraries,
-                world_library_configs=world_library_configs or {},
-            ),
-        )
-        self._dispatcher = self._resources.dispatcher
-        self._shutdown_lock = asyncio.Lock()
-        self._shutdown_started = False
-        self._closed = False
+    def _owner(self) -> None:
+        self._process_owner()
+        loop = asyncio.get_running_loop()
+        if self._loop is None:
+            self._loop = loop
+        elif self._loop is not loop:
+            raise RuntimeError("Runtime belongs to another event loop")
+
+    def _ensure_open(self) -> None:
+        self._process_owner()
+        if not self._accepting:
+            raise RuntimeError("Runtime is draining or closed")
 
     async def __aenter__(self) -> ArchetypeRuntime:
-        if self._shutdown_started or self._closed:
-            raise RuntimeError("ArchetypeRuntime cannot be reused after close")
+        self._owner()
+        self._ensure_open()
         return self
 
-    async def __aexit__(self, *exc_info: object) -> None:
+    async def __aexit__(self, *_: object) -> None:
         await self.shutdown()
 
-    async def shutdown(self) -> None:
-        """Delegate retryable process teardown to the sole resource owner."""
+    def _configure(self, resource: Any) -> None:
+        self._ensure_open()
+        previous = self._resources.get(resource.name)
+        if previous is not None and previous != resource:
+            raise ValueError("Conflicting immutable resource declarations")
+        self._resources[resource.name] = resource
 
-        if self._resources.operation_admitted():
-            raise RuntimeError("ArchetypeRuntime cannot close from an admitted operation")
-        self._resources.ensure_close_allowed()
-        async with self._shutdown_lock:
-            if self._closed:
-                return
-            self._shutdown_started = True
-            await self._resources.aclose()
-            self._closed = True
+    def program(self, name: str):
+        from archetype.runtime.world import RuntimeProgram
+
+        self._configure(ProgramResource(name))
+        return RuntimeProgram(self, name)
 
     def world(
         self,
-        name: str = "world",
+        name: str,
         *,
-        storage: str | Path | StorageConfig | None = None,
-        cache: CacheConfig | None = None,
-        processors: list | None = None,
-        resources: list | None = None,
-        hooks: list[tuple[type[HookEvent], Any]] | None = None,
-    ) -> RuntimeWorld:
-        """Create a lazy handle for a world.
+        run: str = "main",
+        world: str | None = None,
+        components: tuple[ComponentProjection, ...] = (),
+        inputs: tuple[tuple[str, tuple[str, ...]], ...] = (),
+    ):
+        from archetype.runtime.world import RuntimeWorld
 
-        Args:
-            name: Human-readable world name.
-            storage: Storage location or explicit storage configuration.
-            cache: Optional write-cache configuration.
-            processors: Processors installed when the world is activated.
-            resources: Resources installed when the world is activated.
-            hooks: `(event type, handler)` pairs installed at activation.
+        self._configure(LogicalResource(name, world or name, run, components, inputs))
+        return RuntimeWorld(self, name, world or name, run)
 
-        Returns:
-            A handle that activates the world on its first operation.
-        """
-        self._ensure_open()
+    def artifacts(self, name: str, *, run: str = "main", world: str | None = None, source=None):
+        from archetype.runtime.world import RuntimeArtifacts
 
-        state = _RuntimeWorldState(
-            runtime=self,
-            name=name,
-            storage_config=coerce_storage(storage),
-            cache_config=coerce_cache(cache),
-            init_processors=list(processors or []),
-            init_resources=list(resources or []),
-            init_hooks=list(hooks or []),
+        if source is not None and (
+            source._runtime is not self or (source.world, source.run) != (world or name, run)
+        ):
+            raise ValueError("Hosted artifact context requires its owned world source")
+        self._configure(
+            ContextResource(name, world or name, run, None if source is None else source.name)
         )
-        return self._bind_world_state(state)
+        return RuntimeArtifacts(self, name, world or name, run)
 
-    def library(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        """Construct one installed runtime-scoped library adapter."""
+    async def _activate(self) -> Host:
+        if self._host is not None:
+            return self._host
+        if self._opening is None:
+            if self._config["library"] is None or self._config["store_root"] is None:
+                raise ValueError("Configure ARCHETYPE_NATIVE_LIBRARY and ARCHETYPE_STORE")
 
-        self._ensure_open()
-        installed = self._resources.world_library(name)
-        factory = installed.runtime_adapter
-        if factory is None:
-            raise TypeError(f"world library {name!r} has no runtime adapter")
-        return factory(self, *args, **kwargs)
+            async def open_owner() -> Host:
+                try:
+                    host = await asyncio.to_thread(open_host, self._config)
+                except ConstructionCleanupError as error:
+                    self._host = error.host
+                    self._accepting = False
+                    raise RuntimeOperationError(
+                        "native_cleanup_failed", outcome="not_dispatched"
+                    ) from None
+                except ProtocolError:
+                    raise RuntimeOperationError(
+                        "native_incompatible", outcome="not_dispatched"
+                    ) from None
+                except Exception:
+                    raise RuntimeOperationError(
+                        "native_unavailable", outcome="not_dispatched"
+                    ) from None
+                self._host = host
+                return host
 
-    async def resume(
-        self,
-        world_id: str | UUID,
-        *,
-        storage: str | Path | StorageConfig | None = None,
-        name: str = "resumed",
-    ) -> RuntimeWorld:
-        """Resume a durable world as the active writer.
-
-        The resumed world restores its tick, entities, and fork lineage. Its
-        component classes must already be imported. Processors, resources,
-        and hooks are code rather than stored state, so reinstall them before
-        stepping. Resuming also invalidates the previous writer; its next
-        commit fails instead of overwriting the resumed world.
-
-        Args:
-            world_id: Durable identity of the world to resume.
-            storage: Storage containing the world.
-            name: Local name for the returned handle.
-        """
-        async with self._resources.admit_operation():
-            self._ensure_open()
-            effective_storage = coerce_storage(storage) or StorageConfig()
-            info = await self._dispatcher.apply(
-                ResumeWorld(
-                    storage_config=effective_storage,
-                    world_id=world_id,
-                )
+            self._opening = asyncio.create_task(open_owner())
+            self._opening.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception()
             )
-            return self.attach(info.world_id, name=name, storage=effective_storage)
+        opening = self._opening
+        try:
+            return await asyncio.shield(opening)
+        except Exception:
+            if self._opening is opening and opening.done():
+                self._opening = None
+            raise
 
-    async def discover(self, storage: str | Path | StorageConfig | None = None) -> list[WorldInfo]:
-        """List every world recorded for a storage identity.
+    async def _perform(self, request: w.Request) -> dict[str, Any]:
+        host = await self._activate()
+        try:
+            from archetype.wiring import artifact_workflow
 
-        Discovery works without a live world and includes destroyed worlds,
-        whose durable rows remain queryable.
-
-        Args:
-            storage: Storage whose durable world catalog should be listed.
-
-        Returns:
-            Durable descriptors for every world recorded in that storage.
-        """
-        async with self._resources.admit_operation():
-            self._ensure_open()
-            return await self._dispatcher.apply(
-                DiscoverWorlds(
-                    storage_config=coerce_storage(storage) or StorageConfig(),
-                )
+            result = await asyncio.to_thread(
+                _Executor(host, self._resources, artifact_workflow(host)).execute, request
             )
+            if not isinstance(request.operation, (w.Read, w.History)) and isinstance(
+                self._resources[request.resource], (LogicalResource, Resource)
+            ):
+                self._active_worlds.add(request.resource)
+            return result
+        except NativeError as error:
+            code = (
+                error.code
+                if error.code
+                in {
+                    "resource_limit",
+                    "corrupt_data",
+                    "invalid_request",
+                    "unsupported_format",
+                    "conflict",
+                }
+                else "operation_failed"
+            )
+            raise RuntimeOperationError(code, outcome="unknown") from None
+        except Exception:
+            raise RuntimeOperationError("operation_failed", outcome="unknown") from None
 
-    def attach(
-        self,
-        world_id: str | UUID,
-        *,
-        name: str = "attached",
-        storage: str | Path | StorageConfig | None = None,
-    ) -> RuntimeWorld:
-        """Attach a non-owning handle to a live or durable world.
-
-        With explicit storage, `info()` and `query()` can resolve a world that
-        is not live in this process. The identity is validated on first use.
-        Closing the handle does not destroy the world, although an explicit
-        `RuntimeWorld.destroy()` still does.
-
-        Args:
-            world_id: Durable identity of the world to attach.
-            name: Local name for the returned handle.
-            storage: Storage containing the world. It may be omitted for
-                live-world capabilities; storage-addressed capabilities
-                require explicit coordinates.
-        """
+    async def _invoke(self, name: str, op: str, args: dict[str, Any]) -> dict[str, Any]:
+        self._owner()
         self._ensure_open()
-
-        state = _RuntimeWorldState(
-            runtime=self,
-            name=name,
-            # None → the gate resolves the world's recorded storage on read;
-            # explicit storage additionally enables cold reads.
-            storage_config=coerce_storage(storage),
-            cache_config=None,
-            init_processors=[],
-            init_resources=[],
-            init_hooks=[],
-            world_id=world_id,
-            owns_world=False,
+        if op != "read" and (name in self._closed_worlds or name in self._draining_worlds):
+            raise RuntimeError("World is draining or closed")
+        # Decode the exact shared transport contract before activating native ownership.
+        request = w.Request.decode(
+            w.encode_request({"version": 1, "resource": name, "operation": op, "arguments": args})
         )
-        return self._bind_world_state(state)
+        _validate_request(self._resources, request)
+        return await self._submit(name, lambda: self._perform(request))
+
+    async def _submit(self, name: str, operation: Callable[[], Coroutine[Any, Any, Any]]):
+        self._owner()
+        self._ensure_open()
+        if len(self._pending) >= self._max_inflight:
+            raise RuntimeOperationError("busy", outcome="not_dispatched")
+        task = asyncio.create_task(operation())
+        self._pending[task] = name
+
+        def completed(done: asyncio.Task[Any]) -> None:
+            self._pending.pop(done, None)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(completed)
+        return await asyncio.shield(task)
+
+    async def _artifact_files(self, name: str, method: str, *arguments):
+        async def execute():
+            host = await self._activate()
+            from archetype.wiring import artifact_workflow
+
+            try:
+                workflow = artifact_workflow(host)
+                return await asyncio.to_thread(getattr(workflow, method), *arguments)
+            except Exception:
+                raise RuntimeOperationError("operation_failed", outcome="unknown") from None
+
+        return await self._submit(name, execute)
+
+    async def _shutdown_world(self, name: str) -> None:
+        self._owner()
+        if name in self._closed_worlds:
+            return
+        self._ensure_open()
+        self._draining_worlds.add(name)
+        existing = self._world_closes.get(name)
+        if existing is None or existing.done():
+
+            async def close_world() -> None:
+                tasks = [t for t, resource in self._pending.items() if resource == name]
+                if tasks:
+                    await asyncio.wait(tasks)
+                if name in self._active_worlds:
+                    await self._perform(w.Request(name, w.Stop()))
+                self._closed_worlds.add(name)
+
+            existing = asyncio.create_task(close_world())
+            self._world_closes[name] = existing
+        await asyncio.shield(existing)
+
+    async def shutdown(self) -> None:
+        self._owner()
+        if self._closed:
+            return
+        self._accepting = False
+        if self._closing is None or self._closing.done():
+
+            async def close_owner() -> None:
+                while self._pending:
+                    await asyncio.wait(tuple(self._pending))
+                # Server startup activates directly, so its retained opening
+                # must drain even when no public operation entered _pending.
+                if self._opening is not None and not self._opening.done():
+                    await asyncio.wait((self._opening,))
+                closes = [t for t in self._world_closes.values() if not t.done()]
+                if closes:
+                    await asyncio.wait(closes)
+                if self._host is not None:
+                    try:
+                        await asyncio.to_thread(self._host.close)
+                    except Exception:
+                        raise RuntimeOperationError(
+                            "native_close_failed", outcome="unknown"
+                        ) from None
+                self._closed = True
+
+            self._closing = asyncio.create_task(close_owner())
+        await asyncio.shield(self._closing)
 
     @classmethod
-    def sync(
-        cls,
-        *,
-        log: str | None = None,
-        artifact_store: ArtifactStoreConfig | None = None,
-        world_libraries: tuple[WorldLibraryManifest, ...] | None = None,
-        world_library_configs: Mapping[str, object] | None = None,
-    ) -> SyncArchetypeRuntime:
-        """Create the synchronous runtime facade."""
-        return SyncArchetypeRuntime(
-            log=log,
-            artifact_store=artifact_store,
-            world_libraries=world_libraries,
-            world_library_configs=world_library_configs,
-        )
-
-    def _bind_world_state(self, state: _RuntimeWorldState) -> RuntimeWorld:
-        """Strongly register one inert world handle before returning it."""
-
-        return _bind_world_state(self._resources, state)
-
-    def _ensure_open(self) -> None:
-        if (self._shutdown_started or self._closed) and not self._resources.operation_admitted():
-            raise RuntimeError("ArchetypeRuntime is closed")
+    def sync(cls, **configuration: Any) -> SyncArchetypeRuntime:
+        return SyncArchetypeRuntime(cls(**configuration))
 
 
 class SyncArchetypeRuntime:
-    """Synchronous facade over `ArchetypeRuntime`.
+    """Blocking facade with one retained Runner, including failed-close retries."""
 
-    Use it as a context manager. New asynchronous applications should use
-    `ArchetypeRuntime` directly.
-    """
-
-    def __init__(
-        self,
-        *,
-        log: str | None = None,
-        artifact_store: ArtifactStoreConfig | None = None,
-        world_libraries: tuple[WorldLibraryManifest, ...] | None = None,
-        world_library_configs: Mapping[str, object] | None = None,
-    ) -> None:
-        self._runtime = ArchetypeRuntime(
-            log=log,
-            artifact_store=artifact_store,
-            world_libraries=world_libraries,
-            world_library_configs=world_library_configs,
-        )
-        self._runner: asyncio.Runner | None = None
+    def __init__(self, runtime: ArchetypeRuntime):
+        self._runtime, self._runner = runtime, None
 
     def __enter__(self) -> SyncArchetypeRuntime:
+        self._runtime._process_owner()
+        if self._runner is not None:
+            raise RuntimeError("Sync runtime is already entered")
+        _outside_loop()
         self._runner = asyncio.Runner()
-        self._runner.run(self._runtime.__aenter__())
+        try:
+            self._runner.run(self._runtime.__aenter__())
+        except BaseException:
+            self._runner.close()
+            self._runner = None
+            raise
         return self
 
-    def __exit__(self, *exc_info: object) -> None:
-        del exc_info
+    def __exit__(self, *_: object) -> None:
         self.shutdown()
 
-    def shutdown(self) -> None:
-        """Retry process teardown and release the runner only after success."""
+    def _dispatch(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
+        try:
+            self._runtime._process_owner()
+            _outside_loop()
+            if self._runner is None:
+                raise RuntimeError("Enter the sync runtime context first")
+        except BaseException:
+            coroutine.close()
+            raise
+        return self._runner.run(coroutine)
 
-        runner = self._runner
-        if runner is None:
+    def program(self, name: str):
+        from archetype.runtime.world import SyncRuntimeProgram
+
+        return SyncRuntimeProgram(self, self._runtime.program(name))
+
+    def world(self, name: str, **declarations: Any):
+        from archetype.runtime.world import SyncRuntimeWorld
+
+        return SyncRuntimeWorld(self, self._runtime.world(name, **declarations))
+
+    def artifacts(self, name: str, **scope: Any):
+        from archetype.runtime.world import SyncRuntimeArtifacts
+
+        return SyncRuntimeArtifacts(self, self._runtime.artifacts(name, **scope))
+
+    def shutdown(self) -> None:
+        if self._runner is None:
             if self._runtime._closed:
                 return
-            raise RuntimeError("SyncArchetypeRuntime is not active")
+            raise RuntimeError("Enter the sync runtime context first")
         self._dispatch(self._runtime.shutdown())
-        runner.close()
+        self._runner.close()
         self._runner = None
 
-    def _require_runner(self) -> asyncio.Runner:
-        if self._runner is None:
-            raise RuntimeError("SyncArchetypeRuntime is not active")
-        return self._runner
 
-    def _dispatch(self, coro) -> Any:
-        """Run *coro* to completion from any thread.
-
-        Sync callbacks may schedule handle work onto the runner while its loop
-        remains active in the owning thread.
-        """
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            pass
-        else:
-            coro.close()
-            raise RuntimeError(
-                "sync handle methods cannot be called from the event-loop thread; "
-                "use async handles (ArchetypeRuntime) inside async callbacks"
-            )
-        runner = self._require_runner()
-        loop = runner.get_loop()
-        if loop.is_running():
-            return asyncio.run_coroutine_threadsafe(coro, loop).result()
-        return runner.run(coro)
-
-    def world(
-        self,
-        name: str = "world",
-        *,
-        storage: str | Path | StorageConfig | None = None,
-        cache: CacheConfig | None = None,
-        processors: list | None = None,
-        resources: list | None = None,
-        hooks: list[tuple[type[HookEvent], Any]] | None = None,
-    ) -> SyncRuntimeWorld:
-        adapted_hooks = [(event_type, _adapt_sync_hook(fn)) for event_type, fn in hooks or []]
-        rw = self._runtime.world(
-            name,
-            storage=storage,
-            cache=cache,
-            processors=processors,
-            resources=resources,
-            hooks=adapted_hooks,
-        )
-        return SyncRuntimeWorld(rw, self)
-
-    def discover(self, storage=None) -> list[WorldInfo]:
-        """List durable worlds through the synchronous facade."""
-        return self._dispatch(self._runtime.discover(storage))
-
-    def attach(self, world_id, *, name: str = "attached", storage=None) -> SyncRuntimeWorld:
-        """Attach a synchronous handle to a live or durable world."""
-        return SyncRuntimeWorld(self._runtime.attach(world_id, name=name, storage=storage), self)
-
-    def resume(self, world_id, *, storage=None, name: str = "resumed") -> SyncRuntimeWorld:
-        """Resume a durable world as the active writer."""
-        rw = self._dispatch(self._runtime.resume(world_id, storage=storage, name=name))
-        return SyncRuntimeWorld(rw, self)
-
-
-def run_sync(coro) -> Any:
-    """Run one coroutine when no event loop is active in this thread."""
+def _outside_loop() -> None:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
-    coro.close()
-    raise RuntimeError("run_sync() cannot be used from within a running event loop")
+        return
+    raise RuntimeError("Use the async runtime inside an event loop")
+
+
+def run_sync(coroutine: Coroutine[Any, Any, Any]) -> Any:
+    try:
+        _outside_loop()
+    except BaseException:
+        coroutine.close()
+        raise
+    return asyncio.run(coroutine)

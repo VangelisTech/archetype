@@ -1,0 +1,808 @@
+version = 1
+
+[[contract]]
+id = "observability.signals.safe"
+source = "docs/compatibility/0.6/guide/observability.md"
+section = "1. Safe signal contract"
+owner = "observability"
+risk = "high"
+pytest = ["tests/app/test_obs.py", "tests/app/test_obs_process.py"]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "observability.logging.correlated"
+source = "docs/compatibility/0.6/guide/observability.md"
+section = "5. Process-host ownership"
+owner = "observability"
+risk = "medium"
+pytest = [
+    "tests/app/test_logging_contracts.py",
+    "tests/app/test_logging_process.py",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "observability.repository.enforced"
+source = "docs/compatibility/0.6/guide/observability.md"
+section = "6. Family dispositions"
+owner = "observability"
+risk = "high"
+pytest = [
+    "tests/scripts/test_check_observability.py",
+]
+static = ["scripts/check_observability.py"]
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+
+[[contract]]
+id = "architecture.dependencies.enforced"
+source = "docs/compatibility/0.6/guide/application-architecture.md"
+section = "11. Static enforcement"
+owner = "app"
+risk = "high"
+pytest = ["tests/scripts/test_check_architecture.py"]
+static = ["scripts/check_architecture.py"]
+evals = ["spec.manifest_traceability", "spec.runtime_dispatcher_boundary"]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "architecture.v0_6.current_dag"
+source = "docs/compatibility/0.6/guide/application-architecture.md"
+section = "13. Current v0.6 architecture"
+owner = "architecture"
+risk = "high"
+pytest = [
+  "tests/scripts/test_check_architecture.py::test_current_v0_6_family_dag_is_complete_acyclic_and_exact",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "architecture.migration.family_edges"
+source = "docs/compatibility/0.6/guide/storage-migration.md"
+section = "10. Architecture and executable evidence"
+owner = "architecture"
+risk = "high"
+pytest = [
+  "tests/scripts/test_check_architecture.py::test_migration_family_allows_only_artifacts_and_storage",
+]
+static = ["scripts/check_architecture.py"]
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "migration.local_v1.whole_identity"
+source = "docs/compatibility/0.6/guide/storage-migration.md"
+section = "1. Local v1 profile"
+owner = "migration"
+risk = "high"
+pytest = [
+  "tests/integration/test_storage_migration.py::test_local_whole_storage_identity_migrates_and_cold_resumes",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "migration.local_v1.fail_closed"
+source = "docs/compatibility/0.6/guide/storage-migration.md"
+section = "3. Preflight, quiescence, and destination emptiness"
+owner = "migration"
+risk = "high"
+pytest = ["tests/migration/test_handlers.py"]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "migration.tables.deterministic_evidence"
+source = "docs/compatibility/0.6/guide/storage-migration.md"
+section = "4. Data-plane transfer"
+owner = "storage"
+risk = "high"
+pytest = [
+  "tests/storage/test_transfer.py",
+  "tests/storage/test_table_transfer.py",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "migration.artifacts.occurrence_relocation"
+source = "docs/compatibility/0.6/guide/storage-migration.md"
+section = "5. Artifact relocation without re-ingestion"
+owner = "artifacts"
+risk = "high"
+pytest = ["tests/artifacts/test_migration.py"]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "migration.control.exact_activation"
+source = "docs/compatibility/0.6/guide/storage-migration.md"
+section = "6. Control import and writer fencing"
+owner = "storage"
+risk = "high"
+pytest = ["tests/storage/test_control_catalog_migration.py"]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "migration.activities.empty_only"
+source = "docs/compatibility/0.6/guide/storage-migration.md"
+section = "3. Preflight, quiescence, and destination emptiness"
+owner = "migration"
+risk = "high"
+pytest = [
+  "tests/activities/test_activity_migration.py",
+  "tests/migration/test_handlers.py::test_any_activity_history_rejects_before_destination_initialization",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "architecture.protocols.complete"
+source = "docs/compatibility/0.6/guide/application-architecture.md"
+section = "8. Protocol policy and wiring"
+owner = "app"
+risk = "high"
+pytest = ["tests/scripts/test_check_architecture.py"]
+static = ["scripts/check_architecture.py"]
+evals = ["spec.info_class_downgrades"]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "storage.execution.single_authority"
+source = "docs/compatibility/0.6/guide/application-architecture.md"
+section = "Storage execution authority"
+owner = "storage"
+risk = "high"
+pytest = [
+  "tests/storage/test_storage_execution.py",
+  "tests/scripts/test_check_architecture.py",
+  "tests/scripts/test_check_lazy_audit.py",
+]
+static = [
+  "scripts/check_architecture.py",
+  "scripts/check_lazy_audit.py",
+]
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "runtime.trust.actor_free"
+source = "docs/compatibility/0.6/guide/runtime.md"
+section = "R3 — Runtime is actor-free"
+owner = "runtime"
+risk = "high"
+pytest = ["tests/app/test_runtime_contracts.py"]
+static = ["scripts/check_api_import_boundaries.py"]
+evals = ["spec.runtime_dispatcher_boundary"]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "runtime.lifecycle.single_flight_and_drain"
+source = "docs/compatibility/0.6/guide/specification.md"
+section = "Concurrency Contract"
+owner = "runtime"
+risk = "high"
+pytest = [
+  "tests/app/test_runtime_contracts.py",
+  "tests/app/test_application_contracts.py",
+  "tests/app/test_lifecycle_parity.py",
+]
+static = []
+evals = ["runtime_contracts", "idempotency.runtime_handles_and_history"]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "runtime.lifecycle.retryable_teardown"
+source = "docs/compatibility/0.6/guide/runtime.md"
+section = "R4 — Async context manager is canonical"
+owner = "runtime"
+risk = "high"
+pytest = [
+  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_runtime_shutdown_retries_workflow_owners_before_dependencies",
+  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_failed_mission_cleanup_still_drains_admitted_world_work",
+  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_workflow_cleanup_cannot_admit_a_sibling_world",
+  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_concurrent_runtime_shutdown_is_single_flight",
+  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_cancelled_runtime_shutdown_retains_cleanup_for_retry",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "gateway.authorization.rbac"
+source = "docs/compatibility/0.6/guide/command-gate.md"
+section = "1. The gate model"
+owner = "commands"
+risk = "high"
+pytest = ["tests/app/test_auth.py", "tests/app/test_permissions.py", "tests/api/test_routes.py"]
+static = ["scripts/check_gate_coverage.py"]
+evals = [
+  "rbac_enforcement",
+  "tick_quota_resets",
+  "quota_boundaries",
+  "spec.role_permission_matrix",
+  "spec.dispatcher_gate_map",
+]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+
+[[contract]]
+id = "commands.identity.idempotent"
+source = "docs/compatibility/0.6/guide/specification.md"
+section = "Command ledger, scheduler, and dispatcher"
+owner = "commands"
+risk = "high"
+pytest = ["tests/commands/test_durable_runtime_contracts.py"]
+static = ["scripts/check_idempotency_contracts.py"]
+evals = [
+  "command_ordering",
+  "idempotency.manifest_traceability",
+  "idempotency.command_identity",
+  "idempotency.submit_spawn_distinct_entities",
+]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "commands.settlement.atomic"
+source = "docs/compatibility/0.6/guide/application-architecture.md"
+section = "7. Commands, commits, artifacts, and audit"
+owner = "commands"
+risk = "high"
+pytest = [
+  "tests/commands/test_durable_runtime_contracts.py",
+  "tests/integration/test_command_flow.py::test_deferred_spawn_reserved_id_survives_drain",
+  "tests/integration/test_command_flow.py::test_materializer_failure_fails_tick_before_settlement",
+]
+static = []
+evals = ["command_pipeline", "unhandled_command_noop"]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "commands.failure.preserves_progress"
+source = "docs/compatibility/0.6/guide/specification.md"
+section = "Command ledger, scheduler, and dispatcher"
+owner = "commands"
+risk = "high"
+pytest = ["tests/commands/test_durable_runtime_contracts.py"]
+static = []
+evals = [
+  "poison_in_batch",
+  "missing_payload_keys",
+  "unknown_component_type",
+  "despawn_nonexistent",
+]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "world.tick.atomic_visibility"
+source = "docs/compatibility/0.6/guide/application-architecture.md"
+section = "10. Supported durability profile"
+owner = "world"
+risk = "high"
+pytest = ["tests/world/test_atomic_visibility.py"]
+static = []
+evals = [
+  "idempotency.atomic_publish_retry",
+  "idempotency.process_crash_cold_resume",
+]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "world.writer.fenced"
+source = "docs/compatibility/0.6/guide/world-lifecycle.md"
+section = "6. `resume_world` (fenced mutable cold resume)"
+owner = "world"
+risk = "high"
+pytest = [
+  "tests/world/test_atomic_visibility.py",
+  "tests/world/test_resume_contracts.py",
+]
+static = []
+evals = [
+  "idempotency.durable_discovery",
+  "idempotency.resume_and_writer_fencing",
+  "idempotency.process_writer_fence_race",
+]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "activities.durable_control"
+source = "docs/compatibility/0.6/guide/activities.md"
+section = "2. The committed-state protocol"
+owner = "activities"
+risk = "high"
+pytest = ["tests/activities/test_activity_catalog_contracts.py"]
+static = [
+  "scripts/check_architecture.py",
+  "scripts/check_observability.py",
+]
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+
+[[contract]]
+id = "world.lifecycle.idempotent"
+source = "docs/compatibility/0.6/guide/world-lifecycle.md"
+section = "2. World lifecycle operations"
+owner = "world"
+risk = "high"
+pytest = [
+  "tests/app/test_durable_discovery.py",
+  "tests/api/test_routes.py",
+]
+static = []
+evals = [
+  "idempotency.world_lifecycle",
+  "idempotency.async_world_entity_ids_and_missing_remove",
+]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "world.fork.lineage"
+source = "docs/compatibility/0.6/guide/world-lifecycle.md"
+section = "4. `fork_world`"
+owner = "world"
+risk = "high"
+pytest = [
+  "tests/integration/test_fork_destroy_contracts.py",
+  "tests/integration/test_core_example_receipts.py::test_counterfactual_receipt_proves_identity_lineage_and_divergence",
+]
+static = []
+evals = ["fork_divergence"]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "world.run_identity.cold_resume"
+source = "docs/compatibility/0.6/guide/world-lifecycle.md"
+section = "6. `resume_world` (fenced mutable cold resume)"
+owner = "world"
+risk = "high"
+pytest = [
+  "tests/world/test_resume_contracts.py",
+  "tests/integration/test_core_example_receipts.py::test_time_travel_receipt_proves_cold_resume_continuity",
+]
+static = []
+evals = ["time_travel_and_run_id"]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "world.mutations.compose_deterministically"
+source = "docs/compatibility/0.6/guide/specification.md"
+section = "Mutation materialization"
+owner = "world"
+risk = "high"
+pytest = [
+  "tests/core/test_same_tick_mutation_composition.py",
+  "tests/integration/test_core_example_receipts.py::test_world_mutation_receipt_proves_each_public_mutation",
+]
+static = []
+evals = [
+  "idempotency.staged_spawn_last_write_wins",
+  "idempotency.same_tick_duplicate_mutations",
+  "idempotency.component_signature_noops",
+  "processor_adversarial",
+]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "world.mutation.locking"
+source = "docs/compatibility/0.6/guide/specification.md"
+section = "Mutation Contracts"
+owner = "world"
+risk = "high"
+pytest = [
+  "tests/world/test_mutation_contracts.py",
+  "tests/world/test_registry_locking.py",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "query.cold_reads.correct"
+source = "docs/compatibility/0.6/guide/specification.md"
+section = "Durable world reads"
+owner = "world"
+risk = "high"
+pytest = [
+  "tests/world/test_query_contracts.py",
+  "tests/api/test_routes.py",
+  "tests/integration/test_core_example_receipts.py::test_time_travel_receipt_proves_cold_resume_continuity",
+]
+static = []
+evals = [
+  "query_correctness",
+  "idempotency.fixed_reads",
+  "idempotency.query_archetype_repeatable",
+]
+benchmarks = ["world.query.latency"]
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "storage.cache.concurrent_no_loss"
+source = "docs/compatibility/0.6/guide/stores.md"
+section = "Write-Behind Cache"
+owner = "storage"
+risk = "high"
+pytest = ["tests/aio/test_async_cached_store_behavior.py"]
+static = []
+evals = ["idempotency.storage_pooling_and_shutdown", "storage_roundtrip"]
+benchmarks = ["core.ecs.micro"]
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "ingestion.envelope.append_selection"
+source = "docs/compatibility/0.6/guide/artifacts.md"
+section = "5. Catalog and index contract"
+owner = "artifacts"
+risk = "high"
+pytest = ["tests/artifacts/test_storage_publication.py"]
+static = ["scripts/check_architecture.py", "scripts/check_lazy_audit.py"]
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "ingestion.catalog.cold_roundtrip"
+source = "docs/compatibility/0.6/guide/artifacts.md"
+section = "5. Catalog and index contract"
+owner = "artifacts"
+risk = "high"
+pytest = [
+  "tests/artifacts/test_storage_publication.py::test_registered_table_is_queryable_from_fresh_application",
+  "tests/infrastructure/test_r2_artifact_context.py::test_huggingface_context_pack_round_trips_through_cloudflare_r2",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "artifacts.ingestion.occurrence_identity"
+source = "docs/compatibility/0.6/guide/artifacts.md"
+section = "4. Occurrence and content identity"
+owner = "artifacts"
+risk = "high"
+pytest = ["tests/artifacts/test_ingestion_integration.py"]
+static = []
+evals = ["idempotency.artifact_occurrence_identity"]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "artifacts.ingestion.common_visibility"
+source = "docs/compatibility/0.6/guide/artifacts.md"
+section = "7. Visibility and failure"
+owner = "artifacts"
+risk = "high"
+pytest = ["tests/artifacts/test_ingestion_integration.py"]
+static = ["scripts/check_lazy_audit.py"]
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "artifacts.context.task_anchored"
+source = "docs/compatibility/0.6/guide/artifacts.md"
+section = "10. Task-anchored artifact context"
+owner = "artifacts"
+risk = "medium"
+pytest = ["tests/artifacts/test_context_analysis.py"]
+static = ["scripts/check_architecture.py", "scripts/check_lazy_audit.py"]
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "evaluation.result.snapshot_pinned"
+source = "docs/compatibility/0.6/guide/artifacts.md"
+section = "8. Evaluation results"
+owner = "evaluation"
+risk = "high"
+pytest = [
+  "tests/evaluation/test_handler_receipts.py",
+  "tests/evaluation/test_receipt_integration.py",
+]
+static = []
+evals = ["idempotency.evaluation_result_replay"]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+
+
+
+[[contract]]
+id = "evaluation.ontology.separated"
+source = "docs/compatibility/0.6/guide/dataset-eval-ontology.md"
+section = "1. The contract in one view"
+owner = "evaluation"
+risk = "medium"
+pytest = ["tests/evaluation/test_dataset_identity_contracts.py"]
+static = []
+evals = ["spec.dataset_eval_ontology", "spec.receipt_authority_firewall"]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "audit.append_only.evidence"
+source = "docs/compatibility/0.6/guide/audit-log.md"
+section = "2. Append-only invariant"
+owner = "commands"
+risk = "high"
+pytest = ["tests/commands/test_audit_projection_contracts.py"]
+static = []
+evals = ["spec.append_only_protocols"]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "simulation.episode.termination"
+source = "docs/compatibility/0.6/guide/specification.md"
+section = "Run contract"
+owner = "world"
+risk = "medium"
+pytest = [
+  "tests/integration/test_episode_rollout.py",
+]
+static = []
+evals = [
+  "episode_value_termination",
+  "idempotency.step_and_run_non_idempotent",
+  "simulation_correctness",
+]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+
+
+[[contract]]
+id = "core.ecs.data_model"
+source = "docs/compatibility/0.6/guide/specification.md"
+section = "Data Model Contracts"
+owner = "core"
+risk = "high"
+pytest = [
+  "tests/core/test_component_core.py",
+  "tests/core/test_archetype_core_signatures.py",
+]
+static = []
+evals = ["component_serde", "archetype_signatures"]
+benchmarks = ["core.ecs.micro"]
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "core.processors.execution"
+source = "docs/compatibility/0.6/guide/specification.md"
+section = "System and Processor Contracts"
+owner = "core"
+risk = "high"
+pytest = [
+  "tests/aio/test_async_processor.py",
+  "tests/aio/test_async_world_execution.py",
+  "tests/integration/test_core_example_receipts.py::test_messaging_receipt_proves_messages_and_public_hook_order",
+]
+static = []
+evals = ["processor_adversarial"]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "core.hooks.lifecycle"
+source = "docs/compatibility/0.6/guide/specification.md"
+section = "Lifecycle Hook Contracts"
+owner = "core"
+risk = "medium"
+pytest = [
+  "tests/core/test_resources_hooks_messaging.py",
+  "tests/integration/test_core_example_receipts.py::test_messaging_receipt_proves_messages_and_public_hook_order",
+  "tests/integration/test_core_example_receipts.py::test_hook_receipt_proves_order_isolation_removal_and_state",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+
+[[contract]]
+id = "research.autoresearch.ledger"
+source = "docs/compatibility/0.6/guide/autoresearch.md"
+section = "The Loop"
+owner = "research"
+risk = "high"
+pytest = [
+  "tests/research/test_autoresearch_ledger.py",
+  "tests/research/test_runtime_autoresearch.py",
+  "tests/research/test_autoresearch_admission.py",
+  "tests/app/test_application_review_contracts.py::test_stop_admission_then_wait_drained_joins_admitted_autoresearch",
+  "tests/app/test_lifecycle_parity.py::TestShutdownErrorAggregation::test_shutdown_waits_for_admitted_autoresearch",
+  "tests/wiring/test_wiring_contracts.py::test_wiring_is_explicit_topological_and_has_no_setter_injection",
+  "tests/wiring/test_wiring_contracts.py::test_pull_forward_registration_has_exact_four_actor_aware_and_one_trusted_only_specs",
+  "tests/integration/test_domain_example_receipts.py::test_autoresearch_receipt_pins_improvement_and_ledger_order",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "graph.relations.temporal"
+source = "docs/compatibility/0.6/guide/prefab-libraries.md"
+section = "Current relation and temporal-view contract"
+owner = "graph"
+risk = "medium"
+pytest = [
+  "tests/graph/test_edge_contract.py",
+  "tests/graph/test_cascade_contract.py",
+  "tests/integration/test_domain_example_receipts.py::test_graph_receipt_pins_temporal_edges_and_cascade",
+  "tests/integration/test_domain_example_receipts.py::test_biome_receipt_pins_composed_scene_outcome",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "graph.prefabs.copy_on_instantiate"
+source = "docs/compatibility/0.6/guide/prefab-libraries.md"
+section = "Instantiation is a ledger operation"
+owner = "graph"
+risk = "medium"
+pytest = [
+  "tests/graph/test_prefab_contract.py",
+  "tests/integration/test_domain_example_receipts.py::test_prefab_receipt_pins_lineage_and_copy_semantics",
+  "tests/integration/test_domain_example_receipts.py::test_biome_receipt_pins_composed_scene_outcome",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+
+[[contract]]
+id = "release.package.installable"
+source = "docs/compatibility/0.6/guide/api-stability.md"
+section = "What counts as public"
+owner = "release"
+risk = "high"
+pytest = ["tests/app/test_runtime_entrypoint.py", "tests/cli/test_cli.py"]
+static = ["scripts/package_smoke.py"]
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "storage.remote.control_parity"
+source = "docs/compatibility/0.6/guide/application-architecture.md"
+section = "10. Supported durability profile"
+owner = "storage"
+risk = "high"
+pytest = ["tests/storage/test_remote_catalog_parity.py", "tests/infrastructure/test_r2_idempotency.py"]
+static = ["scripts/validate_r2_substrate.py"]
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+
+
+
+
+
+
+[[contract]]
+id = "security.redaction.pre_durability"
+source = "docs/compatibility/0.6/guide/artifacts.md"
+section = "9. Security boundary"
+owner = "redaction"
+risk = "high"
+pytest = [
+  "tests/app/test_redaction_service.py",
+]
+static = []
+evals = ["security.pre_durability_redaction"]
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"
+
+[[contract]]
+id = "examples.biome.pinned_execution"
+source = "docs/compatibility/0.6/guide/examples.md"
+section = "14. Live Biome Agent"
+owner = "examples"
+risk = "high"
+pytest = ["tests/examples/test_biome_agent_contract.py"]
+static = []
+evals = []
+benchmarks = []
+profiles = ["compatibility"]
+version_scope = "0.6"

@@ -99,12 +99,6 @@ else:
 RESULT_SCHEMA = "archetype.operational-results/v1"
 WORKSPACE_DISTRIBUTIONS: tuple[tuple[str, str, str], ...] = (
     ("archetype-ecs", "packages/archetype-ecs/src", "archetype"),
-    ("archetype-missions", "packages/archetype-missions/src", "archetype.missions"),
-    (
-        "archetype-physical-ai",
-        "packages/archetype-physical-ai/src",
-        "archetype.physical_ai",
-    ),
     ("archetype-research", "packages/archetype-research/src", "archetype.research"),
 )
 _PROCESS_TERM_GRACE_SECONDS = 2.0
@@ -371,13 +365,6 @@ def _scenario_environment(
     """Build the scenario environment, including explicit external-lane gates."""
 
     env = base.copy()
-    prerequisites = set(row["prerequisites"])
-    if "service:docker" in prerequisites:
-        env["ARCHETYPE_DOCKER_SANDBOX_PARITY"] = "1"
-    if "service:apple-container" in prerequisites:
-        env["ARCHETYPE_APPLE_CONTAINER_SANDBOX_PARITY"] = "1"
-    if row.get("id") == "dogfood.agent_mission.modal_live":
-        env["ARCHETYPE_MODAL_AGENT_MISSION_LIVE"] = "1"
     if row.get("id") == "example.14_biome_agent":
         env[_PROCESS_LEASE_GUARDIAN_ENV] = "1"
     return env
@@ -813,7 +800,7 @@ def _prepare_wheel_python(
     destination: Path,
 ) -> tuple[Path, dict[str, str]]:
     if len(wheels) != len(WORKSPACE_DISTRIBUTIONS):
-        raise ValueError("installed-wheel scenarios require all four world-stack wheels")
+        raise ValueError("installed-wheel scenarios require both world-stack wheels")
     uv = shutil.which("uv")
     if uv is None:
         raise RuntimeError("installed-wheel scenarios require uv")
@@ -870,7 +857,7 @@ def _package_probe(
 ) -> dict[str, object]:
     probe = (
         "import importlib.util, json, pathlib, sys, archetype;"
-        "modules=('archetype.missions','archetype.physical_ai','archetype.research');"
+        "modules=('archetype.research',);"
         "specs={name: importlib.util.find_spec(name) for name in modules};"
         "print(json.dumps({'version': archetype.__version__,"
         "'path': str(pathlib.Path(archetype.__file__).resolve()),"

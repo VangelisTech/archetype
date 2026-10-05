@@ -187,7 +187,7 @@ def test_complete_index_requires_all_ten_attested_artifacts() -> None:
 def test_index_rejects_non_attested_artifact_metadata(field: str) -> None:
     manifest = _manifest()
     payloads = _payloads(manifest)
-    record = payloads["archetype-missions"]["urls"][0]
+    record = payloads["archetype-research"]["urls"][0]
     if field == "sha256":
         record["digests"]["sha256"] = "f" * 64
     elif field == "size":
