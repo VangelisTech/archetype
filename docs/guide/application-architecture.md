@@ -89,7 +89,9 @@ The separately classified [DDlog shared ingress preview](ddlog-ingress-preview.m
 is a bounded exception outside this retained runtime graph. It borrows the
 preview Host, consumes the real principal verifier through a structural port,
 and owns exact capability/resource admission without importing the retained
-dispatcher or adding durable scheduling. It supplies no HTTP/MCP host.
+dispatcher or adding durable scheduling. Its separately classified
+[local HTTP/MCP adapters](ddlog-transports-preview.md) depend only on that
+preview and the pinned SDK/ASGI packages; they add no composition or policy authority.
 
 The concrete `ArchetypeRuntime` is not a dependency of ordinary domain-family
 modules. Framework runtime and API surfaces are parallel trusted and actor-aware

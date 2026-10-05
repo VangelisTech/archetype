@@ -6,8 +6,9 @@ Status: local, trusted, opt-in Python binding over DDlog Runtime
 preview, not a drop-in replacement for `ArchetypeRuntime`. The retained 0.6
 runtime still uses its existing engine. A separate local
 [shared ingress contract](ddlog-ingress-preview.md) now adapts a real principal
-verifier and explicit resource grants over this Host. HTTP/MCP listeners and
-consumer migration remain unimplemented.
+verifier and explicit resource grants over this Host. Optional
+[local HTTP/MCP adapters](ddlog-transports-preview.md) now consume that ingress;
+production hosting and consumer migration remain unimplemented.
 
 ## Ownership and installation
 
@@ -34,7 +35,7 @@ python -m pip wheel --no-index --no-deps --no-build-isolation \
   --wheel-dir /tmp/ddlog-wheels packages/archetype-ddlog-preview
 python -m venv /tmp/ddlog-preview-env
 /tmp/ddlog-preview-env/bin/python -m pip install --no-index --no-deps \
-  /tmp/ddlog-wheels/archetype_ddlog_preview-0.1.1-py3-none-any.whl
+  /tmp/ddlog-wheels/archetype_ddlog_preview-0.1.2-py3-none-any.whl
 ```
 
 Source-wheel building requires locally available setuptools >=83 and wheel.

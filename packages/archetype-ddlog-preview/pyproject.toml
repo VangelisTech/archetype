@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "archetype-ddlog-preview"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local trusted Python preview over DDlog WorldManager and hosted Iceberg cuts"
 requires-python = ">=3.12"
 dependencies = []

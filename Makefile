@@ -144,7 +144,7 @@ operational-audit:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/validate_operational_scenarios.py
 
 .PHONY: static
-static: format-check lint typecheck lock-check contract-audit benchmark-audit actionlint-audit ddlog-preview-audit
+static: format-check lint typecheck lock-check contract-audit benchmark-audit actionlint-audit ddlog-preview-audit ddlog-transports-audit
 	@echo "Static validation passed"
 
 .PHONY: actionlint-audit
@@ -638,6 +638,15 @@ DDLOG_PYTHON_LIBRARY := $(CURDIR)/target/debug/libarchetype_ddlog_python.$(if $(
 .PHONY: ddlog-preview-audit ddlog-python-check
 ddlog-preview-audit:
 	@$(DDLOG_PYTHON) scripts/check_ddlog_preview.py
+
+# Optional transport environment and an existing native library are supplied by
+# the caller. This target never compiles native code or provisions credentials.
+.PHONY: ddlog-transports-audit ddlog-transports-check
+ddlog-transports-audit:
+	@$(DDLOG_PYTHON) scripts/check_ddlog_transports.py
+
+ddlog-transports-check: ddlog-transports-audit
+	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=packages/archetype-ddlog-preview/src:packages/archetype-ddlog-transports/src $(DDLOG_PYTHON) -m unittest discover -s packages/archetype-ddlog-transports/tests -v
 
 ddlog-python-check: ddlog-preview-audit
 	@cargo +1.95.0 fmt -p archetype-ddlog-python -- --check

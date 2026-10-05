@@ -1,0 +1,6 @@
+# Optional local ingress adapters, outside the retained archetype family DAG.
+classification = "isolated-local-transport-preview"
+distribution = "archetype-ddlog-transports"
+module = "archetype_ddlog_transports"
+package = "packages/archetype-ddlog-transports"
+contract = "docs/guide/ddlog-transports-preview.md"

@@ -205,23 +205,33 @@ class Ingress:
         elif self._loop is not loop:
             raise RuntimeError("Ingress belongs to another event loop")
 
+    def authenticate(self, credential: str) -> Principal:
+        """Verify through the configured authority for transport auth/context.
+
+        This checks no operation or resource. invoke() always re-verifies and
+        performs the exact grants itself; transport context cannot bypass it.
+        """
+        if (
+            type(credential) is not str
+            or not 24 <= len(credential) <= 4096
+            or any(c.isspace() for c in credential)
+        ):
+            raise ValueError("Invalid credential")
+        principal = self._verifier.authenticate(credential)
+        w.identifier(principal.principal_id)
+        capabilities = principal.capabilities
+        if type(capabilities) is not frozenset or any(type(c) is not str for c in capabilities):
+            raise ValueError("Invalid principal")
+        return principal
+
     async def invoke(self, credential: str, request: bytes) -> bytes:
         """Credential is out-of-band, never an actor/role in caller JSON."""
         self._owner()
         if not self._accepting:
             return _error("unavailable")
         try:
-            if (
-                type(credential) is not str
-                or not 24 <= len(credential) <= 4096
-                or any(c.isspace() for c in credential)
-            ):
-                return _error("unauthenticated")
-            principal = self._verifier.authenticate(credential)
-            principal_id = w.identifier(principal.principal_id)
-            capabilities = principal.capabilities
-            if type(capabilities) is not frozenset or any(type(c) is not str for c in capabilities):
-                return _error("unauthenticated")
+            principal = self.authenticate(credential)
+            principal_id, capabilities = principal.principal_id, principal.capabilities
         except Exception:
             return _error("unauthenticated")
         try:

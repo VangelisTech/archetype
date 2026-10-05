@@ -8,8 +8,8 @@ and includes the local [hosted cut publisher](ddlog-hosted-publisher.md) and
 the retained 0.6 implementation, including its existing Daft loop. The opt-in
 Python preview does not replace those contracts. Its local
 [shared ingress contract](ddlog-ingress-preview.md) now supplies exact
-capability/resource admission; generic DDlog API/MCP listeners are not yet
-implemented. Agent memory, prompt, tool,
+capability/resource admission, with optional [local HTTP/MCP adapters](ddlog-transports-preview.md).
+Production hosting and consumer migration remain incomplete. Agent memory, prompt, tool,
 and budget semantics belong to X0. Missions and Physical AI products have
 been removed from current packaging and composition.
 
@@ -38,6 +38,7 @@ The current contract set is split across design docs and executable tests.
 | [Hosted DDlog Publisher](ddlog-hosted-publisher.md) | Local Rust migration slice | Hosted admission to verified FULL analytical cuts; A separate Python preview binds this slice; transport integration remains incomplete. |
 | [DDlog Python Preview](ddlog-python-preview.md) | Isolated trusted Python/C ABI | Explicit hosted operations, strict values and resource lifetime; no retained-runtime replacement. |
 | [DDlog Shared Ingress Preview](ddlog-ingress-preview.md) | Local transport-neutral admission | Exact capabilities/resource grants over the same Host, strict values, safe projections and cancellation ownership; no listener. |
+| [DDlog Local Transports Preview](ddlog-transports-preview.md) | Optional local HTTP/MCP adapters | Actual SDK auth/context and lifespan over shared ingress; no production host or consumer migration. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
 | [Storage Migration](storage-migration.md) | Local whole-storage administration | Offline Iceberg-to-Iceberg and SQLite-to-SQLite migration, empty-destination activation, Artifact relocation, exact identity preservation, and cold verification. |
 | [Activities](activities.md) | Work between committed states | Resource/Activity boundary, post-commit admission, fenced attempts, provider reconciliation, result references, and later-receipt settlement. |

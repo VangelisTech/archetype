@@ -27,7 +27,8 @@ repositories and existing stored histories are outside this migration.
 ```mermaid
 flowchart LR
     P[Opt-in Python preview] --> W[DDlog WorldManager]
-    T[Authenticated API/MCP] -. planned .-> W
+    T[Local HTTP/MCP adapters] --> G[Shared ingress]
+    G --> P
     W --> D[DDlog Runtime: composed native program]
     D --> F[Freeze complete component outputs and checkpoint]
     F --> O[Stage immutable objects]
@@ -38,7 +39,9 @@ flowchart LR
 
 The Rust crate `archetype-ddlog` implements the path from the world owner through
 the cut manifest and pinned reads. The [Python preview](ddlog-python-preview.md)
-binds these local ports. API/MCP route migration remains unimplemented.
+binds these local ports. [Local HTTP/MCP adapters](ddlog-transports-preview.md)
+now reach them through shared ingress. Production hosting and consumer route
+migration remain unimplemented.
 
 ## Persistent relations become components
 
@@ -142,10 +145,12 @@ native test is not evidence of native execution.
 ## Remaining migration
 
 A local [Python preview](ddlog-python-preview.md) now wraps the existing DDlog
-WorldManager. Supported-runtime migration and HTTP/MCP adapters remain. Generic tools should cover simulation submission,
+WorldManager, with locally tested HTTP/MCP adapters over its shared ingress.
+Supported-runtime migration and production hosting remain. Broader tools should cover simulation submission,
 status, step/run, history, fork, query, and artifact registration. The removed
 Mission MCP server is not a simulation interface. Admission, authentication,
-and cancellation need focused tests at that shared boundary.
+and cancellation have focused local adapter tests; the broader operations below
+are not exposed by this transport slice.
 
 Other remaining work includes the broader Arrow type bridge, sanctioned Daft
 queries over published cuts, fork lineage, world-context artifact registration

@@ -1,8 +1,9 @@
 # DDlog shared ingress preview
 
-Status: version 0.1.1 local transport-neutral contract over the tested Python `Host` and its
-existing Rust owner. This slice supplies no HTTP/MCP listener, production
-credential provisioning, supported-runtime replacement or consumer migration.
+Status: version 0.1.2 local transport-neutral contract over the tested Python `Host` and its
+existing Rust owner. Optional [local HTTP/MCP adapters](ddlog-transports-preview.md)
+now consume it. This shared package supplies no listener, production credential
+provisioning, supported-runtime replacement or consumer migration.
 The upstream pinned DDlog revision remains unpublished, blocking clean external
 builds. Native compilation is not required to validate this Python-only change
 against an existing compatible library.
@@ -36,6 +37,10 @@ label, wildcard grant, permission inheritance, or caller-supplied actor exists.
 Credentials are out-of-band and never passed to native work or responses.
 Verifier configuration and grants are process-owned snapshots; this slice adds
 no access provisioning, reload service, tenant database or durable auth ledger.
+
+`Ingress.authenticate(credential)` exposes the same verifier and principal
+validation for transport authentication/context only. It authorizes no operation;
+`invoke` re-verifies on every invocation before checking exact grants.
 
 Resource bindings retain native world, analytical world/run, component
 declarations and allowed input predicate schemas. Native-world and analytical
@@ -136,8 +141,8 @@ current paging materializes complete history/component data before slicing.
 Before broader hosting, lower-level work remains: bounded/selective catalog
 and component reads preserving exact snapshot verification; stable typed native
 errors where callers need conflict/not-found distinctions; lean diagnostic
-projections if status cost must be bounded; and a pinned transport/authentication
-composition for API/MCP. No new manager, scheduler, tick loop, admission ledger
+projections if status cost must be bounded; and production transport/authentication
+composition beyond the local static-credential adapters. No new manager, scheduler, tick loop, admission ledger
 or core change is needed for this local adapter. Multi-process/distributed
 ownership and native work cancellation are not claimed.
 
