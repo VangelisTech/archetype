@@ -9,7 +9,7 @@ API route, MCP tool, or cross-repository consumer migration. A separate
 ## Dependency and ownership
 
 `archetype-ddlog` pins DDlog Runtime commit
-`98374a8e7b3bd1662aad6d6601479a24cf0de320` through the canonical Git dependency and
+`37bdd6c222b62c1ef6410b2f7f242e18069ce44e` through the canonical Git dependency and
 lockfile. That dependency commit is local and unpublished. Local evidence uses a
 Cargo Git cache seeded from its exact local repository; no filesystem dependency
 or path override is committed. External clean builds cannot fetch this revision
@@ -141,7 +141,7 @@ ARCHETYPE_DDLOG_DRIVER=/absolute/path/to/native-driver \
 ```
 
 The adapter currently accepts checkpointable pure compositions and non-null
-Int64/string components. Policy bounds are 64 outputs, one million rows per
+Int64/string/Bool/finite Float64 components. Entity keys remain Int64. Policy bounds are 64 outputs, one million rows per
 output, 64 MiB aggregate output JSON and the upstream 64 MiB checkpoint bound.
 Upstream input, context, manifest, JSON-depth and admission-retention bounds also
 apply. The store remains local and cooperatively owned. Immutable data and

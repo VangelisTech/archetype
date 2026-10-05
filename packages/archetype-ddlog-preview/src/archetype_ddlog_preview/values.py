@@ -2,12 +2,39 @@
 
 from __future__ import annotations
 
+import math
 import re
+import struct
 import unicodedata
 from typing import Any
 
 MAX_CELLS = 64
 MAX_STRING_BYTES = 4096
+
+
+def bool_cell(value: Any) -> bool:
+    if type(value) is not bool:
+        raise ValueError("Expected exact Bool")
+    return value
+
+
+def float_cell(value: Any) -> float:
+    if type(value) is not float or not math.isfinite(value):
+        raise ValueError("Expected finite Float64")
+    return 0.0 if value == 0.0 else value
+
+
+def float_bits(value: Any) -> str:
+    return struct.pack(">d", float_cell(value)).hex()
+
+
+def decode_float_bits(value: Any) -> float:
+    if type(value) is not str or not re.fullmatch(r"[0-9a-f]{16}", value):
+        raise ValueError("Expected canonical Float64 bits")
+    result = struct.unpack(">d", bytes.fromhex(value))[0]
+    if not math.isfinite(result) or value == "8000000000000000":
+        raise ValueError("Noncanonical or nonfinite Float64")
+    return result
 
 
 def fields(value: Any, names: str) -> dict[str, Any]:

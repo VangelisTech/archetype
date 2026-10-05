@@ -30,13 +30,13 @@ def _tuple(value: Any, kind: type, limit: int, minimum: int = 0) -> None:
 
 def _types(value: Any) -> tuple[str, ...]:
     result = tuple(_sequence(value, 64, nonempty=True))
-    if any(type(t) is not str or t not in ("int64", "string") for t in result):
+    if any(type(t) is not str or t not in ("int64", "string", "bool", "float64") for t in result):
         raise ValueError("Invalid program field type")
     return result
 
 
 def native_types(types: tuple[str, ...]) -> list[str]:
-    return ["int" if t == "int64" else t for t in types]
+    return [{"int64": "int", "float64": "double"}.get(t, t) for t in types]
 
 
 @dataclass(frozen=True, slots=True)

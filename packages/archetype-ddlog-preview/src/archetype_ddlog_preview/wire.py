@@ -13,6 +13,7 @@ from .values import (
 from .values import (
     MAX_STRING_BYTES as MAX_STRING_BYTES,
 )
+from .values import bool_cell, decode_float_bits
 from .values import (
     decimal as decimal,
 )
@@ -42,8 +43,8 @@ MAX_CHANGES = 256
 
 @dataclass(frozen=True, slots=True)
 class Cell:
-    kind: Literal["int64", "string"]
-    value: int | str
+    kind: Literal["int64", "string", "bool", "float64"]
+    value: int | str | bool | float
 
     @classmethod
     def decode(cls, raw: Any) -> Cell:
@@ -53,6 +54,10 @@ class Cell:
             return cls("int64", decimal(raw["int64"], signed=True))
         if "string" in raw:
             return cls("string", string_cell(raw["string"]))
+        if "bool" in raw:
+            return cls("bool", bool_cell(raw["bool"]))
+        if "float64" in raw:
+            return cls("float64", decode_float_bits(raw["float64"]))
         raise ValueError("Unknown cell type")
 
 

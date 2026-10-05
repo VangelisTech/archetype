@@ -12,7 +12,7 @@ use archetype_ddlog::{
         origin::Scope,
     },
 };
-use arrow_array::{Array, Int64Array, StringArray};
+use arrow_array::{Array, BooleanArray, Float64Array, Int64Array, StringArray};
 use ddlog_runtime::{
     registry::ProcessorReference,
     worlds::{
@@ -372,12 +372,13 @@ impl Resources {
                 admission,
             } => {
                 bounds::request(
-                    admission
-                        .changes
-                        .iter()
-                        .flat_map(|c| &c.values)
-                        .all(|v| v.is_string() || v.as_i64().is_some()),
-                    "Cells must be signed Int64 or string; no bool, null or float",
+                    admission.changes.iter().flat_map(|c| &c.values).all(|v| {
+                        v.is_string()
+                            || v.as_i64().is_some()
+                            || v.is_boolean()
+                            || v.is_f64() && v.as_f64().is_some_and(f64::is_finite)
+                    }),
+                    "Cells must be signed Int64, string, Bool or finite Float64",
                 )?;
                 let a = self.bind(binding)?;
                 let ticket = self.runtime.block_on(a.prepare_admission(
@@ -478,6 +479,16 @@ impl Resources {
                                 row.push(json!(c.value(index)));
                             } else if let Some(c) = column.as_any().downcast_ref::<StringArray>() {
                                 row.push(json!(c.value(index)));
+                            } else if let Some(c) = column.as_any().downcast_ref::<BooleanArray>() {
+                                row.push(json!(c.value(index)));
+                            } else if let Some(c) = column.as_any().downcast_ref::<Float64Array>() {
+                                let value = c.value(index);
+                                ensure!(
+                                    value.is_finite()
+                                        && (value != 0.0 || !value.is_sign_negative()),
+                                    "Noncanonical Float64 component cell"
+                                );
+                                row.push(json!(value));
                             } else {
                                 anyhow::bail!("Unsupported Arrow component type");
                             }

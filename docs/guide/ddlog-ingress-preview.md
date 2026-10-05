@@ -1,6 +1,6 @@
 # DDlog shared ingress preview
 
-Status: version 0.1.2 local transport-neutral contract over the tested Python `Host` and its
+Status: version 0.1.3 local transport-neutral contract over the tested Python `Host` and its
 existing Rust owner. Optional [local HTTP/MCP adapters](ddlog-transports-preview.md)
 now consume it. This shared package supplies no listener, production credential
 provisioning, supported-runtime replacement or consumer migration.
@@ -124,9 +124,12 @@ All signed Int64 cells and unsigned 64-bit control values use canonical decimal
 strings on the wire. For example an input row is
 `[{"int64":"9007199254741109"},{"string":"ready"}]`; a change contains exactly
 `op` (`insert`/`delete`), `predicate`, and `values`. The decoder converts integer
-strings directly to exact Python integers for `Host`. It rejects JSON numeric
-cells, bool/null, floats, exponent notation, signs on unsigned values, leading
-zeros, negative zero and overflow. Strings reject control characters and exceed
+strings directly to exact Python integers for `Host`. Bool cells use
+`{"bool":true}` or `{"bool":false}`. Float64 cells use `{"float64":"3ff0000000000000"}`:
+exactly 16 lowercase hexadecimal binary64 bits, finite and with positive zero.
+The decoder rejects nonfinite values, the negative-zero bit spelling, malformed
+bits and coercions. Untagged JSON numbers/null, signs on unsigned values, leading
+zeros, integer negative zero and overflow are rejected. Strings reject control characters and exceed
 neither 4096 UTF-8 bytes nor the total request cap. Input predicate and cell kinds
 must match operator configuration. Entity IDs remain component Int64 cells.
 

@@ -24,6 +24,8 @@ for raw in sys.stdin:
     elif command.startswith(("insert R_", "delete R_")):
         match = re.fullmatch(r"(insert|delete) R_(\w+)\((.*)\);", command)
         operation, name, args = match.groups()
+        args = re.sub(r'"(?:[^"\\]|\\.)*"|64\'f([0-9.eE+\-]+)',
+                      lambda m: m.group(1) if m.group(1) else m.group(0), args)
         value = json.dumps(json.loads("[" + args + "]"), ensure_ascii=False)
         relation = staged.setdefault(name, set())
         (relation.add if operation == "insert" else relation.discard)(value)
@@ -46,6 +48,8 @@ for raw in sys.stdin:
             print("unexpected native output", flush=True)
         elif (control / "oversized_query").exists():
             print('R_' + name + '{.f0 = 1, .f1 = "' + "x" * (4 * 1024 * 1024) + '"}', flush=True)
+        elif (control / "nonfinite_query").exists():
+            print('R_' + name + '{.f0 = 1, .f1 = true, .f2 = NaN}', flush=True)
         else:
             selected = sorted(facts.get("unused" if name == "unrelated" else inputs[0], set()))
             if (control / "expanded_output").exists():

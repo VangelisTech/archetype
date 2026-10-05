@@ -6,7 +6,7 @@ retry and cold resolution. The [shared ingress](ddlog-ingress-preview.md)
 provides the same bounded operations to local HTTP and MCP adapters.
 
 Status: local, trusted, opt-in Python binding over DDlog Runtime
-`98374a8e7b3bd1662aad6d6601479a24cf0de320` and the
+`37bdd6c222b62c1ef6410b2f7f242e18069ce44e` and the
 [hosted cut publisher](ddlog-hosted-publisher.md). This is a separately installed
 preview, not a drop-in replacement for `ArchetypeRuntime`. The retained 0.6
 runtime still uses its existing engine. A separate local
@@ -47,7 +47,7 @@ python -m pip wheel --no-index --no-deps --no-build-isolation \
   --wheel-dir /tmp/ddlog-wheels packages/archetype-ddlog-preview
 python -m venv /tmp/ddlog-preview-env
 /tmp/ddlog-preview-env/bin/python -m pip install --no-index --no-deps \
-  /tmp/ddlog-wheels/archetype_ddlog_preview-0.1.2-py3-none-any.whl
+  /tmp/ddlog-wheels/archetype_ddlog_preview-0.1.3-py3-none-any.whl
 ```
 
 Source-wheel building requires locally available setuptools >=83 and wheel.
@@ -219,12 +219,17 @@ any inherited lock is acquired. Use a fresh exec/spawn process.
 ## ABI and value contract
 
 ABI 1 exports version, open, call, close and buffer-free functions. Operators
-supply an absolute trusted library path and the wrapper checks the version.
+supply an absolute trusted library path. Before `open`, the wrapper checks ABI 1
+and the side-effect-free `arct_ddlog_contract_version()` scalar equals 2. A missing,
+older or future operation/schema/live-cell contract fails before creating roots,
+acquiring locks or changing storage, registry or world state.
 Handles are monotonic opaque integers and are never reused. Input is one bounded
 UTF-8 JSON object, at most 1 MiB; responses are at most 16 MiB. Unknown operation
-fields, duplicate keys, trailing JSON, floats/nonfinite request numbers and
-excessive nesting fail. Component cells are non-null signed Int64 or strings:
-Python bool, float, numeric coercion and out-of-range integers are rejected.
+fields, duplicate keys, trailing JSON, nonfinite request numbers and excessive
+nesting fail. Component cells are non-null signed Int64, strings, exact Bool or
+finite Float64. Schema-directed validation rejects numeric coercion (including
+an integer in a Float64 field), nulls and out-of-range integers. Signed zero is
+canonicalized to positive zero before retained identities; nonzero bits remain exact.
 Control fields preserve unsigned 64-bit integers; finite float status telemetry
 is preserved on responses. Upstream string/CLI restrictions still apply,
 including rejection of NUL/control characters.

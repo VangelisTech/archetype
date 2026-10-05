@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use anyhow::{Result, bail, ensure};
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_array::{ArrayRef, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray};
 use ddlog_runtime::Schema;
 use iceberg::{
     arrow::schema_to_arrow_schema,
@@ -55,7 +55,7 @@ impl ComponentSchema {
                 "Invalid or duplicate field name"
             );
             ensure!(
-                matches!(kind.as_str(), "int" | "string"),
+                matches!(kind.as_str(), "int" | "string" | "bool" | "double"),
                 "Unsupported DDlog field type: {kind}"
             );
             ensure!(
@@ -89,6 +89,8 @@ impl ComponentSchema {
             let ty = match kind.as_str() {
                 "int" => PrimitiveType::Long,
                 "string" => PrimitiveType::String,
+                "bool" => PrimitiveType::Boolean,
+                "double" => PrimitiveType::Double,
                 _ => bail!("Unsupported type"),
             };
             fields.push(Arc::new(NestedField::required(
@@ -115,6 +117,12 @@ impl ComponentSchema {
                     match kind.as_str() {
                         "int" => value.as_i64().is_some(),
                         "string" => value.as_str().is_some(),
+                        "bool" => value.is_boolean(),
+                        "double" =>
+                            value.is_f64()
+                                && value.as_f64().is_some_and(
+                                    |v| v.is_finite() && (v != 0.0 || !v.is_sign_negative())
+                                ),
                         _ => false,
                     },
                     "Component value type/nullability mismatch"
@@ -153,6 +161,16 @@ impl ComponentSchema {
                 "string" => Arc::new(StringArray::from(
                     rows.iter()
                         .map(|r| r[index].as_str().unwrap())
+                        .collect::<Vec<_>>(),
+                )),
+                "bool" => Arc::new(BooleanArray::from(
+                    rows.iter()
+                        .map(|r| r[index].as_bool().unwrap())
+                        .collect::<Vec<_>>(),
+                )),
+                "double" => Arc::new(Float64Array::from(
+                    rows.iter()
+                        .map(|r| r[index].as_f64().unwrap())
                         .collect::<Vec<_>>(),
                 )),
                 _ => bail!("Unsupported type"),

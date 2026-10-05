@@ -12,7 +12,7 @@ impl<'de> Deserialize<'de> for Strict {
         impl<'de> Visitor<'de> for V {
             type Value = Strict;
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("integer-only JSON without duplicate keys")
+                f.write_str("finite JSON without duplicate keys")
             }
             fn visit_bool<E: de::Error>(self, v: bool) -> Result<Strict, E> {
                 Ok(Strict(v.into()))
@@ -22,6 +22,12 @@ impl<'de> Deserialize<'de> for Strict {
             }
             fn visit_u64<E: de::Error>(self, v: u64) -> Result<Strict, E> {
                 Ok(Strict(v.into()))
+            }
+            fn visit_f64<E: de::Error>(self, v: f64) -> Result<Strict, E> {
+                if !v.is_finite() {
+                    return Err(de::Error::custom("Nonfinite Float64"));
+                }
+                Ok(Strict(Value::from(if v == 0.0 { 0.0 } else { v })))
             }
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Strict, E> {
                 Ok(Strict(v.into()))
@@ -59,17 +65,15 @@ mod tests {
     use super::*;
     #[test]
     fn rejects_ambiguous_json() {
-        for s in [
-            r#"{"a":{"x":1,"x":2}}"#,
-            r#"{"x":1.0}"#,
-            r#"{"x":NaN}"#,
-            r#"{} {}"#,
-        ] {
+        for s in [r#"{"a":{"x":1,"x":2}}"#, r#"{"x":NaN}"#, r#"{} {}"#] {
             assert!(decode::<Value>(s.as_bytes()).is_err());
         }
         assert_eq!(
             decode::<Value>(b"9223372036854775807").unwrap(),
             Value::from(i64::MAX)
         );
+        let value = decode::<Value>(br#"{"x":1.0000000000000002,"zero":-0.0}"#).unwrap();
+        assert_eq!(value["x"].as_f64().unwrap().to_bits(), 1.0f64.to_bits() + 1);
+        assert_eq!(value["zero"].as_f64().unwrap().to_bits(), 0);
     }
 }

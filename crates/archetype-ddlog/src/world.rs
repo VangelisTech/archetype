@@ -268,7 +268,7 @@ impl World {
 
     /// Staged input is retained through every publication failure. Public input
     /// names are resolved against the exact composition; internal ports are hidden.
-    pub fn stage(&mut self, input: &str, values: Vec<Value>, delete: bool) -> Result<()> {
+    pub fn stage(&mut self, input: &str, mut values: Vec<Value>, delete: bool) -> Result<()> {
         ensure!(
             !self.pending(),
             "Complete or reconcile the pending cut before mutation"
@@ -284,10 +284,17 @@ impl World {
                 match kind.as_str() {
                     "int" => value.as_i64().is_some(),
                     "string" => value.as_str().is_some(),
+                    "bool" => value.is_boolean(),
+                    "double" => value.is_f64() && value.as_f64().is_some_and(f64::is_finite),
                     _ => false,
                 },
                 "Input type/nullability mismatch"
             );
+        }
+        for value in &mut values {
+            if value.is_f64() && value.as_f64() == Some(0.0) {
+                *value = json!(0.0);
+            }
         }
         self.staged.push(json!({"op":if delete {"delete"} else {"insert"},"predicate":predicate,"values":values}));
         Ok(())

@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 anyhow.workspace = true
 archetype-ddlog = { path = "../archetype-ddlog" }
 arrow-array = "59.2"
-ddlog-runtime = { git = "https://github.com/everettVT/ddlog-runtime", rev = "98374a8e7b3bd1662aad6d6601479a24cf0de320" }
+ddlog-runtime = { git = "https://github.com/everettVT/ddlog-runtime", rev = "37bdd6c222b62c1ef6410b2f7f242e18069ce44e" }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 tokio = { version = "1.48", features = ["rt-multi-thread", "sync"] }

@@ -116,7 +116,7 @@ fn validate_inputs(native: &Value, inputs: &BTreeMap<String, Vec<String>>) -> Re
                 && fields.len() <= 64
                 && fields
                     .iter()
-                    .all(|kind| matches!(kind.as_str(), "int" | "string"))),
+                    .all(|kind| matches!(kind.as_str(), "int" | "string" | "bool" | "double"))),
         "Input declarations differ from the exact program"
     );
     Ok(())

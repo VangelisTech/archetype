@@ -51,8 +51,11 @@ output, its ordered fields, and the position of `entity_id`. Undeclared outputs
 and internal relations remain execution state; they are not published as ECS
 tables. Inputs are admitted only through the composition's public input ports.
 
-The current DDlog schema supports non-null signed 64-bit integers and strings.
-The adapter maps these to Arrow Int64/Utf8 and Iceberg long/string. It rejects
+The DDlog schema supports non-null signed Int64, strings, exact Bool and finite
+Float64, declared natively as `int`, `string`, `bool` and `double`. The adapter
+maps them to Arrow Int64/Utf8/Boolean/Float64 and Iceberg long/string/boolean/double.
+Entity keys remain Int64. Both signs of zero become positive zero before input
+identity and publication; finite nonzero Float64 values retain their exact bits. It rejects
 unsupported types, nulls, duplicate field names, and multiple component records
 for one entity. This is a bounded type bridge, not support for every Arrow type.
 

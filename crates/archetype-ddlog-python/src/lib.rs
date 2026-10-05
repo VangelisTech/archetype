@@ -149,6 +149,12 @@ unsafe fn boundary(out: *mut Buffer, f: impl FnOnce() -> Result<Value>) -> i32 {
 pub extern "C" fn arct_ddlog_abi_version() -> u32 {
     1
 }
+/// Pure scalar compatibility probe: no owner initialization, filesystem,
+/// locks, storage, registry access or world admission.
+#[unsafe(no_mangle)]
+pub extern "C" fn arct_ddlog_contract_version() -> u32 {
+    2
+}
 /// # Safety
 /// data points to len readable bytes; out is writable and holds no live buffer.
 #[unsafe(no_mangle)]

@@ -73,7 +73,7 @@ Validation includes deterministic native fault tests, retained fork and registry
 regressions, shared ingress HTTP/MCP parity, a fresh installed-wheel run with
 all product imports audited, focused static checks, and independent read-only
 review. Actual compiler acceptance remains distinct from simulated-driver tests.
-Broader Bool/finite Float64 types, supported runtime migration, consumer changes
+Supported runtime migration, consumer changes
 and final public documentation remain separate subsequent stages.
 
 The shared wire operations are `create`, `resolve`, `program_create`,

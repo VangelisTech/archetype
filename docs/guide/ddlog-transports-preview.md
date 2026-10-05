@@ -8,11 +8,11 @@ builds remain blocked. These adapters need no new native build.
 
 ## Scope and composition
 
-`archetype-ddlog-transports==0.1.0` provides
+`archetype-ddlog-transports==0.1.1` provides
 `archetype_ddlog_transports.create_app(ingress)`. It borrows one configured
 `archetype_ddlog_preview.ingress.Ingress`; it creates no Host, world, binding,
 driver, grant, credential, durable ledger, scheduler, or tick loop. Its exact
-dependencies are preview 0.1.2, the official `mcp==2.3.0` SDK, and
+dependencies are preview 0.1.3, the official `mcp==2.3.0` SDK, and
 `starlette==1.3.1`. The SDK brings its own transitive dependencies, including
 `mcp-types==2.3.0`. This is separate from the stdlib-only preview distribution
 and stays outside the default UV workspace and retained `archetype` family DAG.

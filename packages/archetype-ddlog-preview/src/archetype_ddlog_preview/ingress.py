@@ -116,7 +116,7 @@ class Resource:
             if (
                 type(types) is not tuple
                 or not 1 <= len(types) <= w.MAX_CELLS
-                or any(t not in ("int64", "string") for t in types)
+                or any(t not in ("int64", "string", "bool", "float64") for t in types)
             ):
                 raise ValueError("Invalid input schema")
         if len(dict(self.inputs)) != len(self.inputs):
@@ -704,14 +704,14 @@ def _project(resource: ConfiguredResource, op: w.Operation, raw: Any) -> dict[st
                     type(relation["input"]) is not bool
                     or type(types) is not list
                     or not 1 <= len(types) <= 64
-                    or any(t not in ("int", "string") for t in types)
+                    or any(t not in ("int", "string", "bool", "double") for t in types)
                 ):
                     raise ValueError("Invalid public relation")
                 result["relations"].append(
                     {
                         "name": w.identifier(relation["name"]),
                         "input": relation["input"],
-                        "fields": ["int64" if t == "int" else t for t in types],
+                        "fields": [{"int": "int64", "double": "float64"}.get(t, t) for t in types],
                     }
                 )
         return result

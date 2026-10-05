@@ -33,7 +33,7 @@ def check(root: Path = ROOT) -> list[str]:
         errors.append("Missing transport contract")
     project = tomllib.loads((package / "pyproject.toml").read_text())["project"]
     if project["name"] != metadata["distribution"] or project.get("dependencies") != [
-        "archetype-ddlog-preview==0.1.2",
+        "archetype-ddlog-preview==0.1.3",
         "mcp==2.3.0",
         "starlette==1.3.1",
     ]:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,8 @@ def _validate(value: Any, depth: int = 0) -> None:
     if type(value) is int:
         if not -(2**63) <= value < 2**64:
             raise ValueError("Integer outside native JSON range")
+        return
+    if type(value) is float and math.isfinite(value):
         return
     if type(value) is list:
         for item in value:
@@ -119,6 +122,14 @@ class Host:
         self._lib.arct_ddlog_abi_version.restype = ctypes.c_uint32
         if self._lib.arct_ddlog_abi_version() != 1:
             raise ProtocolError("Expected DDlog preview ABI 1")
+        try:
+            contract = self._lib.arct_ddlog_contract_version
+        except AttributeError as error:
+            raise ProtocolError("Missing DDlog operation/schema/cell contract version") from error
+        contract.argtypes = []
+        contract.restype = ctypes.c_uint32
+        if contract() != 2:
+            raise ProtocolError("Expected DDlog operation/schema/cell contract 2")
         out = ctypes.POINTER(_Buffer)
         self._lib.arct_ddlog_open.argtypes = [ctypes.c_void_p, ctypes.c_size_t, out]
         self._lib.arct_ddlog_open.restype = ctypes.c_int
@@ -317,7 +328,7 @@ class Host:
     ) -> dict[str, Any]:
         """Reserve, publish context, and acknowledge one native-owned birth.
 
-        Input type names here are native declaration names (int/string).
+        Input types use native names (int/string/bool/double).
         Creation does not start a compiler or submit any live inputs.
         """
         if type(program) is not ProgramReference:
@@ -385,8 +396,14 @@ class Host:
                 raise ValueError("Generation/revision must be exact unsigned 64-bit integers")
         for change in changes:
             for value in change["values"]:
-                if not (type(value) is str or type(value) is int and -(2**63) <= value < 2**63):
-                    raise ValueError("Cells must be signed Int64 or string")
+                if not (
+                    type(value) in (str, bool)
+                    or type(value) is int
+                    and -(2**63) <= value < 2**63
+                    or type(value) is float
+                    and math.isfinite(value)
+                ):
+                    raise ValueError("Cells must be signed Int64, string, Bool or finite Float64")
         return self.request(
             "admit",
             binding=binding,

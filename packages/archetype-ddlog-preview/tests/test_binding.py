@@ -562,7 +562,7 @@ def recovery(test, f):
         f.running(binding)
     for bad in (True, False, None, 1.0, 2**63, -(2**63) - 1):
         s = f.host.status(a["scope"]["native_world"])
-        with test.assertRaises(ValueError):
+        with test.assertRaises(NativeError if type(bad) in (bool, float) else ValueError):
             f.host.admit(
                 a,
                 expected_head=None,

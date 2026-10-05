@@ -60,6 +60,139 @@ fn checkpoint(world: &str, tick: u64) -> Vec<u8> {
     serde_json::to_vec(&json!({"state":{"revision":2,"metadata":{"abi":crate::ADAPTER_ABI,"program":"fixture","world":world,"run":"run_a","tick":tick}}})).unwrap()
 }
 
+fn live_schema() -> ComponentSchema {
+    ComponentSchema::new(
+        Component {
+            name: "live".into(),
+            output: "live".into(),
+            fields: vec!["entity_id".into(), "enabled".into(), "value".into()],
+            entity_field: 0,
+        },
+        &Schema {
+            input: false,
+            fields: vec!["int".into(), "bool".into(), "double".into()],
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn live_component_cells_are_exact_and_arrow_keeps_binary64_bits() -> Result<()> {
+    use arrow_array::{BooleanArray, Float64Array};
+    let s = live_schema();
+    let values = [
+        0.0,
+        1.0,
+        f64::from_bits(1.0f64.to_bits() + 1),
+        f64::MAX,
+        -f64::MAX,
+        f64::from_bits(1),
+        -f64::from_bits(1),
+    ];
+    let rows: Vec<_> = values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| vec![json!(i as i64), json!(i % 2 == 0), json!(v)])
+        .collect();
+    let batch = s.batch("cut", &rows)?;
+    let booleans = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .unwrap();
+    let doubles = batch
+        .column(3)
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    for (i, value) in values.iter().enumerate() {
+        assert_eq!(booleans.value(i), i % 2 == 0);
+        assert_eq!(doubles.value(i).to_bits(), value.to_bits());
+    }
+    for invalid in [
+        json!(1),
+        json!(true),
+        json!(null),
+        json!("1.0"),
+        json!(-0.0),
+    ] {
+        assert!(
+            s.validate_rows(&[vec![json!(1), json!(true), invalid]])
+                .is_err()
+        );
+    }
+    for invalid in [json!(1), json!(null), json!("true")] {
+        assert!(
+            s.validate_rows(&[vec![json!(1), invalid, json!(1.0)]])
+                .is_err()
+        );
+    }
+    assert_eq!(s.batch("empty", &[])?.num_rows(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cold_store_retains_live_types_and_empty_cut_retraction() -> Result<()> {
+    use arrow_array::{BooleanArray, Float64Array};
+    let dir = tempfile::tempdir()?;
+    let store = CutStore::open(dir.path()).await?;
+    let mut first = cut();
+    first.relations = BTreeMap::from([(
+        "live".into(),
+        RelationState {
+            schema: live_schema(),
+            rows: vec![
+                vec![json!(1), json!(false), json!(f64::from_bits(1))],
+                vec![json!(2), json!(true), json!(f64::MAX)],
+            ],
+        },
+    )]);
+    let receipt = store.publish(&first).await?;
+    let mut second = first.clone();
+    second.tick = 2;
+    second.parent = Some(receipt.cut_id.clone());
+    second.checkpoint = checkpoint("demo", 2);
+    second.relations.get_mut("live").unwrap().rows.clear();
+    let empty = store.publish(&second).await?;
+    drop(store);
+    let cold = CutStore::open(dir.path()).await?;
+    let batches = cold.read(&receipt, "live").await?;
+    let mut actual = BTreeMap::new();
+    for batch in batches {
+        let keys = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow_array::Int64Array>()
+            .unwrap();
+        let bools = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        let doubles = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        for i in 0..batch.num_rows() {
+            actual.insert(keys.value(i), (bools.value(i), doubles.value(i).to_bits()));
+        }
+    }
+    assert_eq!(
+        actual,
+        BTreeMap::from([(1, (false, 1)), (2, (true, f64::MAX.to_bits()))])
+    );
+    assert_eq!(
+        cold.read(&empty, "live")
+            .await?
+            .iter()
+            .map(|b| b.num_rows())
+            .sum::<usize>(),
+        0
+    );
+    Ok(())
+}
+
 #[test]
 fn typed_component_contract() -> Result<()> {
     let s = schema("label");

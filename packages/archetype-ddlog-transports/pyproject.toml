@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "archetype-ddlog-transports"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local HTTP and official MCP SDK adapters over the isolated DDlog ingress"
 requires-python = ">=3.12"
-dependencies = ["archetype-ddlog-preview==0.1.2", "mcp==2.3.0", "starlette==1.3.1"]
+dependencies = ["archetype-ddlog-preview==0.1.3", "mcp==2.3.0", "starlette==1.3.1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

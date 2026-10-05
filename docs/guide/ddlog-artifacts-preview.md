@@ -3,7 +3,7 @@
 Status: trusted local preview. This contract adds later file attachments to the
 existing hosted DDlog `CutStore`. It requires the native library built from this
 source revision and the matching `archetype-ecs` artifact/storage modules. The
-stdlib-only `archetype-ddlog-preview` wheel is version 0.1.2. Its raw
+stdlib-only `archetype-ddlog-preview` wheel is version 0.1.3. Its raw
 request method is an internal integration port, not the intended beginner API.
 
 The additive [published-context format](ddlog-published-contexts.md) supports
@@ -111,9 +111,9 @@ The current file indexes have fixed flat nullable metadata fields: strings,
 Int64, Bool and Float64, with a UTC microsecond occurrence timestamp. Image
 dimensions widen losslessly from UInt32 to Int64. Iceberg field IDs and UTC
 timezone spelling are normalized by native storage. Parquet carries Float64
-metadata, preserving the strict integer-only control JSON contract. This does
-not extend live DDlog relations beyond their existing required Int64/string
-contract, nor claim arbitrary Arrow schema evolution or nested metadata support.
+metadata. Live DDlog relations separately support required Int64/string/Bool/finite
+Float64 fields with Int64 entity keys; file indexes do not imply arbitrary Arrow
+schema evolution or nested metadata support.
 
 A submission contains at most 32 occurrences, with at most 192 KiB per encoded
 metadata object and the existing 1 MiB native request limit. A read page contains
