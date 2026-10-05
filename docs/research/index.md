@@ -17,7 +17,7 @@ bounded external evidence without importing or duplicating an agent runtime.
 ## Start
 
 - [AutoResearch](../guide/autoresearch.md)
-- [AutoResearch example](../guide/examples.md#10-autoresearch)
+- [AutoResearch example](../compatibility/0.6/guide/examples.md#10-autoresearch)
 - [Research Python API](../reference/python/autoresearch.md)
 
 ## Framework evaluation

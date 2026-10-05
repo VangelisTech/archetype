@@ -15,11 +15,9 @@ if "DDLOG_PYTHON_LIBRARY" not in os.environ:
     raise unittest.SkipTest("Set DDLOG_PYTHON_LIBRARY to the context-capable library")
 
 # Fixtures only. Installed validation must not inject product source paths.
-sys.path.insert(
-    0, str(Path(__file__).resolve().parents[2] / "packages/archetype-ddlog-preview/tests")
-)
-from archetype_ddlog_preview import NativeError, Store
-from archetype_ddlog_preview.ingress import ContextResource, Grant, Ingress
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packages/archetype-native/tests"))
+from archetype_native import NativeError, Store
+from archetype_native.ingress import ContextResource, Grant, Ingress
 from test_binding import COMPONENTS, LIBRARY, Fixture, wait
 
 from archetype.artifacts.context_attachments import (

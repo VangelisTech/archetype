@@ -7,56 +7,14 @@ machine authority; this page is its review surface.
 
 | Contract | Owner | Risk | Normative source | Executable evidence | Profiles |
 | --- | --- | --- | --- | --- | --- |
-| `observability.signals.safe` | `observability` | high | [docs/guide/observability.md](../guide/observability.md) — 1. Safe signal contract | pytest: 2 | `pr`, `main`, `release` |
-| `observability.logging.correlated` | `observability` | medium | [docs/guide/observability.md](../guide/observability.md) — 5. Process-host ownership | pytest: 2 | `pr`, `main`, `release` |
-| `observability.repository.enforced` | `observability` | high | [docs/guide/observability.md](../guide/observability.md) — 6. Family dispositions | pytest: 1; static: 1 | `pr`, `main`, `release` |
-| `architecture.dependencies.enforced` | `app` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 11. Static enforcement | pytest: 1; static: 1; eval: 2 | `pr`, `main`, `release` |
-| `architecture.v0_6.current_dag` | `architecture` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 13. Current v0.6 architecture | pytest: 1 | `pr`, `main`, `release` |
-| `architecture.migration.family_edges` | `architecture` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 10. Architecture and executable evidence | pytest: 1; static: 1 | `pr`, `main`, `release` |
-| `migration.local_v1.whole_identity` | `migration` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 1. Local v1 profile | pytest: 1 | `pr`, `main`, `release` |
-| `migration.local_v1.fail_closed` | `migration` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 3. Preflight, quiescence, and destination emptiness | pytest: 1 | `pr`, `main`, `release` |
-| `migration.tables.deterministic_evidence` | `storage` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 4. Data-plane transfer | pytest: 2 | `pr`, `main`, `release` |
-| `migration.artifacts.occurrence_relocation` | `artifacts` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 5. Artifact relocation without re-ingestion | pytest: 1 | `pr`, `main`, `release` |
-| `migration.control.exact_activation` | `storage` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 6. Control import and writer fencing | pytest: 1 | `pr`, `main`, `release` |
-| `migration.activities.empty_only` | `migration` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 3. Preflight, quiescence, and destination emptiness | pytest: 2 | `pr`, `main`, `release` |
-| `architecture.protocols.complete` | `app` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 8. Protocol policy and wiring | pytest: 1; static: 1; eval: 1 | `pr`, `main`, `release` |
-| `storage.execution.single_authority` | `storage` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — Storage execution authority | pytest: 3; static: 2 | `pr`, `main`, `release` |
-| `runtime.trust.actor_free` | `runtime` | high | [docs/guide/runtime.md](../guide/runtime.md) — R3 — Runtime is actor-free | pytest: 1; static: 1; eval: 1 | `pr`, `main`, `release` |
-| `runtime.lifecycle.single_flight_and_drain` | `runtime` | high | [docs/guide/specification.md](../guide/specification.md) — Concurrency Contract | pytest: 3; eval: 2 | `pr`, `main`, `release` |
-| `runtime.lifecycle.retryable_teardown` | `runtime` | high | [docs/guide/runtime.md](../guide/runtime.md) — R4 — Async context manager is canonical | pytest: 5 | `pr`, `main`, `release` |
-| `gateway.authorization.rbac` | `commands` | high | [docs/guide/command-gate.md](../guide/command-gate.md) — 1. The gate model | pytest: 3; static: 1; eval: 5 | `pr`, `main`, `release` |
-| `commands.identity.idempotent` | `commands` | high | [docs/guide/specification.md](../guide/specification.md) — Command ledger, scheduler, and dispatcher | pytest: 1; static: 1; eval: 4 | `pr`, `main`, `release` |
-| `commands.settlement.atomic` | `commands` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 7. Commands, commits, artifacts, and audit | pytest: 3; eval: 2 | `pr`, `main`, `release` |
-| `commands.failure.preserves_progress` | `commands` | high | [docs/guide/specification.md](../guide/specification.md) — Command ledger, scheduler, and dispatcher | pytest: 1; eval: 4 | `pr`, `main`, `release` |
-| `world.tick.atomic_visibility` | `world` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 10. Supported durability profile | pytest: 1; eval: 2 | `pr`, `main`, `release` |
-| `world.writer.fenced` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 6. `resume_world` (fenced mutable cold resume) | pytest: 2; eval: 3 | `pr`, `main`, `release` |
-| `activities.durable_control` | `activities` | high | [docs/guide/activities.md](../guide/activities.md) — 2. The committed-state protocol | pytest: 1; static: 2 | `pr`, `main`, `release` |
-| `world.lifecycle.idempotent` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 2. World lifecycle operations | pytest: 2; eval: 2 | `pr`, `main`, `release` |
-| `world.fork.lineage` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 4. `fork_world` | pytest: 2; eval: 1 | `pr`, `main`, `release` |
-| `world.run_identity.cold_resume` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 6. `resume_world` (fenced mutable cold resume) | pytest: 2; eval: 1 | `pr`, `main`, `release` |
-| `world.mutations.compose_deterministically` | `world` | high | [docs/guide/specification.md](../guide/specification.md) — Mutation materialization | pytest: 2; eval: 4 | `pr`, `main`, `release` |
-| `world.mutation.locking` | `world` | high | [docs/guide/specification.md](../guide/specification.md) — Mutation Contracts | pytest: 2 | `pr`, `main`, `release` |
-| `query.cold_reads.correct` | `world` | high | [docs/guide/specification.md](../guide/specification.md) — Durable world reads | pytest: 3; eval: 3; benchmark: 1 | `pr`, `main`, `release` |
-| `storage.cache.concurrent_no_loss` | `storage` | high | [docs/guide/stores.md](../guide/stores.md) — Write-Behind Cache | pytest: 1; eval: 2; benchmark: 1 | `pr`, `main`, `release` |
-| `ingestion.envelope.append_selection` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 5. Catalog and index contract | pytest: 1; static: 2 | `pr`, `main`, `release` |
-| `ingestion.catalog.cold_roundtrip` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 5. Catalog and index contract | pytest: 2 | `pr`, `main`, `release` |
-| `artifacts.ingestion.occurrence_identity` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 4. Occurrence and content identity | pytest: 1; eval: 1 | `pr`, `main`, `release` |
-| `artifacts.ingestion.common_visibility` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 7. Visibility and failure | pytest: 1; static: 1 | `pr`, `main`, `release` |
-| `artifacts.context.task_anchored` | `artifacts` | medium | [docs/guide/artifacts.md](../guide/artifacts.md) — 10. Task-anchored artifact context | pytest: 1; static: 2 | `pr`, `main`, `release` |
-| `evaluation.result.snapshot_pinned` | `evaluation` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 8. Evaluation results | pytest: 2; eval: 1 | `pr`, `main`, `release` |
-| `evaluation.ontology.separated` | `evaluation` | medium | [docs/guide/dataset-eval-ontology.md](../guide/dataset-eval-ontology.md) — 1. The contract in one view | pytest: 1; eval: 2 | `pr`, `main`, `release` |
-| `audit.append_only.evidence` | `commands` | high | [docs/guide/audit-log.md](../guide/audit-log.md) — 2. Append-only invariant | pytest: 1; eval: 1 | `pr`, `main`, `release` |
-| `simulation.episode.termination` | `world` | medium | [docs/guide/specification.md](../guide/specification.md) — Run contract | pytest: 1; eval: 3 | `pr`, `main`, `release` |
-| `core.ecs.data_model` | `core` | high | [docs/guide/specification.md](../guide/specification.md) — Data Model Contracts | pytest: 2; eval: 2; benchmark: 1 | `pr`, `main`, `release` |
-| `core.processors.execution` | `core` | high | [docs/guide/specification.md](../guide/specification.md) — System and Processor Contracts | pytest: 3; eval: 1 | `pr`, `main`, `release` |
-| `core.hooks.lifecycle` | `core` | medium | [docs/guide/specification.md](../guide/specification.md) — Lifecycle Hook Contracts | pytest: 3 | `pr`, `main`, `release` |
-| `research.autoresearch.ledger` | `research` | high | [docs/guide/autoresearch.md](../guide/autoresearch.md) — The Loop | pytest: 8 | `pr`, `main`, `release` |
-| `graph.relations.temporal` | `graph` | medium | [docs/guide/prefab-libraries.md](../guide/prefab-libraries.md) — Current relation and temporal-view contract | pytest: 4 | `pr`, `main`, `release` |
-| `graph.prefabs.copy_on_instantiate` | `graph` | medium | [docs/guide/prefab-libraries.md](../guide/prefab-libraries.md) — Instantiation is a ledger operation | pytest: 3 | `pr`, `main`, `release` |
-| `release.package.installable` | `release` | high | [docs/guide/api-stability.md](../guide/api-stability.md) — What counts as public | pytest: 2; static: 1 | `release` |
-| `storage.remote.control_parity` | `storage` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 10. Supported durability profile | pytest: 2; static: 1 | `main`, `release` |
-| `security.redaction.pre_durability` | `redaction` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 9. Security boundary | pytest: 1; eval: 1 | `pr`, `main`, `release` |
-| `examples.biome.pinned_execution` | `examples` | high | [docs/guide/examples.md](../guide/examples.md) — 14. Live Biome Agent | pytest: 1 | `pr`, `main`, `release` |
+| `native.ownership.singleflight` | `runtime` | high | [docs/guide/specification.md](../guide/specification.md) — Lifetime and cancellation | pytest: 1 | `pr`, `main`, `release` |
+| `native.server.supervised_lifetime` | `api` | high | [docs/guide/specification.md](../guide/specification.md) — Lifetime and cancellation | pytest: 1 | `pr`, `main`, `release` |
+| `native.values.exact` | `runtime` | high | [docs/guide/specification.md](../guide/specification.md) — Programs and values | pytest: 1; eval: 1 | `pr`, `main`, `release` |
+| `native.public.durable_history` | `storage` | high | [docs/guide/specification.md](../guide/specification.md) — Complete cuts and recovery | pytest: 1 | `pr`, `main`, `release` |
+| `native.artifacts.verified_facts` | `artifacts` | high | [docs/guide/specification.md](../guide/specification.md) — Artifact facts and batches | pytest: 1 | `pr`, `main`, `release` |
+| `native.transport.grants` | `api` | high | [docs/guide/specification.md](../guide/specification.md) — Transport and grants | pytest: 1 | `pr`, `main`, `release` |
+| `native.cli.closed_contract` | `cli` | high | [docs/guide/specification.md](../guide/specification.md) — Transport and grants | pytest: 1 | `pr`, `main`, `release` |
+| `native.architecture.ownership` | `architecture` | high | [docs/guide/specification.md](../guide/specification.md) — Ownership | pytest: 1; static: 4 | `pr`, `main`, `release` |
 
 Profile membership states where a contract must be enforced. Eval suite
 blocking/advisory policy is defined separately in `quality/eval_profiles.toml`;

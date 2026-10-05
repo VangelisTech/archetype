@@ -12,11 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def check(root: Path = ROOT) -> list[str]:
     expected = {
-        "classification": "isolated-local-transport-preview",
-        "distribution": "archetype-ddlog-transports",
-        "module": "archetype_ddlog_transports",
-        "package": "packages/archetype-ddlog-transports",
-        "contract": "docs/guide/ddlog-transports-preview.md",
+        "classification": "native-transport-adapter",
+        "distribution": "archetype-transports",
+        "module": "archetype_transports",
+        "package": "packages/archetype-transports",
+        "contract": "docs/guide/transports.md",
     }
     metadata = tomllib.loads((root / "quality/ddlog-transports.toml").read_text())
     if metadata != expected:
@@ -33,14 +33,17 @@ def check(root: Path = ROOT) -> list[str]:
         errors.append("Missing transport contract")
     project = tomllib.loads((package / "pyproject.toml").read_text())["project"]
     if project["name"] != metadata["distribution"] or project.get("dependencies") != [
-        "archetype-ddlog-preview==0.1.3",
+        "archetype-native==0.7.0",
         "mcp==2.3.0",
+        "pyjwt[crypto]==2.15.1",
+        "cryptography==50.0.1",
         "starlette==1.3.1",
+        "httpx2==2.13.1",
     ]:
         errors.append("Transport dependency set must remain explicitly pinned and isolated")
     allowed = sys.stdlib_module_names | {
         metadata["module"],
-        "archetype_ddlog_preview",
+        "archetype_native",
         "mcp",
         "mcp_types",
         "starlette",

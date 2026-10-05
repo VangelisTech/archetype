@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "scope": "0.7",
+  "rows": [
+    {
+      "id": "program_version",
+      "contract": "Immutable definition and complete composition coverage",
+      "oracle": "packages/archetype-native/tests/test_logical_binding.py::LogicalBindingTests::test_fresh_exact_retries_cold_identity_conflicts_and_no_compiler"
+    },
+    {
+      "id": "world_creation",
+      "contract": "Logical scope plus request key binds one exact definition",
+      "oracle": "packages/archetype-native/tests/test_logical_binding.py::LogicalBindingTests::test_fresh_exact_retries_cold_identity_conflicts_and_no_compiler"
+    },
+    {
+      "id": "historical_fork",
+      "contract": "Request key binds exact source cut and destination; changed payload conflicts without allocation",
+      "oracle": "packages/archetype-ecs/tests/test_native_runtime_binding.py::RuntimeBindingTests::test_two_program_full_empty_cut_historical_fork_and_storage_only_cold_reads"
+    },
+    {
+      "id": "publication",
+      "contract": "Lost acknowledgement reconciles the retained boundary and receipt without replay",
+      "oracle": "packages/archetype-native/tests/test_binding.py::BindingTests::test_recovery_contract"
+    },
+    {
+      "id": "artifact_occurrence",
+      "contract": "Retained occurrence UUID and metadata retry exactly; new preparation creates new occurrence",
+      "oracle": "tests/artifacts/test_context_attachments_native.py::ContextArtifactTests::test_collection_has_no_execution_side_effects_and_cold_reads"
+    },
+    {
+      "id": "artifact_cut",
+      "contract": "Retained preparation pins exact historical cut after live head advances",
+      "oracle": "tests/artifacts/test_cut_attachments_native.py::CutArtifactTests::test_historical_cut_two_occurrences_and_exact_retry"
+    }
+  ]
+}

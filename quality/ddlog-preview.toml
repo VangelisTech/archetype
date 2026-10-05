@@ -1,8 +1,8 @@
 # Independently installed trusted preview infrastructure, outside the archetype
 # family DAG and the default uv workspace. No domain or composition API reuse.
-classification = "isolated-runtime-preview"
-distribution = "archetype-ddlog-preview"
-module = "archetype_ddlog_preview"
-package = "packages/archetype-ddlog-preview"
+classification = "native-runtime-infrastructure"
+distribution = "archetype-native"
+module = "archetype_native"
+package = "packages/archetype-native"
 native_crate = "crates/archetype-ddlog-python"
-contract = "docs/guide/ddlog-python-preview.md"
+contract = "docs/guide/runtime.md"

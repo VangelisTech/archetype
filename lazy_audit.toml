@@ -488,3 +488,10 @@ symbol = "StorageService.append_missing"
 expr = "pending.write_iceberg"
 method = "write_iceberg"
 reason = "StorageService-owned conditional Iceberg sink: write the frozen anti-joined rows under the execution gate and bounded optimistic commit retry."
+
+[[entries]]
+path = "packages/archetype-ecs/src/archetype/artifacts/uploads.py"
+symbol = "publish_upload"
+expr = "stored.to_pydict"
+method = "to_pydict"
+reason = "Single-occurrence upload routing boundary: storage has already frozen and persisted the at-most-32-KiB submitted object once; its factual media family selects the existing typed scanner branches without repeating file effects or executing a tick."

@@ -71,13 +71,13 @@ evidence = [
 rationale = "Runtime construction is the explicit trusted-script process-host boundary."
 
 [[host_callable]]
-qualified_scope = "archetype.api.app.lifespan"
+qualified_scope = "archetype.api.app.create_app.lifespan"
 capabilities = ["invoke_configuration"]
 evidence = [
   "docs/guide/api-layer.md",
   "tests/app/test_runtime_observability.py",
 ]
-rationale = "FastAPI lifespan is the serving-worker process-host boundary; importing or creating the app remains inert."
+rationale = "The owned native server lifespan is the serving-worker process-host boundary; importing or creating the app remains inert."
 
 [[host_callable]]
 qualified_scope = "archetype.cli.main.serve"

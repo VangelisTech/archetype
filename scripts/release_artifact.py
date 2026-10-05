@@ -17,23 +17,18 @@ from typing import Any
 from packaging.utils import canonicalize_name, parse_sdist_filename, parse_wheel_filename
 from packaging.version import InvalidVersion, Version
 
-SCHEMA = "archetype.release-artifact/v3"
-WORLD_STACK_DISTRIBUTIONS = (
-    "archetype-ecs",
-    "archetype-research",
-)
+SCHEMA = "archetype.release-artifact/v4"
+WORLD_STACK_DISTRIBUTIONS = ("archetype-ecs", "archetype-native", "archetype-transports")
 DISTRIBUTIONS = (*WORLD_STACK_DISTRIBUTIONS, "archetype-smol")
 FRAMEWORK_DISTRIBUTION = "archetype-ecs"
 PUBLISHER_WORKFLOWS = {
     "archetype-ecs": "release.yml",
-    "archetype-research": "publish-archetype-research.yml",
+    "archetype-native": "release.yml",
+    "archetype-transports": "release.yml",
     "archetype-smol": "publish-archetype-smol.yml",
 }
-_PACKAGE_PREFIXES = {
-    "archetype-ecs": "archetype_ecs",
-    "archetype-research": "archetype_research",
-    "archetype-smol": "archetype_smol",
-}
+_PACKAGE_PREFIXES = {name: name.replace("-", "_") for name in DISTRIBUTIONS}
+INDEPENDENT_VERSIONS = {"archetype-smol": "0.6.3"}
 _KINDS = ("wheel", "sdist")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -128,7 +123,11 @@ def _artifact_version(artifacts: dict[tuple[str, str], Path]) -> str:
             raise ValueError(
                 f"release {distribution} {kind} filename identifies {parsed_distribution!r}"
             )
-        versions.add(version)
+        if distribution in INDEPENDENT_VERSIONS:
+            if version != INDEPENDENT_VERSIONS[distribution]:
+                raise ValueError("Independent teaching distribution version mismatch")
+        else:
+            versions.add(version)
     if len(versions) != 1:
         raise ValueError(f"release artifacts do not share one version: {sorted(versions)!r}")
     return versions.pop()
@@ -167,9 +166,7 @@ def artifact_records(manifest: dict[str, Any]) -> dict[tuple[str, str], dict[str
     raw_records = manifest.get("artifacts")
     expected = {(distribution, kind) for distribution in DISTRIBUTIONS for kind in _KINDS}
     if not isinstance(raw_records, list) or len(raw_records) != len(expected):
-        raise ValueError(
-            "release artifact manifest must contain three wheel and three sdist records"
-        )
+        raise ValueError("release artifact manifest must contain four wheel and four sdist records")
 
     records: dict[tuple[str, str], dict[str, Any]] = {}
     for value in raw_records:
@@ -188,7 +185,9 @@ def artifact_records(manifest: dict[str, Any]) -> dict[tuple[str, str], dict[str
         if not isinstance(name, str) or not name or Path(name).name != name:
             raise ValueError(f"release artifact {key!r} has an invalid filename")
         parsed_distribution, filename_version = _filename_coordinate(name, kind)
-        if parsed_distribution != canonicalize_name(distribution) or filename_version != version:
+        if parsed_distribution != canonicalize_name(
+            distribution
+        ) or filename_version != INDEPENDENT_VERSIONS.get(distribution, version):
             raise ValueError(
                 f"release artifact {key!r} filename is not bound to manifest version {version}"
             )

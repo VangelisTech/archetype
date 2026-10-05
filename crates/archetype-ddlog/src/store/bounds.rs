@@ -42,6 +42,7 @@ pub enum FaultCode {
     ResourceLimit,
     CorruptData,
     InvalidRequest,
+    Conflict,
     UnsupportedFormat,
 }
 impl FaultCode {
@@ -50,6 +51,7 @@ impl FaultCode {
             Self::ResourceLimit => "resource_limit",
             Self::CorruptData => "corrupt_data",
             Self::InvalidRequest => "invalid_request",
+            Self::Conflict => "conflict",
             Self::UnsupportedFormat => "unsupported_format",
         }
     }

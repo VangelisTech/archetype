@@ -1,983 +1,698 @@
-# Copyright 2025 Vangelis Technologies Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-"""User-facing asynchronous and synchronous world handles."""
+# Copyright 2026 Vangelis Technologies Inc.
+# SPDX-License-Identifier: Apache-2.0
+"""Narrow immutable handles. Native identity and diagnostics remain private."""
 
 from __future__ import annotations
 
-import asyncio
-import inspect
-from collections.abc import Awaitable, Callable
-from functools import wraps
-from typing import TYPE_CHECKING, Any, Concatenate
+import base64
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
-from uuid_utils import UUID
+from archetype_native import wire as w
+from archetype_native.programs import Composition, LeafProgram, ProgramReference
+from archetype_native.values import ARTIFACT_INDEX_FIELDS, decode_float_bits, float_bits, identifier
 
-from archetype.artifacts.models import (
-    ArtifactRef,
-    ArtifactSource,
-    IngestArtifacts,
-    QueryArtifacts,
-)
-from archetype.commands.models import GetAuditHistory
-from archetype.core.component import Component
-from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
-from archetype.core.hooks import HookEvent
-from archetype.evaluation.models import Evaluate, RunGraders
-from archetype.runtime_resources import OperationAdmission
-from archetype.world.models import (
-    AddComponents,
-    AddHook,
-    AddProcessor,
-    AddResource,
-    ComponentTypeRef,
-    ComponentValue,
-    CreateEntities,
-    CreateWorld,
-    Despawn,
-    DestroyWorld,
-    EpisodeConfig,
-    EpisodeResult,
-    ForkWorld,
-    GetWorldInfo,
-    HookInfo,
-    ListHooks,
-    ListProcessors,
-    ListResources,
-    OpenWorldReadonly,
-    ProcessorInfo,
-    QueryComponents,
-    RemoveComponents,
-    RemoveHook,
-    RemoveProcessor,
-    ReserveEntityIds,
-    ResourceInfo,
-    RolloutConfig,
-    RolloutResult,
-    Run,
-    RunEpisode,
-    RunResult,
-    RunRollout,
-    Spawn,
-    SpawnReserved,
-    Step,
-    Update,
-    WorldInfo,
+from archetype.runtime.contracts import (
+    Admission,
+    ArtifactContextInfo,
+    ArtifactOccurrence,
+    ArtifactPage,
+    ArtifactUploadReceipt,
+    PreparedArtifacts,
+    RowPage,
+    WorldStatus,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-    from typing import Protocol
-
-    from daft import DataFrame
-
-    from archetype.core.hooks import HookHandle
-    from archetype.evaluation.components import EvalReceipt
-    from archetype.evaluation.contracts import (
-        FrameGrader,
-        GraderContract,
-        GraderOutput,
-    )
-    from archetype.runtime.runtime import SyncArchetypeRuntime
-
-    class _RuntimeHost(Protocol):
-        _resources: Any
-
-        def _ensure_open(self) -> None: ...
-
-        def _bind_world_state(self, state: _RuntimeWorldState) -> RuntimeWorld: ...
+    from archetype.runtime.runtime import ArchetypeRuntime, SyncArchetypeRuntime
 
 
-_FireMode = Any  # Literal["blocking", "spawn"] — kept loose for forward compat
+def _cell(value: int | str | bool | float) -> dict[str, Any]:
+    if type(value) is bool:
+        return {"bool": value}
+    if type(value) is int:
+        return {"int64": str(value)}
+    if type(value) is str:
+        return {"string": value}
+    if type(value) is float:
+        return {"float64": float_bits(value)}
+    raise ValueError("Expected an exact supported live cell")
 
 
-def _adapt_sync_hook(fn: Callable[[HookEvent], Any]) -> Callable[[HookEvent], Awaitable[None]]:
-    """Make a blocking-facade hook awaitable by the asynchronous hook bus."""
+def _facts(raw):
+    def value(cell):
+        if cell is None:
+            return None
+        tag, fact = next(iter(cell.items()))
+        if tag == "timestamp_us":
+            return datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=int(fact))
+        if tag == "int64":
+            return int(fact)
+        if tag == "float64":
+            return decode_float_bits(fact)
+        return fact
 
-    @wraps(fn)
-    async def adapted(event: HookEvent) -> None:
-        result = fn(event)
-        if inspect.isawaitable(result):
-            await result
-
-    return adapted
-
-
-def _admitted_world_operation[**P, R](
-    operation: Callable[Concatenate[RuntimeWorld, P], Awaitable[R]],
-) -> Callable[Concatenate[RuntimeWorld, P], Awaitable[R]]:
-    """Keep one complete public handle call inside process and local admission."""
-
-    @wraps(operation)
-    async def admitted(self: RuntimeWorld, *args: P.args, **kwargs: P.kwargs) -> R:
-        async with self._state.runtime._resources.admit_operation():
-            continuation = self._operation_admission.admitted_by_current_task()
-            async with self._operation_admission.admit():
-                self._state.runtime._ensure_open()
-                if (
-                    self._state.destroying or self._state.closing or self._state.closed
-                ) and not continuation:
-                    raise RuntimeError("World handle is closed")
-                return await operation(self, *args, **kwargs)
-
-    return admitted
+    return tuple((name, value(cell)) for name, cell in raw.items())
 
 
-def _clone_components(components: tuple[Component, ...]) -> list[Component]:
-    return [component.model_copy(deep=True) for component in components]
+@dataclass(frozen=True, slots=True)
+class Change:
+    predicate: str
+    values: tuple[int | str | bool | float, ...]
+    op: str = "insert"
+
+    def __post_init__(self) -> None:
+        identifier(self.predicate)
+        if type(self.values) is not tuple:
+            raise ValueError("Expected immutable change values")
+        w.Change.decode(self._wire())
+
+    def _wire(self) -> dict[str, Any]:
+        return {
+            "predicate": self.predicate,
+            "op": self.op,
+            "values": [_cell(value) for value in self.values],
+        }
 
 
-def _parse_spawn_batch_args(
-    args: tuple[Component | int, ...],
-    count: int | None,
-) -> tuple[tuple[Component, ...], int]:
-    if count is None:
-        if not args or not isinstance(args[-1], int):
-            raise TypeError("spawn_batch requires a count, e.g. spawn_batch(component, 10000)")
-        count = args[-1]
-        components = args[:-1]
-    else:
-        components = args
+@dataclass(frozen=True, slots=True)
+class RuntimeProgram:
+    _runtime: ArchetypeRuntime = field(repr=False, compare=False)
+    name: str
 
-    if count < 1:
-        raise ValueError("spawn_batch count must be >= 1")
-    if not components:
-        raise ValueError("spawn_batch requires at least one component template")
+    async def publish(
+        self, definition: LeafProgram | Composition, *, request_key: str, description: str = ""
+    ) -> ProgramReference:
+        if type(definition) is LeafProgram:
+            args = {
+                "definition": {
+                    "rules": definition.rules,
+                    "schemas": [
+                        {"name": r.name, "input": r.input, "fields": list(r.types)}
+                        for r in definition.schemas
+                    ],
+                    "inputs": list(definition.inputs),
+                    "outputs": list(definition.outputs),
+                }
+            }
+            operation = "program_create"
+        elif type(definition) is Composition:
+            args = {
+                "composition": {
+                    "nodes": [
+                        {
+                            "name": n.name,
+                            "program": {"resource": n.program.resource, **n.program.pin()},
+                        }
+                        for n in definition.nodes
+                    ],
+                    "inputs": [
+                        {
+                            "name": p.name,
+                            "fields": list(p.types),
+                            "targets": [t.native() for t in p.targets],
+                        }
+                        for p in definition.inputs
+                    ],
+                    "bindings": [
+                        {"from": b.source.native(), "to": b.target.native()}
+                        for b in definition.bindings
+                    ],
+                    "outputs": [
+                        {"name": p.name, "source": p.source.native()} for p in definition.outputs
+                    ],
+                }
+            }
+            operation = "program_compose"
+        else:
+            raise ValueError("Expected immutable program or composition")
+        result = await self._runtime._invoke(
+            self.name, operation, {**args, "request_key": request_key, "description": description}
+        )
+        return ProgramReference.decode(result["program"])
 
-    templates: list[Component] = []
-    for component in components:
-        if not isinstance(component, Component):
-            raise TypeError("spawn_batch component templates must be Component instances")
-        templates.append(component)
-
-    return tuple(templates), count
+    async def resolve(self) -> ProgramReference:
+        result = await self._runtime._invoke(self.name, "program_resolve", {})
+        return ProgramReference.decode(result["program"])
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared state (behind potentially multiple aliased handles)
-# ─────────────────────────────────────────────────────────────────────────────
+@dataclass(frozen=True, slots=True)
+class RuntimeCut:
+    _runtime: ArchetypeRuntime = field(repr=False, compare=False)
+    _resource: str = field(repr=False)
+    world: str
+    run: str
+    tick: int
+    cut_id: str
+    parent: str | None = None
+
+    def _receipt(self) -> dict[str, Any]:
+        return {"world": self.world, "run": self.run, "tick": str(self.tick), "cut_id": self.cut_id}
+
+    async def read(self, component: str, *, offset: int = 0, limit: int = 32) -> RowPage:
+        value = await self._runtime._invoke(
+            self._resource,
+            "read",
+            {
+                "receipt": self._receipt(),
+                "component": component,
+                "offset": str(offset),
+                "limit": str(limit),
+            },
+        )
+        return RowPage(
+            tuple(value["fields"]),
+            tuple(tuple(w.Cell.decode(c).value for c in row) for row in value["rows"]),
+            int(value["total_rows"]),
+            None if value["next_offset"] is None else int(value["next_offset"]),
+        )
+
+    async def analyze(self, component: str, *, offset: int = 0, limit: int = 32):
+        """Optional lazy Daft frame for a bounded immutable page, outside ticks."""
+        page = await self.read(component, offset=offset, limit=limit)
+        import daft
+
+        return daft.from_pydict(
+            {name: [row[i] for row in page.rows] for i, name in enumerate(page.fields)}
+        )
 
 
-class _RuntimeWorldState:
-    """Handle-local activation and close state for one logical world."""
+@dataclass(frozen=True, slots=True)
+class CutPage[T]:
+    cuts: tuple[T, ...]
+    total: int
+    next_offset: int | None
 
-    def __init__(
+
+@dataclass(frozen=True, slots=True)
+class RuntimeWorld:
+    _runtime: ArchetypeRuntime = field(repr=False, compare=False)
+    name: str
+    world: str
+    run: str
+
+    async def create(
+        self, program: ProgramReference, *, request_key: str, label: str | None = None
+    ) -> WorldStatus:
+        if type(program) is not ProgramReference:
+            raise ValueError("Expected exact logical program reference")
+        value = await self._runtime._invoke(
+            self.name,
+            "create",
+            {
+                "program": {"resource": program.resource, **program.pin()},
+                "request_key": request_key,
+                "label": self.name if label is None else label,
+            },
+        )
+        return WorldStatus._decode(value)
+
+    async def status(self) -> WorldStatus:
+        return WorldStatus._decode(await self._runtime._invoke(self.name, "status", {}))
+
+    async def start(self) -> WorldStatus:
+        return WorldStatus._decode(await self._runtime._invoke(self.name, "start", {}))
+
+    async def stop(self) -> WorldStatus:
+        return WorldStatus._decode(await self._runtime._invoke(self.name, "stop", {}))
+
+    async def admit(
         self,
+        changes: tuple[Change, ...],
         *,
-        runtime: _RuntimeHost,
-        name: str,
-        storage_config: StorageConfig | None,
-        cache_config: CacheConfig | None,
-        init_processors: list,
-        init_resources: list,
-        init_hooks: list[tuple[type[HookEvent], Any]],
-        # Pre-activated fork state (set when forking from an existing world)
-        world_id: str | UUID | None = None,
-        # Wiring-owned workflows can pre-bind an exact resumed writer and ask
-        # the first handle operation to reinstall its process-local behavior.
-        install_initializers: bool = False,
-        # Attached handles (runtime.attach) reference a world they did not
-        # create; shutdown must not destroy it.
-        owns_world: bool = True,
-    ) -> None:
-        self.runtime = runtime
-        self.name = name
-        self.storage_config = storage_config
-        self.cache_config = cache_config
-        self.init_processors = init_processors
-        self.init_resources = init_resources
-        self.init_hooks = init_hooks
-        self.owns_world = owns_world
+        generation: int,
+        revision: int,
+        admission_key: str,
+        expected_head: str | None,
+    ) -> Admission:
+        if type(changes) is not tuple or any(type(c) is not Change for c in changes):
+            raise ValueError("Expected immutable typed changes")
+        value = await self._runtime._invoke(
+            self.name,
+            "admit",
+            {
+                "changes": [c._wire() for c in changes],
+                "generation": str(generation),
+                "revision": str(revision),
+                "admission_key": admission_key,
+                "expected_head": expected_head,
+            },
+        )
+        return Admission._decode(value)
 
-        self.world_id: str | UUID | None = world_id
-        self._create_on_init = world_id is None
-        self.initialized = world_id is not None and not install_initializers
-        self.init_lock = asyncio.Lock()
-        self.close_lock = asyncio.Lock()
-        self.destroying = False
-        self.closing = False
-        self.closed = False
-
-    async def ensure_init(self) -> str | UUID:
-        """Single-flight activation. Returns world_id."""
-        if self.initialized:
-            assert self.world_id is not None  # set before `initialized` flips true
-            return self.world_id
-
-        async with self.init_lock:
-            if self.initialized:
-                assert self.world_id is not None
-                return self.world_id
-
-            dispatcher = self.runtime._resources.dispatcher
-            effective_storage_config = self.storage_config or StorageConfig()
-
-            try:
-                if self.world_id is None:
-                    info = await dispatcher.apply(
-                        CreateWorld(
-                            config=WorldConfig(name=self.name),
-                            storage_config=effective_storage_config,
-                            cache_config=self.cache_config,
-                        )
-                    )
-                    self.world_id = info.world_id
-
-                for proc in self.init_processors:
-                    await dispatcher.apply(AddProcessor(world_id=self.world_id, processor=proc))
-
-                for resource in self.init_resources:
-                    await dispatcher.apply(AddResource(world_id=self.world_id, resource=resource))
-
-                for event_type, fn in self.init_hooks:
-                    await dispatcher.apply(
-                        AddHook(
-                            world_id=self.world_id,
-                            event_type=event_type,
-                            handler=fn,
-                        )
-                    )
-
-                self.storage_config = effective_storage_config
-                self.initialized = True
-            except BaseException:
-                if self._create_on_init and self.world_id is not None:
-                    await dispatcher.apply(DestroyWorld(world_id=self.world_id))
-                    self.world_id = None
-                self.initialized = False
-                raise
-
-        assert self.world_id is not None
-        return self.world_id
-
-    def require_storage_config(self, capability: str) -> StorageConfig:
-        """Return explicit durable coordinates or fail before capability effects."""
-
-        storage_config = self.storage_config
-        if storage_config is None:
-            raise ValueError(
-                f"{capability} requires explicit storage coordinates; "
-                "attach the world with storage=..."
+    async def admission_status(self, generation: int, admission_key: str) -> Admission:
+        return Admission._decode(
+            await self._runtime._invoke(
+                self.name,
+                "admission_status",
+                {"generation": str(generation), "admission_key": admission_key},
             )
-        return storage_config
+        )
+
+    def _cut(self, value: dict[str, Any]) -> RuntimeCut:
+        receipt = value["receipt"]
+        return RuntimeCut(
+            self._runtime,
+            self.name,
+            receipt["world"],
+            receipt["run"],
+            int(receipt["tick"]),
+            receipt["cut_id"],
+            value["parent"],
+        )
+
+    async def publish(self, boundary: w.Boundary) -> RuntimeCut:
+        return self._cut(
+            await self._runtime._invoke(
+                self.name,
+                "publish",
+                {
+                    "boundary": {
+                        "generation": str(boundary.generation),
+                        "admission_key": boundary.admission_key,
+                        "request_sha256": boundary.request_sha256,
+                    }
+                },
+            )
+        )
+
+    async def reconcile(
+        self, boundary: w.Boundary, *, tick: int, expected_parent: str | None
+    ) -> RuntimeCut:
+        return self._cut(
+            await self._runtime._invoke(
+                self.name,
+                "reconcile",
+                {
+                    "boundary": {
+                        "generation": str(boundary.generation),
+                        "admission_key": boundary.admission_key,
+                        "request_sha256": boundary.request_sha256,
+                    },
+                    "tick": str(tick),
+                    "expected_parent": expected_parent,
+                },
+            )
+        )
+
+    async def confirm(self, boundary: w.Boundary, cut: RuntimeCut) -> Admission:
+        if (cut.world, cut.run) != (self.world, self.run):
+            raise ValueError("Cut outside world scope")
+        return Admission._decode(
+            await self._runtime._invoke(
+                self.name,
+                "confirm",
+                {
+                    "boundary": {
+                        "generation": str(boundary.generation),
+                        "admission_key": boundary.admission_key,
+                        "request_sha256": boundary.request_sha256,
+                    },
+                    "tick": str(cut.tick),
+                    "expected_parent": cut.parent,
+                },
+            )
+        )
+
+    async def history(self, *, offset: int = 0, limit: int = 32) -> CutPage[RuntimeCut]:
+        value = await self._runtime._invoke(
+            self.name, "history", {"offset": str(offset), "limit": str(limit)}
+        )
+        return CutPage(
+            tuple(self._cut(item) for item in value["receipts"]),
+            int(value["total"]),
+            None if value["next_offset"] is None else int(value["next_offset"]),
+        )
+
+    async def resume(self, cut: RuntimeCut, *, expected_generation: int) -> WorldStatus:
+        return WorldStatus._decode(
+            await self._runtime._invoke(
+                self.name,
+                "restore",
+                {"receipt": cut._receipt(), "expected_generation": str(expected_generation)},
+            )
+        )
+
+    async def fork(
+        self,
+        source: RuntimeWorld,
+        cut: RuntimeCut,
+        *,
+        request_key: str,
+        expected_generation: int = 0,
+    ) -> WorldStatus:
+        if source._runtime is not self._runtime or (cut.world, cut.run) != (
+            source.world,
+            source.run,
+        ):
+            raise ValueError("Fork source must belong to this runtime and exact world")
+        return WorldStatus._decode(
+            await self._runtime._invoke(
+                self.name,
+                "fork",
+                {
+                    "source_resource": source.name,
+                    "receipt": cut._receipt(),
+                    "request_key": request_key,
+                    "expected_generation": str(expected_generation),
+                },
+            )
+        )
+
+    def artifacts(self, name: str):
+        return self._runtime.artifacts(name, world=self.world, run=self.run, source=self)
 
     async def shutdown(self) -> None:
-        """Close this local handle state without destroying durable world state."""
-        async with self.close_lock:
-            if self.closed:
-                return
-            self.closing = True
-            self.closed = True
+        await self._runtime._shutdown_world(self.name)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# RuntimeWorld — the handle
-# ─────────────────────────────────────────────────────────────────────────────
+@dataclass(frozen=True, slots=True)
+class RuntimeArtifacts:
+    _runtime: ArchetypeRuntime = field(repr=False, compare=False)
+    name: str
+    world: str
+    run: str
 
+    async def publish(self) -> ArtifactContextInfo:
+        return ArtifactContextInfo(
+            **await self._runtime._invoke(
+                self.name,
+                "publish_context",
+                {"source_resource": self._runtime._resources[self.name].source_resource},
+            )
+        )
 
-class RuntimeWorld:
-    """Operate one world through an `ArchetypeRuntime`.
+    async def context(self) -> ArtifactContextInfo:
+        return ArtifactContextInfo(**await self._runtime._invoke(self.name, "read_context", {}))
 
-    Handles are lazy and safe to create before the world exists. The first
-    operation activates the world. The trusted runtime path is actor-free;
-    authorization belongs to remote adapters at the dispatcher ingress
-    boundary.
-    """
+    async def upload(
+        self, content: bytes, *, logical_path: str, artifact_id: str, cut: RuntimeCut | None = None
+    ) -> ArtifactUploadReceipt:
+        if type(content) is not bytes or len(content) > 32768:
+            raise ValueError("Expected at most 32 KiB of exact bytes")
+        if cut is not None and (
+            cut._runtime is not self._runtime or (cut.world, cut.run) != (self.world, self.run)
+        ):
+            raise ValueError("Artifact cut outside context scope")
+        context = await self.context()
+        value = await self._runtime._invoke(
+            self.name,
+            "artifact_upload",
+            {
+                "context_id": context.context_id,
+                "exact_cut": None if cut is None else {"tick": str(cut.tick), "cut_id": cut.cut_id},
+                "artifact_id": artifact_id,
+                "logical_path": logical_path,
+                "content_base64": base64.b64encode(content).decode(),
+            },
+        )
+        return ArtifactUploadReceipt(
+            value["artifact_id"],
+            value["context_id"],
+            None
+            if value["exact_cut"] is None
+            else (int(value["exact_cut"]["tick"]), value["exact_cut"]["cut_id"]),
+            value["sha256"],
+            value["logical_path"],
+            int(value["size_bytes"]),
+        )
 
-    def __init__(self, *, state: _RuntimeWorldState, reservation: Any | None = None) -> None:
-        self._state = state
-        self._reservation = reservation
-        self._operation_admission = OperationAdmission(closed_message="World handle is closed")
+    async def prepare_files(
+        self, sources: tuple, *, cut: RuntimeCut | None = None
+    ) -> PreparedArtifacts:
+        """Prepare the existing file/batch graph outside live execution.
 
-    @property
-    def _dispatcher(self):
-        return self._state.runtime._resources.dispatcher
+        Requires the analysis extra. Publication permits at most 32 occurrences,
+        64 MiB per content object and 256 MiB aggregate native read admission.
+        Retain this immutable batch to retry publication with identical metadata.
+        """
+        from archetype.artifacts.models import ArtifactSource
 
-    async def _ensure_id(self) -> str | UUID:
-        self._state.runtime._ensure_open()
         if (
-            self._state.destroying or self._state.closing or self._state.closed
-        ) and not self._operation_admission.admitted_by_current_task():
-            raise RuntimeError("World handle is closed")
-        return await self._state.ensure_init()
+            type(sources) is not tuple
+            or not sources
+            or len(sources) > 32
+            or any(type(source) is not ArtifactSource for source in sources)
+        ):
+            raise ValueError("Expected 1..32 immutable ArtifactSource declarations")
+        if cut is not None and (
+            cut._runtime is not self._runtime or (cut.world, cut.run) != (self.world, self.run)
+        ):
+            raise ValueError("Artifact cut outside context scope")
+        context = await self.context()
+        exact = None if cut is None else (cut.tick, cut.cut_id)
+        prepared = await self._runtime._artifact_files(
+            self.name, "prepare_files", self.world, self.run, context.context_id, exact, sources
+        )
+        return PreparedArtifacts(
+            context.context_id,
+            exact,
+            tuple(item.artifact_id for item in prepared.artifacts),
+            prepared,
+        )
 
-    async def _close_owned(self) -> None:
-        """Close callback retained by the process lifetime owner."""
+    async def publish_files(self, prepared: PreparedArtifacts) -> tuple[ArtifactUploadReceipt, ...]:
+        """Publish one retained preparation; native storage verifies exact attribution."""
+        if type(prepared) is not PreparedArtifacts:
+            raise ValueError("Expected an immutable prepared artifact batch")
+        context = await self.context()
+        target = prepared._prepared.target
+        exact = (
+            None if target.exact_cut is None else (target.exact_cut.tick, target.exact_cut.cut_id)
+        )
+        if (
+            (target.context.world, target.context.run, target.context.context_id, exact)
+            != (self.world, self.run, context.context_id, prepared.exact_cut)
+            or context.context_id != prepared.context_id
+            or tuple(item.artifact_id for item in prepared._prepared.artifacts)
+            != prepared.artifact_ids
+        ):
+            raise ValueError("Prepared artifact scope mismatch")
+        receipts = await self._runtime._artifact_files(
+            self.name, "publish_files", prepared._prepared
+        )
+        if len(receipts) != len(prepared.artifact_ids):
+            raise ValueError("Incomplete artifact publication")
+        return tuple(
+            ArtifactUploadReceipt(
+                item.artifact_id,
+                context.context_id,
+                exact,
+                item.sha256,
+                item.logical_path,
+                item.size_bytes,
+            )
+            for item in prepared._prepared.artifacts
+        )
 
-        await self._begin_local_close()
-        await self._operation_admission.wait_drained()
-        await self._state.shutdown()
+    async def occurrences(
+        self, *, cut: RuntimeCut | None = None, all: bool = False, offset: int = 0, limit: int = 32
+    ) -> ArtifactPage:
+        if cut is not None and (
+            cut._runtime is not self._runtime or (cut.world, cut.run) != (self.world, self.run)
+        ):
+            raise ValueError("Artifact cut outside context scope")
+        context = await self.context()
+        value = await self._runtime._invoke(
+            self.name,
+            "context_artifacts",
+            {
+                "context_id": context.context_id,
+                "exact_cut": None if cut is None else {"tick": str(cut.tick), "cut_id": cut.cut_id},
+                "all": all,
+                "offset": str(offset),
+                "limit": str(limit),
+            },
+        )
+        return ArtifactPage(
+            tuple(
+                ArtifactOccurrence(
+                    item["artifact_id"],
+                    item["context_id"],
+                    None
+                    if item["exact_cut"] is None
+                    else (int(item["exact_cut"]["tick"]), item["exact_cut"]["cut_id"]),
+                    item["sha256"],
+                    item["media_type"],
+                    int(item["size_bytes"]),
+                    _facts(item["common"]),
+                    tuple((name, _facts(facts)) for name, facts in item["typed"].items()),
+                )
+                for item in value["items"]
+            ),
+            int(value["total"]),
+            None if value["next_offset"] is None else int(value["next_offset"]),
+        )
 
-    async def _begin_local_close(self) -> None:
-        """Reject late local calls before any potentially blocking owner join."""
+    async def analyze(self, *, index: str = "files", **selection):
+        """Lazy Daft analysis of one verified bounded common or typed index."""
+        if index not in ARTIFACT_INDEX_FIELDS:
+            raise ValueError("Unknown artifact index")
+        page = await self.occurrences(**selection)
+        rows = [dict(item.facts(index)) for item in page.items if item.facts(index)]
+        fields = (
+            "artifact_id context_id world run tick cut_id " + ARTIFACT_INDEX_FIELDS[index]
+        ).split()
+        import daft
 
-        self._state.closing = True
-        await self._operation_admission.stop_admission()
+        return daft.from_pydict({name: [row[name] for row in rows] for name in fields})
 
-    # ── Properties (sync, no round-trip) ──────────────────────────────────
 
-    @property
-    def active_world_id(self) -> str | UUID | None:
-        """Return the durable identity without activating this lazy handle."""
-
-        return self._state.world_id
-
-    @property
-    def world_id(self) -> str | UUID:
-        """Return the durable world identifier after activation."""
-        if self._state.world_id is None:
-            raise RuntimeError("World has not been activated yet")
-        return self._state.world_id
+@dataclass(frozen=True, slots=True)
+class SyncRuntimeProgram:
+    _runtime: SyncArchetypeRuntime = field(repr=False, compare=False)
+    _handle: RuntimeProgram = field(repr=False)
 
     @property
     def name(self) -> str:
-        """Return the handle's local world name."""
-        return self._state.name
+        return self._handle.name
 
-    def library(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        """Construct one installed world-scoped library adapter."""
+    def publish(self, definition, **identity):
+        return self._runtime._dispatch(self._handle.publish(definition, **identity))
 
-        self._state.runtime._ensure_open()
-        installed = self._state.runtime._resources.world_library(name)
-        factory = installed.world_adapter
-        if factory is None:
-            raise TypeError(f"world library {name!r} has no world adapter")
-        return factory(self, *args, **kwargs)
+    def resolve(self):
+        return self._runtime._dispatch(self._handle.resolve())
 
-    @_admitted_world_operation
-    async def _call_library(
-        self,
-        callback: Callable[[str | UUID, StorageConfig | None, Any], Awaitable[Any]],
-        *,
-        capability: str,
-        require_storage: bool = False,
-    ) -> Any:
-        """Run a trusted adapter callback inside this handle's exact gate.
 
-        This is the narrow extension seam used by world-library adapters. It
-        preserves lazy activation and close/admission ordering without exposing
-        the handle's mutable state object.
-        """
-
-        wid = await self._ensure_id()
-        storage = (
-            self._state.require_storage_config(capability)
-            if require_storage
-            else self._state.storage_config
-        )
-        result = callback(wid, storage, self._dispatcher)
-        if not inspect.isawaitable(result):
-            raise TypeError("world-library callback must return an awaitable")
-        return await result
-
-    # ── Mutations ─────────────────────────────────────────────────────────
-
-    @_admitted_world_operation
-    async def spawn(self, *components: Component) -> int:
-        """Create an entity and return its reserved identifier."""
-        wid = await self._ensure_id()
-        return await self._dispatcher.apply(
-            Spawn(
-                world_id=wid,
-                components=tuple(ComponentValue.from_component(value) for value in components),
-            )
-        )
-
-    @_admitted_world_operation
-    async def ingest_artifacts(self, *sources: ArtifactSource) -> tuple[ArtifactRef, ...]:
-        """Copy files into the artifact store and index their metadata."""
-
-        wid = str(await self._ensure_id())
-        storage_config = self._state.require_storage_config("ingest_artifacts")
-        return await self._dispatcher.apply(
-            IngestArtifacts(
-                world_id=wid,
-                sources=tuple(sources),
-                storage_config=storage_config,
-            )
-        )
-
-    @_admitted_world_operation
-    async def spawn_many(self, entities: list[list[Component]]) -> list[int]:
-        """Create several entities in one batch.
-
-        Each entity's first persisted row contains its supplied components.
-        Processors first apply on the following tick.
-
-        Args:
-            entities: Component lists, one for each entity.
-
-        Returns:
-            A list of entity IDs in the same order as ``entities``.
-        """
-        wid = await self._ensure_id()
-        return await self._dispatcher.apply(
-            CreateEntities.from_entities(world_id=wid, entities=entities)
-        )
-
-    @_admitted_world_operation
-    async def spawn_batch(
-        self, *components_or_count: Component | int, count: int | None = None
-    ) -> list[int]:
-        """Spawn many copies of one component template.
-
-        ``spawn_batch(foo, 10000)`` is shorthand for building 10,000
-        component lists and sending them through the existing gated
-        ``spawn_many`` batch path. The template components are deep-copied
-        per entity so later mutation of one component instance cannot alias
-        another spawned row.
-
-        Args:
-            *components_or_count: Component templates, followed by a positional
-                count; e.g. ``spawn_batch(Position(x=1), 10000)``.
-            count: Keyword count for multi-component archetypes; e.g.
-                ``spawn_batch(Position(), Velocity(), count=10000)``.
-
-        Returns:
-            A list of entity IDs in spawn order.
-        """
-        components, batch_count = _parse_spawn_batch_args(components_or_count, count)
-        entities = [_clone_components(components) for _ in range(batch_count)]
-        return await self.spawn_many(entities)
-
-    @_admitted_world_operation
-    async def reserve_ids(self, n: int) -> list[int]:
-        """Reserve entity identifiers without creating entities.
-
-        The returned IDs are drawn from the same monotonic counter as
-        ``spawn`` / ``spawn_many``, so interleaved calls produce disjoint
-        ranges. Use `spawn_reserved()` to materialize a reserved ID.
-
-        Args:
-            n: Number of identifiers to reserve. Must be at least one.
-
-        Returns:
-            Reserved identifiers in ascending order.
-        """
-        wid = await self._ensure_id()
-        return await self._dispatcher.apply(ReserveEntityIds(world_id=wid, count=n))
-
-    @_admitted_world_operation
-    async def spawn_reserved(self, entity_id: int, *components: Component) -> None:
-        """Create an entity with a previously reserved identifier.
-
-        Args:
-            entity_id: A previously reserved ID (from ``reserve_ids``).
-            *components: Initial component values.
-
-        Raises:
-            ValueError: If *entity_id* is already registered.
-        """
-        wid = await self._ensure_id()
-        await self._dispatcher.apply(
-            SpawnReserved(
-                world_id=wid,
-                entity_id=entity_id,
-                components=tuple(ComponentValue.from_component(value) for value in components),
-            )
-        )
-
-    @_admitted_world_operation
-    async def despawn(self, entity_id: int) -> None:
-        """Remove an entity."""
-        wid = await self._ensure_id()
-        await self._dispatcher.apply(Despawn(world_id=wid, entity_id=entity_id))
-
-    @_admitted_world_operation
-    async def update(self, entity_id: int, *components: Component) -> None:
-        """Replace values on component types already held by an entity."""
-        wid = await self._ensure_id()
-        await self._dispatcher.apply(
-            Update(
-                world_id=wid,
-                entity_id=entity_id,
-                components=tuple(ComponentValue.from_component(value) for value in components),
-            )
-        )
-
-    @_admitted_world_operation
-    async def add_components(self, entity_id: int, *components: Component) -> None:
-        """Add component types to an entity."""
-        wid = await self._ensure_id()
-        await self._dispatcher.apply(
-            AddComponents(
-                world_id=wid,
-                entity_id=entity_id,
-                components=tuple(ComponentValue.from_component(value) for value in components),
-            )
-        )
-
-    @_admitted_world_operation
-    async def remove_components(self, entity_id: int, *component_types: type[Component]) -> None:
-        """Remove component types from an entity."""
-        wid = await self._ensure_id()
-        await self._dispatcher.apply(
-            RemoveComponents(
-                world_id=wid,
-                entity_id=entity_id,
-                component_types=tuple(
-                    ComponentTypeRef.from_type(value) for value in component_types
-                ),
-            )
-        )
-
-    @_admitted_world_operation
-    async def add_processor(self, processor) -> None:
-        """Install a processor on this world."""
-        wid = await self._ensure_id()
-        await self._dispatcher.apply(AddProcessor(world_id=wid, processor=processor))
-
-    @_admitted_world_operation
-    async def remove_processor(self, proc_type) -> None:
-        """Remove every installed processor of a type."""
-        wid = await self._ensure_id()
-        await self._dispatcher.apply(RemoveProcessor(world_id=wid, processor_type=proc_type))
-
-    # ── Simulation ────────────────────────────────────────────────────────
-
-    @_admitted_world_operation
-    async def step(self, *, debug: bool = False, config: RunConfig | None = None, **kw) -> None:
-        """Advance one tick."""
-        wid = await self._ensure_id()
-        rc = config or RunConfig(num_steps=1, debug=debug)
-        await self._dispatcher.apply(Step(world_id=wid, run_config=rc, input_kwargs=kw))
-
-    @_admitted_world_operation
-    async def run(
-        self, steps: int = 1, *, debug: bool = False, config: RunConfig | None = None, **kw
-    ) -> RunResult:
-        """Advance the world by a number of ticks and return the run result."""
-        wid = await self._ensure_id()
-        rc = config or RunConfig(num_steps=steps, debug=debug)
-        return await self._dispatcher.apply(Run(world_id=wid, run_config=rc, input_kwargs=kw))
-
-    @_admitted_world_operation
-    async def run_episode(self, config: EpisodeConfig, **kw) -> EpisodeResult:
-        """Run until an episode termination condition or step limit is reached."""
-        wid = await self._ensure_id()
-        return await self._dispatcher.apply(
-            RunEpisode(world_id=wid, config=config, input_kwargs=kw)
-        )
-
-    @_admitted_world_operation
-    async def run_rollout(self, config: RolloutConfig, **kw) -> RolloutResult:
-        """Run several episodes on forks of this world."""
-        wid = await self._ensure_id()
-        return await self._dispatcher.apply(
-            RunRollout(world_id=wid, config=config, input_kwargs=kw)
-        )
-
-    @_admitted_world_operation
-    async def grade(
-        self,
-        *component_types: type[Component],
-        graders: Sequence[FrameGrader],
-        entity_ids: list[int] | None = None,
-    ) -> list[GraderOutput]:
-        """Run graders against this world's append-only history.
-
-        Graders receive one lazy Daft DataFrame. Returned values are ephemeral;
-        use `evaluate()` when the outcome needs a durable receipt.
-        """
-        df = await self.query(*component_types, entity_ids=entity_ids)
-        return await self._dispatcher.apply(RunGraders(df=df, graders=tuple(graders)))
-
-    @_admitted_world_operation
-    async def evaluate(
-        self,
-        *component_types: type[Component],
-        contract: GraderContract,
-        grader: FrameGrader,
-        evaluation_id: str,
-        ticks: list[int] | None = None,
-        entity_ids: list[int] | None = None,
-    ) -> EvalReceipt:
-        """Persist one evaluation result for an evaluation identity.
-
-        The receipt is pinned to the current snapshot and grader contract.
-        Repeating an evaluation identity returns its original receipt without
-        grading again. Use a new identity for another nondeterministic trial.
-        Durable receipts require an Iceberg-backed world; use ``grade()`` for
-        ephemeral scoring on other storage backends.
-        """
-        wid = await self._ensure_id()
-        storage_config = self._state.require_storage_config("evaluate")
-        return await self._dispatcher.apply(
-            Evaluate(
-                world_id=wid,
-                components=tuple(component_types),
-                contract=contract,
-                grader=grader,
-                evaluation_id=evaluation_id,
-                storage_config=storage_config,
-                ticks=tuple(ticks) if ticks is not None else None,
-                entity_ids=tuple(entity_ids) if entity_ids is not None else None,
-            )
-        )
-
-    # ── Lifecycle ─────────────────────────────────────────────────────────
-
-    async def _resolve_info(self, wid) -> WorldInfo:
-        """World descriptor for live OR cold worlds.
-
-        Live worlds answer from the registry. A handle attached with an
-        explicit storage config can also describe a COLD world (durable
-        discovery, issue #272) through the catalog — reads never require the
-        world to be live.
-        """
-        try:
-            return await self._dispatcher.apply(GetWorldInfo(world_id=wid))
-        except Exception:
-            if self._state.storage_config is None:
-                raise
-            return await self._dispatcher.apply(
-                OpenWorldReadonly(
-                    storage_config=self._state.storage_config,
-                    world_id=wid,
-                )
-            )
-
-    @_admitted_world_operation
-    async def info(self) -> WorldInfo:
-        """Get an immutable snapshot of world state (live or cold)."""
-        wid = await self._ensure_id()
-        return await self._resolve_info(wid)
-
-    @_admitted_world_operation
-    async def fork(
-        self,
-        name: str | None = None,
-        *,
-        storage: str | StorageConfig | None = None,
-        cache: CacheConfig | None = None,
-    ) -> RuntimeWorld:
-        """Create a copy-on-write fork and return its handle."""
-        from archetype.runtime._config import coerce_cache, coerce_storage
-
-        # None means "inherit the source's storage" (world-lifecycle.md § 4.5):
-        # the gate resolves it to the source's store, and the fork handle keeps
-        # the source handle's config so its own reads hit the same store.
-        fork_storage = coerce_storage(storage)
-        fork_cache = coerce_cache(cache)
-
-        wid = await self._ensure_id()
-        info = await self._dispatcher.apply(
-            ForkWorld(
-                source_world_id=wid,
-                name=name,
-                storage_config=fork_storage,
-                cache_config=fork_cache,
-            )
-        )
-
-        fork_state = _RuntimeWorldState(
-            runtime=self._state.runtime,
-            name=info.name or name or "fork",
-            storage_config=fork_storage if storage is not None else self._state.storage_config,
-            cache_config=fork_cache if cache is not None else self._state.cache_config,
-            init_processors=[],
-            init_resources=[],
-            init_hooks=[],
-            world_id=info.world_id,
-        )
-        return self._state.runtime._bind_world_state(fork_state)
-
-    async def destroy(self) -> None:
-        """Destroy the live world while retaining its durable rows."""
-        if self._operation_admission.admitted_by_current_task():
-            raise RuntimeError("World handle cannot destroy from an admitted operation")
-        if self._reservation is not None:
-            self._reservation.ensure_close_allowed()
-        if self._state.destroying or self._state.closing or self._state.closed:
-            raise RuntimeError("World handle is closed")
-        async with self._state.runtime._resources.admit_operation():
-            self._state.runtime._ensure_open()
-            async with self._state.close_lock:
-                if self._state.destroying or self._state.closing or self._state.closed:
-                    raise RuntimeError("World handle is closed")
-                self._state.destroying = True
-                try:
-                    await self._operation_admission.wait_drained()
-                    if self._state.closing or self._state.closed:
-                        raise RuntimeError("World handle is closed")
-                    wid = await self._state.ensure_init()
-                    await self._dispatcher.apply(DestroyWorld(world_id=wid))
-                    await self._begin_local_close()
-                finally:
-                    self._state.destroying = False
-            await self._shutdown_internal(from_runtime=False)
-
-    async def shutdown(self) -> None:
-        """Close this handle without destroying the world."""
-        if self._operation_admission.admitted_by_current_task():
-            raise RuntimeError("World handle cannot close from an admitted operation")
-        if self._reservation is not None:
-            self._reservation.ensure_close_allowed()
-        if self._state.destroying:
-            raise RuntimeError("World handle is closed")
-        await self._shutdown_internal(from_runtime=False)
-
-    async def _shutdown_internal(self, *, from_runtime: bool) -> None:
-        del from_runtime
-        async with self._state.close_lock:
-            await self._begin_local_close()
-        if self._reservation is None:
-            await self._close_owned()
-            return
-        await self._reservation.aclose()
-
-    # ── Queries ───────────────────────────────────────────────────────────
-
-    @_admitted_world_operation
-    async def query(
-        self, *component_types: type[Component], entity_ids: list[int] | None = None
-    ) -> DataFrame:
-        """Return append-only history for entities with the requested components.
-
-        The result contains every matching tick, not only current state.
-        """
-        wid = await self._ensure_id()
-        info = await self._resolve_info(wid)
-        return await self._dispatcher.apply(
-            QueryComponents(
-                components=tuple(
-                    ComponentTypeRef.from_type(component_type) for component_type in component_types
-                ),
-                world_id=wid,
-                run_id=info.run_id,
-                storage_config=self._state.storage_config,
-                entity_ids=tuple(entity_ids) if entity_ids is not None else None,
-            )
-        )
-
-    @_admitted_world_operation
-    async def history(self, *, limit: int = 100, **filters: Any) -> DataFrame:
-        """Return recent audit-log rows for this world."""
-        wid = await self._ensure_id()
-        return await self._dispatcher.apply(GetAuditHistory(world_id=wid, limit=limit, **filters))
-
-    @_admitted_world_operation
-    async def artifacts(self) -> DataFrame:
-        """Return this run's common file-artifact index."""
-        wid = str(await self._ensure_id())
-        storage_config = self._state.require_storage_config("query_artifacts")
-        return await self._dispatcher.apply(
-            QueryArtifacts(
-                world_id=wid,
-                storage_config=storage_config,
-            )
-        )
-
-    @_admitted_world_operation
-    async def list_processors(self) -> list[ProcessorInfo]:
-        """Return summaries of installed processors."""
-        wid = await self._ensure_id()
-        return await self._dispatcher.apply(ListProcessors(world_id=wid))
-
-    @_admitted_world_operation
-    async def list_hooks(self) -> list[HookInfo]:
-        """Return summaries of installed hooks."""
-        wid = await self._ensure_id()
-        return await self._dispatcher.apply(ListHooks(world_id=wid))
-
-    @_admitted_world_operation
-    async def add_hook(
-        self,
-        event_type: type[HookEvent],
-        fn: Callable,
-        *,
-        mode: _FireMode = "blocking",
-    ) -> HookHandle:
-        """Install a hook on an active world.
-
-        Hooks needed during activation should be passed to `runtime.world()`.
-        """
-        if not self._state.initialized:
-            raise RuntimeError(
-                "Cannot add_hook before activation. Pass hooks via runtime.world(..., hooks=[...])."
-            )
-        wid = await self._ensure_id()
-        return await self._dispatcher.apply(
-            AddHook(
-                world_id=wid,
-                event_type=event_type,
-                handler=fn,
-                mode=mode,
-            )
-        )
-
-    @_admitted_world_operation
-    async def remove_hook(self, handle: HookHandle) -> None:
-        """Remove a hook by handle."""
-        wid = await self._ensure_id()
-        await self._dispatcher.apply(RemoveHook(world_id=wid, handle=handle))
-
-    @_admitted_world_operation
-    async def list_resources(self) -> list[ResourceInfo]:
-        """Return summaries of installed resources."""
-        wid = await self._ensure_id()
-        return await self._dispatcher.apply(ListResources(world_id=wid))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SyncRuntimeWorld
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class SyncRuntimeWorld:
-    """Synchronous compatibility facade over `RuntimeWorld`."""
-
-    def __init__(self, world: RuntimeWorld, runtime: SyncArchetypeRuntime) -> None:
-        self._world = world
-        self._runtime = runtime
-
-    def _run(self, factory) -> Any:
-        return self._runtime._dispatch(factory())
+@dataclass(frozen=True, slots=True)
+class SyncRuntimeCut:
+    _runtime: SyncArchetypeRuntime = field(repr=False, compare=False)
+    _handle: RuntimeCut = field(repr=False)
 
     @property
-    def world_id(self):
-        return self._world.world_id
+    def world(self):
+        return self._handle.world
+
+    @property
+    def run(self):
+        return self._handle.run
+
+    @property
+    def tick(self):
+        return self._handle.tick
+
+    @property
+    def cut_id(self):
+        return self._handle.cut_id
+
+    @property
+    def parent(self):
+        return self._handle.parent
+
+    def read(self, component, **bounds):
+        return self._runtime._dispatch(self._handle.read(component, **bounds))
+
+    def analyze(self, component, **bounds):
+        return self._runtime._dispatch(self._handle.analyze(component, **bounds))
+
+
+@dataclass(frozen=True, slots=True)
+class SyncRuntimeWorld:
+    _runtime: SyncArchetypeRuntime = field(repr=False, compare=False)
+    _handle: RuntimeWorld = field(repr=False)
 
     @property
     def name(self):
-        return self._world.name
+        return self._handle.name
 
-    def spawn(self, *components: Component) -> int:
-        return self._run(lambda: self._world.spawn(*components))
+    @property
+    def world(self):
+        return self._handle.world
 
-    def spawn_many(self, entities: list[list[Component]]) -> list[int]:
-        return self._run(lambda: self._world.spawn_many(entities))
+    @property
+    def run(self):
+        return self._handle.run
 
-    def ingest_artifacts(self, *sources: ArtifactSource) -> tuple[ArtifactRef, ...]:
-        return self._run(lambda: self._world.ingest_artifacts(*sources))
+    def create(self, program, **identity):
+        return self._runtime._dispatch(self._handle.create(program, **identity))
 
-    def spawn_batch(
-        self, *components_or_count: Component | int, count: int | None = None
-    ) -> list[int]:
-        return self._run(lambda: self._world.spawn_batch(*components_or_count, count=count))
+    def status(self):
+        return self._runtime._dispatch(self._handle.status())
 
-    def reserve_ids(self, n: int) -> list[int]:
-        return self._run(lambda: self._world.reserve_ids(n))
+    def start(self):
+        return self._runtime._dispatch(self._handle.start())
 
-    def spawn_reserved(self, entity_id: int, *components: Component) -> None:
-        self._run(lambda: self._world.spawn_reserved(entity_id, *components))
+    def stop(self):
+        return self._runtime._dispatch(self._handle.stop())
 
-    def despawn(self, entity_id: int) -> None:
-        self._run(lambda: self._world.despawn(entity_id))
+    def admit(self, changes, **identity):
+        return self._runtime._dispatch(self._handle.admit(changes, **identity))
 
-    def update(self, entity_id: int, *components: Component) -> None:
-        self._run(lambda: self._world.update(entity_id, *components))
+    def admission_status(self, generation, admission_key):
+        return self._runtime._dispatch(self._handle.admission_status(generation, admission_key))
 
-    def add_components(self, entity_id: int, *components: Component) -> None:
-        self._run(lambda: self._world.add_components(entity_id, *components))
-
-    def remove_components(self, entity_id: int, *component_types: type[Component]) -> None:
-        self._run(lambda: self._world.remove_components(entity_id, *component_types))
-
-    def add_processor(self, processor) -> None:
-        self._run(lambda: self._world.add_processor(processor))
-
-    def remove_processor(self, proc_type) -> None:
-        self._run(lambda: self._world.remove_processor(proc_type))
-
-    def step(self, *, debug: bool = False, config: RunConfig | None = None, **kw) -> None:
-        self._run(lambda: self._world.step(debug=debug, config=config, **kw))
-
-    def run(
-        self, steps: int = 1, *, debug: bool = False, config: RunConfig | None = None, **kw
-    ) -> RunResult:
-        return self._run(lambda: self._world.run(steps=steps, debug=debug, config=config, **kw))
-
-    def run_episode(self, config: EpisodeConfig, **kw) -> EpisodeResult:
-        return self._run(lambda: self._world.run_episode(config, **kw))
-
-    def run_rollout(self, config: RolloutConfig, **kw) -> RolloutResult:
-        return self._run(lambda: self._world.run_rollout(config, **kw))
-
-    def grade(
-        self,
-        *component_types: type[Component],
-        graders: Sequence[FrameGrader],
-        entity_ids: list[int] | None = None,
-    ) -> list[GraderOutput]:
-        return self._run(
-            lambda: self._world.grade(*component_types, graders=graders, entity_ids=entity_ids)
+    def publish(self, boundary):
+        return SyncRuntimeCut(
+            self._runtime, self._runtime._dispatch(self._handle.publish(boundary))
         )
 
-    def evaluate(
-        self,
-        *component_types: type[Component],
-        contract: GraderContract,
-        grader: FrameGrader,
-        evaluation_id: str,
-        ticks: list[int] | None = None,
-        entity_ids: list[int] | None = None,
-    ) -> EvalReceipt:
-        """Persist one evaluation result for an evaluation identity."""
-        return self._run(
-            lambda: self._world.evaluate(
-                *component_types,
-                contract=contract,
-                grader=grader,
-                evaluation_id=evaluation_id,
-                ticks=ticks,
-                entity_ids=entity_ids,
+    def reconcile(self, boundary, **identity):
+        return SyncRuntimeCut(
+            self._runtime, self._runtime._dispatch(self._handle.reconcile(boundary, **identity))
+        )
+
+    def confirm(self, boundary, cut):
+        return self._runtime._dispatch(self._handle.confirm(boundary, cut._handle))
+
+    def history(self, **bounds):
+        page = self._runtime._dispatch(self._handle.history(**bounds))
+        return CutPage(
+            tuple(SyncRuntimeCut(self._runtime, c) for c in page.cuts), page.total, page.next_offset
+        )
+
+    def resume(self, cut, **identity):
+        return self._runtime._dispatch(self._handle.resume(cut._handle, **identity))
+
+    def fork(self, source, cut, **identity):
+        return self._runtime._dispatch(self._handle.fork(source._handle, cut._handle, **identity))
+
+    def artifacts(self, name):
+        return SyncRuntimeArtifacts(self._runtime, self._handle.artifacts(name))
+
+    def shutdown(self):
+        return self._runtime._dispatch(self._handle.shutdown())
+
+
+@dataclass(frozen=True, slots=True)
+class SyncRuntimeArtifacts:
+    _runtime: SyncArchetypeRuntime = field(repr=False, compare=False)
+    _handle: RuntimeArtifacts = field(repr=False)
+
+    @property
+    def name(self):
+        return self._handle.name
+
+    def publish(self):
+        return self._runtime._dispatch(self._handle.publish())
+
+    def context(self):
+        return self._runtime._dispatch(self._handle.context())
+
+    def upload(self, content, *, logical_path, artifact_id, cut=None):
+        return self._runtime._dispatch(
+            self._handle.upload(
+                content,
+                logical_path=logical_path,
+                artifact_id=artifact_id,
+                cut=None if cut is None else cut._handle,
             )
         )
 
-    def info(self) -> WorldInfo:
-        return self._run(lambda: self._world.info())
+    def prepare_files(self, sources, *, cut=None):
+        return self._runtime._dispatch(
+            self._handle.prepare_files(sources, cut=None if cut is None else cut._handle)
+        )
 
-    def fork(self, name: str | None = None, *, storage=None, cache=None) -> SyncRuntimeWorld:
-        rw = self._run(lambda: self._world.fork(name, storage=storage, cache=cache))
-        return SyncRuntimeWorld(rw, self._runtime)
+    def publish_files(self, prepared):
+        return self._runtime._dispatch(self._handle.publish_files(prepared))
 
-    def destroy(self) -> None:
-        self._run(lambda: self._world.destroy())
+    def occurrences(self, *, cut=None, **selection):
+        return self._runtime._dispatch(
+            self._handle.occurrences(cut=None if cut is None else cut._handle, **selection)
+        )
 
-    def query(
-        self, *component_types: type[Component], entity_ids: list[int] | None = None
-    ) -> DataFrame:
-        return self._run(lambda: self._world.query(*component_types, entity_ids=entity_ids))
-
-    def history(self, *, limit: int = 100, **filters: Any) -> DataFrame:
-        return self._run(lambda: self._world.history(limit=limit, **filters))
-
-    def artifacts(self) -> DataFrame:
-        return self._run(self._world.artifacts)
-
-    def list_processors(self) -> list[ProcessorInfo]:
-        return self._run(lambda: self._world.list_processors())
-
-    def list_hooks(self) -> list[HookInfo]:
-        return self._run(lambda: self._world.list_hooks())
-
-    def list_resources(self) -> list[ResourceInfo]:
-        return self._run(lambda: self._world.list_resources())
-
-    def add_hook(
-        self,
-        event_type: type[HookEvent],
-        fn: Callable,
-        *,
-        mode: _FireMode = "blocking",
-    ) -> HookHandle:
-        adapted = _adapt_sync_hook(fn)
-        return self._run(lambda: self._world.add_hook(event_type, adapted, mode=mode))
-
-    def remove_hook(self, handle: HookHandle) -> None:
-        self._run(lambda: self._world.remove_hook(handle))
-
-    def shutdown(self) -> None:
-        self._run(lambda: self._world.shutdown())
+    def analyze(self, *, cut=None, **selection):
+        return self._runtime._dispatch(
+            self._handle.analyze(cut=None if cut is None else cut._handle, **selection)
+        )

@@ -21,7 +21,7 @@ REGISTRY = ROOT / "quality" / "contracts.toml"
 EVAL_PROFILES = ROOT / "quality" / "eval_profiles.toml"
 _ID = re.compile(r"^[a-z][a-z0-9]*(?:[._][a-z0-9]+)+$")
 _RISKS = {"low", "medium", "high"}
-_PROFILES = {"quick", "pr", "main", "nightly", "release"}
+_PROFILES = {"quick", "pr", "main", "nightly", "release", "compatibility"}
 
 
 def load_contracts(path: Path = REGISTRY) -> list[dict[str, Any]]:
@@ -183,9 +183,16 @@ def validate_contracts(
         except Exception as exc:
             errors.append(f"cannot build eval inventory: {exc}")
 
+    historical_path = root / "compatibility/0.6/quality/contracts.toml"
+    historical = load_contracts(historical_path) if historical_path.is_file() else []
+    if any(
+        row.get("version_scope") != "0.6" or row.get("profiles") != ["compatibility"]
+        for row in historical
+    ):
+        errors.append("Historical contracts must declare exact 0.6 compatibility scope")
     seen: set[str] = set()
     mapped_evals: set[str] = set()
-    for index, row in enumerate(rows):
+    for index, row in enumerate([*rows, *historical]):
         label = f"contract[{index}]"
         contract_id = row.get("id")
         if not isinstance(contract_id, str) or not _ID.fullmatch(contract_id):
@@ -237,7 +244,12 @@ def validate_contracts(
                 errors.append(f"{label}: eval IDs must be strings")
                 continue
             mapped_evals.add(task_id)
-            if check_eval_coverage and eval_tasks and task_id not in eval_tasks:
+            if (
+                row.get("version_scope") != "0.6"
+                and check_eval_coverage
+                and eval_tasks
+                and task_id not in eval_tasks
+            ):
                 errors.append(f"{label}: unknown eval task {task_id}")
         for benchmark_id in row.get("benchmarks", []):
             if benchmark_id not in benchmark_ids:

@@ -19,13 +19,11 @@ if "DDLOG_PYTHON_LIBRARY" not in os.environ:
     )
 
 # Test fixture only; do not add a production source tree to the installed run.
-sys.path.insert(
-    0, str(Path(__file__).resolve().parents[2] / "packages/archetype-ddlog-preview/tests")
-)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packages/archetype-native/tests"))
 
 import av
 import numpy as np
-from archetype_ddlog_preview import NativeError
+from archetype_native import NativeError
 from pypdf import PdfWriter
 from test_binding import LIBRARY, Fixture
 
@@ -115,7 +113,7 @@ class CutArtifactTests(unittest.TestCase):
         script = """
 import json, sys
 from pathlib import Path
-from archetype_ddlog_preview import Host
+from archetype_native import Host
 root = Path(sys.argv[1])
 with Host(library=sys.argv[2], registry_root=root/'registry', build_root=root/'worlds', driver=root/'build.py', store_root=root/'storage') as host:
     request = json.loads((root/'retained-metadata.json').read_text())

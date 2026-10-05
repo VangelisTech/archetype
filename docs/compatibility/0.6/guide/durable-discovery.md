@@ -1,0 +1,214 @@
+# Durable Discovery
+
+**Document type:** Normative.
+**Scope:** The control catalog, `discover_worlds`, `open_world_readonly`, cold subset queries. Issue #272 (v0.3.0 slice A1-read).
+
+## 1. The problem this solves
+
+Every store keeps a process-local registry of the worlds and archetype
+signatures it has seen. That registry dies with the process. The data does
+not: archetype tables are append-only and survive on disk or in object
+storage. Before durable discovery, a fresh process pointed at existing
+storage could read tables only if it already knew — from Python code — which
+worlds and component classes had been written there.
+
+Durable discovery closes that gap. A world written by one process is
+discoverable and queryable from any later process pointed at the same
+storage identity, with no shared memory and no live world object.
+
+## 2. The control catalog
+
+Each storage identity gets one control catalog — local SQLite by default,
+or the remote Durable Objects catalog when
+``ARCHETYPE_CONTROL_CATALOG_URL`` and
+``ARCHETYPE_CONTROL_CATALOG_TOKEN`` are configured (issue #281), which
+lifts the single-host limit. The catalog is
+**authoritative for world identity** and **advisory for progress**:
+
+| Recorded | Authority |
+|---|---|
+| World identity (`world_id`, `name`, `run_id`, `parent_world_id`) | Authoritative. Registration failure fails `create_world`/`fork_world`. |
+| World status (`active`, `destroyed`) | Authoritative for catalog state; destroyed worlds stay discoverable (their rows are still queryable; append-only). |
+| Immutable writer mode (`resumable`, `cleanup_only`) | Authoritative for mutable reconstruction. Legacy rows default to `resumable`; cleanup-only and unknown future modes remain discoverable and queryable but fail closed before mutable resume opens storage or fences a writer. |
+| Tick head | Advisory until A2 manifests land. Post-step updates log loudly on failure but never fail a tick whose data-plane writes succeeded. |
+| Archetype signatures (component names, schema descriptor, fingerprint) | Authoritative descriptor for cold reads; guarded by fingerprint check (section 5). |
+
+### Catalog location is a pure function of the storage URI
+
+The same `StorageConfig` always resolves to the same catalog file, so
+restarts and crashes converge on one catalog with no coordination:
+
+- Local URIs: `<uri>/<namespace>/.archetype-catalog-<backend>.db`, beside
+  the data it describes.
+- Remote URIs (e.g. `s3://`): `~/.archetype/catalogs/<fingerprint>.db`,
+  where the fingerprint hashes the normalized storage identity. Override the
+  directory with `ARCHETYPE_CATALOG_DIR`.
+
+The storage identity is uri + namespace + backend — the same key
+`StorageService` pools stores by. Two configs that resolve to different
+stores (LanceDB vs Iceberg on the same uri and namespace) never share a
+catalog, so one backend cannot discover descriptors whose rows live in the
+other.
+
+The catalog opens with WAL journaling, `synchronous=FULL`, a busy timeout,
+and `BEGIN IMMEDIATE` transactions. Concurrent processes racing to register
+the same world converge on exactly one row: identical re-registration is a
+no-op; a differing immutable identity, including writer mode, for the same
+`world_id` raises
+`CatalogConflictError`.
+
+Remote cleanup-only registration is a versioned deployment handshake, not an
+ordinary Directory write. The public v8 Worker route is rewritten to a
+Directory-internal host and route that no older outer Worker or older resident
+Directory recognizes, so either direction of rollout skew rejects before the
+Directory mutates SQL. After the Directory write, the outer Worker MUST mirror
+the status into the per-world control authority before returning separate
+catalog-v8 and gateway-v8 confirmations. A client accepts the record only when
+the Directory and per-world authority both confirm `status="active"`, both
+protocol confirmations are present, and the exact
+`writer_mode="cleanup_only"` marker is present.
+
+Once the registration `POST` is issued, every uncertain outcome is treated as
+possibly committed. This includes a non-success response, transport failure,
+unparsable or incomplete response, and caller cancellation. The client MUST
+finish cancellation-resistant reconciliation and exact retirement before
+propagating the original outcome. Retirement uses the v8 exact-world route and
+carries the complete `WorldRecord`: the immutable identity above, requested
+`status="destroyed"`, and the exact tick head.
+
+The Directory applies retirement as one identity-checked transaction:
+
+- an absent row becomes a destroyed tombstone for the supplied identity;
+- the exact active row becomes destroyed;
+- the exact destroyed row is an idempotent success; and
+- a different immutable identity conflicts without mutation.
+
+The destroyed state is monotonic in both the Directory and per-world authority.
+The Worker mirrors the Directory result and returns success only when both
+authorities confirm destroyed. Therefore an absent reconciliation read cannot
+open a race with a delayed registration write: the tombstone prevents that
+write from resurrecting the cleanup-only writer. This exact retirement
+contract is part of protocol v8 and introduces no later protocol version or
+additional data migration.
+
+## 3. Governed discovery operations
+
+Two exact read operations share trusted and actor-aware dispatcher entry:
+
+```python
+worlds = await dispatcher.apply_as(
+    ctx,
+    DiscoverWorlds(storage_config=storage_config),
+)
+
+info = await dispatcher.apply_as(
+    ctx,
+    OpenWorldReadonly(
+        storage_config=storage_config,
+        world_id=world_id,
+    ),
+)
+```
+
+- `discover_worlds` requires the registered `discover_worlds` permission.
+  Unlike `list_worlds` (live
+  process registry), it answers from the catalog: a fresh process sees every
+  world ever registered against that storage identity, including destroyed
+  ones.
+- `open_world_readonly` requires the registered `open_world_readonly`
+  permission. It returns the world's
+  durable descriptor as the existing `WorldInfo` boundary type and raises
+  `KeyError` for unrecorded worlds. It never constructs a live mutable
+  world — that is `ResumeWorld` (registered with the `resume_world`
+  permission; see
+  [World Lifecycle](world-lifecycle.md) § Resume).
+- Both discovery operations retain the resolved world-to-storage coordinates
+  for dependent read services. In particular, audit projection can discover
+  and drain pre-restart command-outbox events without requiring new command
+  activity in the current process.
+
+Both operations respect the info-class downgrade: callers get `WorldInfo`,
+never a world handle.
+
+## 4. Cold queries and signature discovery
+
+`query_components` unions two sources:
+
+1. The live querier path (unchanged): signatures registered in this process.
+2. Catalog-discovered tables: signature records whose component sets cover
+   the request and whose tables are not already live.
+
+Catalog tables are read through a dedicated store seam —
+`get_existing_table_schema` / `get_existing_table_df` — that **opens and
+never creates**. Read paths cannot allocate tables, on either backend
+(LanceDB, Iceberg). Projection uses the durable schema descriptor, so a cold
+process needs Python classes only for the components it is asking about, not
+for every component the writing process defined.
+
+```python
+# Process B, sharing nothing with the writer but the storage config:
+async with ArchetypeRuntime() as runtime:
+    infos = await runtime.discover(storage_config)
+    info = infos[0]
+    assert info.run_id is not None
+    cold = runtime.attach(info.world_id, storage=storage_config)
+    df = await cold.query(Score)
+```
+
+`list_signatures` uses the same authority split: it unions the store's
+process-local cache with every durable catalog record. Listing a complete
+Python signature requires the corresponding component classes to be imported;
+records are matched to those classes by full schema fingerprint, never by name
+alone, and the recomputed table identity must equal the durable `table_id`.
+Missing, drifted, or identity-mismatched historical records are skipped with a
+warning so one unrelated old world cannot block storage-wide discovery. Mutable
+world resume remains strict because it resolves only the target world's live
+entity signatures. When both sources know a table, the exact process-local
+class identity takes precedence over an ambiguous catalog reconstruction. If
+the catalog itself is unavailable, discovery returns the process-local subset
+and logs the degradation; commit-visibility checks remain fail-closed.
+
+The frozen operation inventory keeps the two authority scopes explicit.
+`ListSignatures` is application-scoped discovery for an explicit or default
+storage identity. `ListWorldSignatures` is durable-world-scoped discovery: its
+`world_id` selects the retained world-to-storage coordinates before running
+the same storage-wide union. The API all-state read uses the world-scoped
+operation, so authorization and storage selection share one exact world key;
+neither operation changes the returned signature set for the selected store.
+
+## 5. Fail-closed schema check
+
+Before reading a catalog-discovered table, the physical table schema is
+fingerprinted and compared to the catalog record. A mismatch raises
+`CatalogSchemaMismatchError` — the read fails closed rather than returning
+rows whose shape the descriptor no longer describes.
+
+The fingerprint hashes the schema's *logical* shape: field names and
+normalized logical types, in order. It deliberately excludes nullability and
+physical encoding variants (`large_string` vs `string`), because backends
+legitimately normalize those on round-trip — Iceberg stores `string` as
+`large_string` and forces fields nullable. Renames, reorders, added or
+removed columns, and retypes all mismatch.
+
+Schemas never evolve in place: a changed component set is a new archetype
+signature and a new table. The stored descriptor for an existing table is
+therefore immutable, and a fingerprint mismatch means corruption or
+out-of-band interference, not drift.
+
+## 6. What is and is not guaranteed (A1-read)
+
+Guaranteed:
+
+- Worlds registered at create/fork time are discoverable from any process,
+  for the life of the storage, including after `destroy_world`.
+- Exactly one catalog row per world identity under concurrent registration.
+- Cold reads never create tables and fail closed on descriptor mismatch.
+- Catalog unavailability degrades reads to live-registry behavior (logged);
+  it never corrupts the data plane.
+
+Not guaranteed until A2 (issue #273):
+
+- The catalog tick head is advisory. The durable, atomic tick-visibility
+  boundary (commit tokens, writer epochs) is A2's contract.
+- Crashed physical executions are queryable, not resumable (the ledger can
+  hide partial rows; it cannot un-step external physics).

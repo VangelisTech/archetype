@@ -1,7 +1,8 @@
 //! Versioned occurrence publication for immutable contexts, with optional cut
 //! attribution. Existing cut_artifact_*_v1 tables retain their exact contract.
 use super::*;
-use arrow_array::Int64Array;
+use anyhow::Context;
+use arrow_array::{Array, BooleanArray, Float64Array, Int64Array, TimestampMicrosecondArray};
 use arrow_schema::{DataType, Field};
 use attachments::{
     Attachment, IndexReceipt, append_string, decode_bounded, physical_batch, text, validate_common,
@@ -29,6 +30,8 @@ pub struct ContextAttachmentRead {
     pub sha256: String,
     pub media_type: String,
     pub size_bytes: u64,
+    pub facts: BTreeMap<String, serde_json::Value>,
+    pub typed_facts: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -296,6 +299,7 @@ impl CutStore {
                 "Context common differs from prepared metadata"
             );
             let mut typed = BTreeMap::new();
+            let mut typed_facts = BTreeMap::new();
             for (name, proof) in typed_proofs {
                 ensure!(
                     TYPED.contains(&name.as_str())
@@ -315,6 +319,7 @@ impl CutStore {
                         == proof.object_sha256,
                     "Context typed differs from preparation"
                 );
+                typed_facts.insert(name.clone(), public_facts(&batch)?);
                 typed.insert(name, STANDARD.encode(encode_batch(&batch)?));
             }
             results.push(ContextAttachmentRead {
@@ -327,6 +332,8 @@ impl CutStore {
                     artifact_id: id,
                     common: proof,
                 },
+                facts: public_facts(&common)?,
+                typed_facts,
                 common: STANDARD.encode(encode_batch(&common)?),
                 typed,
             });
@@ -393,4 +400,50 @@ fn target_from_row(batch: &RecordBatch) -> Result<ArtifactTarget> {
         },
         exact_cut,
     })
+}
+
+/// Factual, bounded public projection from the same verified one-row indexes.
+/// Physical publication proofs and source/object locations stay private.
+fn public_facts(batch: &RecordBatch) -> Result<BTreeMap<String, serde_json::Value>> {
+    ensure!(batch.num_rows() == 1, "Expected one occurrence fact row");
+    let mut result = BTreeMap::new();
+    for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
+        if matches!(
+            field.name().as_str(),
+            "source_uri" | "object_uri" | "intent_sha256" | "typed_receipts_json"
+        ) {
+            continue;
+        }
+        let value = if column.is_null(0) {
+            serde_json::Value::Null
+        } else {
+            match field.data_type() {
+                DataType::Utf8 => {
+                    serde_json::json!({"string": column.as_any().downcast_ref::<StringArray>().context("String fact")?.value(0)})
+                }
+                DataType::Int64 => {
+                    serde_json::json!({"int64": column.as_any().downcast_ref::<Int64Array>().context("Integer fact")?.value(0).to_string()})
+                }
+                DataType::Boolean => {
+                    serde_json::json!({"bool": column.as_any().downcast_ref::<BooleanArray>().context("Boolean fact")?.value(0)})
+                }
+                DataType::Float64 => {
+                    let value = column
+                        .as_any()
+                        .downcast_ref::<Float64Array>()
+                        .context("Float fact")?
+                        .value(0);
+                    ensure!(value.is_finite(), "Nonfinite artifact fact");
+                    let value = if value == 0.0 { 0.0 } else { value };
+                    serde_json::json!({"float64": format!("{:016x}", value.to_bits())})
+                }
+                DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, _) => {
+                    serde_json::json!({"timestamp_us": column.as_any().downcast_ref::<TimestampMicrosecondArray>().context("Timestamp fact")?.value(0).to_string()})
+                }
+                _ => anyhow::bail!("Unsupported artifact fact type"),
+            }
+        };
+        result.insert(field.name().clone(), value);
+    }
+    Ok(result)
 }

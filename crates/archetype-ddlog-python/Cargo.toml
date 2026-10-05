@@ -5,7 +5,7 @@ edition = "2024"
 license.workspace = true
 repository.workspace = true
 rust-version = "1.95"
-description = "Local preview C ABI for the existing DDlog hosted runtime"
+description = "Private C ABI for the supported native hosted runtime"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 anyhow.workspace = true
 archetype-ddlog = { path = "../archetype-ddlog" }
 arrow-array = "59.2"
-ddlog-runtime = { git = "https://github.com/everettVT/ddlog-runtime", rev = "37bdd6c222b62c1ef6410b2f7f242e18069ce44e" }
+ddlog-runtime = { git = "https://github.com/everettVT/ddlog-runtime", rev = "e7bec261336ac5cdaa6d99778feeaedcb03a73ae" }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 tokio = { version = "1.48", features = ["rt-multi-thread", "sync"] }

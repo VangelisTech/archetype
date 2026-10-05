@@ -736,6 +736,28 @@ impl PreparedFork {
             json!({"world":destination.world,"run":destination.run}) == self.request.destination,
             "Logical fork destination differs from verified source request"
         );
+        if let Some(existing) = manager
+            .lookup_creation(&destination)
+            .map_err(|e| anyhow!(e))?
+        {
+            let same_source = existing.fork.as_ref().is_some_and(|fork| {
+                fork.request_key == self.request.request_key
+                    && fork.source_context == self.request.source_context
+                    && fork.source_manifest_sha256 == self.request.published.frozen_manifest_sha256
+                    && fork.source_receipt_sha256 == self.request.published.receipt_sha256
+            });
+            if existing.reservation.request_key != self.request.request_key
+                || existing.binding != binding
+                || serde_json::to_value(&existing.definition)?
+                    != serde_json::to_value(&self.request.definition)?
+                || !same_source
+            {
+                return Err(crate::store::bounds::fault(
+                    crate::store::bounds::FaultCode::Conflict,
+                    "Logical fork request differs from the existing immutable reservation",
+                ));
+            }
+        }
         let reservation = manager
             .reserve_creation(CreationRequest {
                 request_key: self.request.request_key.clone(),

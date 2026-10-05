@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing immutable release tag (for example, v0.6.0)"
+        description: "Existing immutable release tag (for example, v0.7.0)"
         required: true
         type: string
 
@@ -80,630 +80,76 @@ jobs:
           printf 'tag_object_sha=%s\n' "$direct_sha" >> "$GITHUB_OUTPUT"
 
   release-profile:
-    name: Release verification
+    name: Exact credential-free release verification
     needs: authorize-release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     permissions:
       contents: read
+    defaults:
+      run:
+        working-directory: archetype
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          path: archetype
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: everettVT/ddlog-runtime
+          ref: e7bec261336ac5cdaa6d99778feeaedcb03a73ae
+          path: native-upstream
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
-        with:
-          version: "0.9.28"
-      - run: uv sync --all-packages --all-extras --group dev --group docs
-      - name: Verify tag and package version agree
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - name: Verify immutable version and prepare exact native/toolchain inputs
         run: |
+          set -euo pipefail
           test "${GITHUB_REF_NAME#v}" = "$(make --no-print-directory version)"
           git fetch --no-tags origin main
           git merge-base --is-ancestor "${GITHUB_REF_NAME}^{commit}" origin/main
-      - run: make verify-release
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: dist
-          path: dist/
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: dist-archetype-ecs
-          path: dist/archetype_ecs-*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: dist-archetype-research
-          path: dist/archetype_research-*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: dist-archetype-smol
-          path: dist/archetype_smol-*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
-        with:
-          name: release-evidence
-          path: |
-            coverage.xml
-            eval-conformance-results.json
-            eval-reliability-results.json
-            release-artifact.json
-            operational-release-results.json
-            operational-release-results.d/
-          if-no-files-found: error
-
-  external-evidence:
-    name: Release evidence (${{ matrix.name }})
-    needs: release-profile
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: OpenAI
-            runner: '["ubuntu-latest"]'
-            target: operational-release-openai
-            receipt: operational-release-openai-results.json
-          - name: Cloudflare R2
-            runner: '["ubuntu-latest"]'
-            target: operational-release-r2
-            receipt: operational-release-r2-results.json
-    runs-on: ${{ fromJSON(matrix.runner) }}
-    timeout-minutes: 35
-    permissions:
-      contents: read
-    env:
-      OPENAI_API_KEY: ${{ matrix.target == 'operational-release-openai' && secrets.OPENAI_API_KEY || '' }}
-      R2_ACCESS_KEY_ID: ${{ matrix.target == 'operational-release-r2' && secrets.R2_ACCESS_KEY_ID || '' }}
-      R2_SECRET_ACCESS_KEY: ${{ matrix.target == 'operational-release-r2' && secrets.R2_SECRET_ACCESS_KEY || '' }}
-      R2_API_ENDPOINT: ${{ matrix.target == 'operational-release-r2' && vars.R2_API_ENDPOINT || '' }}
-      R2_BUCKET: ${{ matrix.target == 'operational-release-r2' && vars.R2_BUCKET || '' }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
-        with:
-          version: "0.9.28"
-      - run: uv sync --all-packages --all-extras --group dev
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: dist
-          path: dist/
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-evidence
-          path: .context/downloaded-release-evidence/
-      - name: Restore exact artifact manifest
-        run: cp .context/downloaded-release-evidence/release-artifact.json release-artifact.json
-      - name: Require release R2 configuration
-        if: matrix.target == 'operational-release-r2'
-        run: |
-          test -n "$R2_ACCESS_KEY_ID"
-          test -n "$R2_SECRET_ACCESS_KEY"
-          test -n "$R2_API_ENDPOINT"
-          test -n "$R2_BUCKET"
-          case "$R2_BUCKET" in
-            */*) echo "R2_BUCKET must be a bucket name, not a path" >&2; exit 1 ;;
-          esac
-      - name: Verify physical retry visibility
-        if: matrix.target == 'operational-release-r2'
-        run: >-
-          PYTHONPATH="${PYTHONPATH:-}:."
-          uv run pytest -q tests/infrastructure/test_r2_idempotency.py
-      - name: Run exact installed-artifact scenario
-        run: make "${{ matrix.target }}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
-        with:
-          name: release-${{ matrix.target }}-evidence
-          path: |
-            ${{ matrix.receipt }}
-            operational-release-*-results.d/
-          if-no-files-found: error
-
-  python-compatibility:
-    name: Python 3.13 compatibility
-    needs: authorize-release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    env:
-      # Keep later `uv run` calls on 3.13 despite the developer-default
-      # .python-version checked into the repository.
-      UV_PYTHON: "3.13"
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.13"
-      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
-        with:
-          version: "0.9.28"
-      - run: uv sync --python "3.13" --all-packages --all-extras --group dev
-      - name: Verify Python 3.13 interpreter
-        run: >-
-          uv run python -c
-          'import sys;
-          assert sys.version_info[:2] == (3, 13), sys.version'
-      - run: make test
-
-  release-evidence-gate:
-    name: Exact release evidence
-    needs: [release-profile, external-evidence]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
-        with:
-          version: "0.9.28"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-evidence
-          path: evidence/
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: release-operational-release-*-evidence
-          path: evidence/
-          merge-multiple: true
-      - name: Verify complete exact-wheel evidence
-        run: >-
-          uvx --with packaging==26.1 python
-          scripts/verify_release_evidence.py
-          --manifest evidence/release-artifact.json
-          --out release-evidence-summary.json
-          evidence/operational-release-results.json
-          evidence/operational-release-openai-results.json
-          evidence/operational-release-r2-results.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: release-evidence-summary
-          path: release-evidence-summary.json
-          if-no-files-found: error
-
-  testpypi-preflight:
-    name: TestPyPI exact-byte preflight
-    needs: [authorize-release, release-evidence-gate, python-compatibility]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - name: Reauthorize the immutable release ref
-        run: >-
-          python scripts/verify_release_ref.py
-          --tag "$GITHUB_REF_NAME"
-          --expected-commit "$GITHUB_SHA"
-          --expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"
-          --repository "$GITHUB_REPOSITORY"
-          --actor "$GITHUB_ACTOR"
-          --triggering-actor "$GITHUB_TRIGGERING_ACTOR"
-      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
-        with:
-          version: "0.9.28"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-evidence
-          path: evidence/
-      - name: Reject conflicting TestPyPI files
-        run: >-
-          uvx --from pypi-attestations==0.0.30 --with packaging==26.1 python
-          scripts/verify_release_index.py
-          preflight
-          --manifest evidence/release-artifact.json
-          --expected-commit "$GITHUB_SHA"
-          --api-template
-          'https://test.pypi.org/pypi/{distribution}/{version}/json'
-          --integrity-template
-          'https://test.pypi.org/integrity/{distribution}/{version}/{filename}/provenance'
-          --publisher-repository VangelisTech/archetype
-          --publisher-environment release-testpypi
-          --attestation-repository https://github.com/VangelisTech/archetype
-          --registry-artifact-host test-files.pythonhosted.org
-
-  publish-testpypi:
-    name: Publish attested artifacts to TestPyPI
-    needs: [authorize-release, testpypi-preflight]
-    if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
-    runs-on: ubuntu-latest
-    environment: release-testpypi
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: dist-archetype-ecs
-          path: dist/
-      - name: Reauthorize the remote release tag
-        shell: bash
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.95.0
+          cargo +1.95.0 build -p archetype-ddlog-python --locked
+          python3 ../native-upstream/scripts/bootstrap-native.py "$RUNNER_TEMP/ddlog-native"
+          cat > "$RUNNER_TEMP/actual-driver.sh" <<'DRIVER'
+          #!/bin/sh
+          set -eu
+          . "$DDLOG_ACCEPTANCE_TOOLCHAIN/env.sh"
+          exec "$DDLOG_ACCEPTANCE_UPSTREAM/scripts/build-ddlog.sh" "$@"
+          DRIVER
+          chmod +x "$RUNNER_TEMP/actual-driver.sh"
+      - name: Run source and installed actual release profiles
         env:
-          EXPECTED_TAG_OBJECT: ${{ needs.authorize-release.outputs.tag_object_sha }}
-          RELEASE_INPUT_TAG: ${{ inputs.tag }}
+          DDLOG_PYTHON_LIBRARY: ${{ github.workspace }}/archetype/target/debug/libarchetype_ddlog_python.so
+          ARCHETYPE_ACCEPTANCE_DRIVER: ${{ runner.temp }}/actual-driver.sh
+          ACCEPTANCE_STAGE: ${{ runner.temp }}/installed-release
+          DDLOG_ACCEPTANCE_TOOLCHAIN: ${{ runner.temp }}/ddlog-native
+          DDLOG_ACCEPTANCE_UPSTREAM: ${{ github.workspace }}/native-upstream
         run: |
           set -euo pipefail
-          fail() { echo "release tag check failed: $*" >&2; exit 1; }
-
-          [[ "$GITHUB_REPOSITORY" == "VangelisTech/archetype" ]] || fail "wrong repository"
-          [[ "$GITHUB_REF_TYPE" == "tag" ]] || fail "workflow ref is not a tag"
-          [[ "$GITHUB_REF_NAME" == "$RELEASE_INPUT_TAG" ]] || fail "input and ref differ"
-          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "tag must be canonical vMAJOR.MINOR.PATCH"
-          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "GITHUB_SHA is not 40-hex"
-          [[ "$EXPECTED_TAG_OBJECT" =~ ^[0-9a-f]{40}$ ]] || fail "authorized tag object is not 40-hex"
-
-          tag_ref="refs/tags/$GITHUB_REF_NAME"
-          [[ "$GITHUB_REF" == "$tag_ref" ]] || fail "workflow ref is not the exact tag ref"
-          remote="https://github.com/VangelisTech/archetype.git"
-          output="$(git ls-remote --exit-code "$remote" "$tag_ref" "$tag_ref^{}")"
-          direct_sha=
-          peeled_sha=
-          while IFS= read -r line; do
-            sha=
-            ref=
-            extra=
-            IFS=$'\t' read -r sha ref extra <<< "$line"
-            [[ -z "$extra" ]] || fail "malformed ls-remote output"
-            [[ "$line" == "$sha"$'\t'"$ref" ]] || fail "malformed ls-remote output"
-            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail "remote SHA is not 40-hex"
-            case "$ref" in
-              "$tag_ref")
-                [[ -z "$direct_sha" ]] || fail "duplicate direct tag ref"
-                direct_sha="$sha"
-                ;;
-              "$tag_ref^{}")
-                [[ -z "$peeled_sha" ]] || fail "duplicate peeled tag ref"
-                peeled_sha="$sha"
-                ;;
-              *) fail "unexpected remote ref $ref" ;;
-            esac
-          done <<< "$output"
-          [[ -n "$direct_sha" ]] || fail "direct tag ref is absent"
-          [[ "$direct_sha" == "$EXPECTED_TAG_OBJECT" ]] || fail "remote tag object differs"
-          resolved_sha="${peeled_sha:-$direct_sha}"
-          [[ "$resolved_sha" == "$GITHUB_SHA" ]] || fail "remote tag commit differs"
-      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+          uv sync --frozen --all-packages --all-extras --group dev --group docs
+          make verify-release
+      - name: Retain exact artifacts and release evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          repository-url: https://test.pypi.org/legacy/
-          skip-existing: true
-          attestations: true
-
-  publish-testpypi-libraries:
-    name: Publish independently attested distributions to TestPyPI
-    needs: [authorize-release, testpypi-preflight]
-    if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - name: Dispatch exact TestPyPI publisher runs
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: >-
-          python scripts/dispatch_release_publishers.py dispatch
-          --parent-run-id "$GITHUB_RUN_ID"
-          --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
-          --tag "$GITHUB_REF_NAME"
-          --expected-commit "$GITHUB_SHA"
-          --expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"
-          --registry testpypi
-          --out publisher-dispatch-testpypi.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: publisher-dispatch-testpypi-${{ github.run_attempt }}
-          path: publisher-dispatch-testpypi.json
-          if-no-files-found: error
-      - name: Await only the allowlisted TestPyPI publisher runs
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: >-
-          python scripts/dispatch_release_publishers.py await
-          --parent-run-id "$GITHUB_RUN_ID"
-          --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
-          --tag "$GITHUB_REF_NAME"
-          --expected-commit "$GITHUB_SHA"
-          --expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"
-          --registry testpypi
-          --allowlist publisher-dispatch-testpypi.json
-          --out publisher-dispatch-testpypi.json
-
-  testpypi-smoke:
-    name: TestPyPI installed distribution matrix
-    needs: [publish-testpypi, publish-testpypi-libraries]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
-        with:
-          version: "0.9.28"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-evidence
-          path: evidence/
-      - name: Verify TestPyPI serves all six attested files
-        run: >-
-          uvx --from pypi-attestations==0.0.30 --with packaging==26.1 python
-          scripts/verify_release_index.py
-          complete
-          --manifest evidence/release-artifact.json
-          --expected-commit "$GITHUB_SHA"
-          --api-template
-          'https://test.pypi.org/pypi/{distribution}/{version}/json'
-          --integrity-template
-          'https://test.pypi.org/integrity/{distribution}/{version}/{filename}/provenance'
-          --publisher-repository VangelisTech/archetype
-          --publisher-environment release-testpypi
-          --attestation-repository https://github.com/VangelisTech/archetype
-          --registry-artifact-host test-files.pythonhosted.org
-          --out testpypi-index-evidence.json
-          --attempts 12
-          --interval-seconds 5
-      - name: Install base, selective, full-stack, and isolated Smol packages from TestPyPI
-        run: >-
-          uv run --no-project --with packaging==26.1 python scripts/registry_smoke.py
-          --manifest evidence/release-artifact.json
-          --index-url https://test.pypi.org/simple
-          --extra-index-url https://pypi.org/simple
-          --out testpypi-install-evidence.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: testpypi-index-evidence
+          name: exact-release-${{ github.sha }}
           path: |
-            testpypi-index-evidence.json
-            testpypi-install-evidence.json
+            archetype/dist/
+            archetype/release-artifact.json
+            archetype/current-reliability-results.json
+            archetype/current-coverage.json
+            archetype/package-smoke-results.json
+            archetype/site/
+            ${{ runner.temp }}/installed-release
+            ${{ runner.temp }}/ddlog-native/receipt.json
+            ${{ runner.temp }}/actual-driver.sh
+            archetype/target/debug/libarchetype_ddlog_python.so
           if-no-files-found: error
-
-  pypi-preflight:
-    name: PyPI exact-byte preflight
-    needs: [authorize-release, testpypi-smoke]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - name: Reauthorize the immutable release ref
-        run: >-
-          python scripts/verify_release_ref.py
-          --tag "$GITHUB_REF_NAME"
-          --expected-commit "$GITHUB_SHA"
-          --expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"
-          --repository "$GITHUB_REPOSITORY"
-          --actor "$GITHUB_ACTOR"
-          --triggering-actor "$GITHUB_TRIGGERING_ACTOR"
-      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
-        with:
-          version: "0.9.28"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-evidence
-          path: evidence/
-      - name: Reject conflicting PyPI files
-        run: >-
-          uvx --from pypi-attestations==0.0.30 --with packaging==26.1 python
-          scripts/verify_release_index.py
-          preflight
-          --manifest evidence/release-artifact.json
-          --expected-commit "$GITHUB_SHA"
-          --integrity-template
-          'https://pypi.org/integrity/{distribution}/{version}/{filename}/provenance'
-          --publisher-repository VangelisTech/archetype
-          --publisher-environment release-pypi
-          --attestation-repository https://github.com/VangelisTech/archetype
-          --registry-artifact-host files.pythonhosted.org
-
-  publish:
-    needs: [authorize-release, pypi-preflight]
-    if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
-    runs-on: ubuntu-latest
-    environment: release-pypi
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: dist-archetype-ecs
-          path: dist/
-      - name: Reauthorize the remote release tag
-        shell: bash
-        env:
-          EXPECTED_TAG_OBJECT: ${{ needs.authorize-release.outputs.tag_object_sha }}
-          RELEASE_INPUT_TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          fail() { echo "release tag check failed: $*" >&2; exit 1; }
-
-          [[ "$GITHUB_REPOSITORY" == "VangelisTech/archetype" ]] || fail "wrong repository"
-          [[ "$GITHUB_REF_TYPE" == "tag" ]] || fail "workflow ref is not a tag"
-          [[ "$GITHUB_REF_NAME" == "$RELEASE_INPUT_TAG" ]] || fail "input and ref differ"
-          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "tag must be canonical vMAJOR.MINOR.PATCH"
-          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "GITHUB_SHA is not 40-hex"
-          [[ "$EXPECTED_TAG_OBJECT" =~ ^[0-9a-f]{40}$ ]] || fail "authorized tag object is not 40-hex"
-
-          tag_ref="refs/tags/$GITHUB_REF_NAME"
-          [[ "$GITHUB_REF" == "$tag_ref" ]] || fail "workflow ref is not the exact tag ref"
-          remote="https://github.com/VangelisTech/archetype.git"
-          output="$(git ls-remote --exit-code "$remote" "$tag_ref" "$tag_ref^{}")"
-          direct_sha=
-          peeled_sha=
-          while IFS= read -r line; do
-            sha=
-            ref=
-            extra=
-            IFS=$'\t' read -r sha ref extra <<< "$line"
-            [[ -z "$extra" ]] || fail "malformed ls-remote output"
-            [[ "$line" == "$sha"$'\t'"$ref" ]] || fail "malformed ls-remote output"
-            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail "remote SHA is not 40-hex"
-            case "$ref" in
-              "$tag_ref")
-                [[ -z "$direct_sha" ]] || fail "duplicate direct tag ref"
-                direct_sha="$sha"
-                ;;
-              "$tag_ref^{}")
-                [[ -z "$peeled_sha" ]] || fail "duplicate peeled tag ref"
-                peeled_sha="$sha"
-                ;;
-              *) fail "unexpected remote ref $ref" ;;
-            esac
-          done <<< "$output"
-          [[ -n "$direct_sha" ]] || fail "direct tag ref is absent"
-          [[ "$direct_sha" == "$EXPECTED_TAG_OBJECT" ]] || fail "remote tag object differs"
-          resolved_sha="${peeled_sha:-$direct_sha}"
-          [[ "$resolved_sha" == "$GITHUB_SHA" ]] || fail "remote tag commit differs"
-      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
-        with:
-          skip-existing: true
-          attestations: true
-
-  publish-libraries:
-    name: Publish independently attested distributions to PyPI
-    needs: [authorize-release, pypi-preflight]
-    if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - name: Dispatch exact PyPI publisher runs
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: >-
-          python scripts/dispatch_release_publishers.py dispatch
-          --parent-run-id "$GITHUB_RUN_ID"
-          --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
-          --tag "$GITHUB_REF_NAME"
-          --expected-commit "$GITHUB_SHA"
-          --expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"
-          --registry pypi
-          --out publisher-dispatch-pypi.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: publisher-dispatch-pypi-${{ github.run_attempt }}
-          path: publisher-dispatch-pypi.json
-          if-no-files-found: error
-      - name: Await only the allowlisted PyPI publisher runs
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: >-
-          python scripts/dispatch_release_publishers.py await
-          --parent-run-id "$GITHUB_RUN_ID"
-          --parent-run-attempt "$GITHUB_RUN_ATTEMPT"
-          --tag "$GITHUB_REF_NAME"
-          --expected-commit "$GITHUB_SHA"
-          --expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"
-          --registry pypi
-          --allowlist publisher-dispatch-pypi.json
-          --out publisher-dispatch-pypi.json
-
-  registry-smoke:
-    name: PyPI installed distribution matrix
-    needs: [publish, publish-libraries]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
-        with:
-          version: "0.9.28"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-evidence
-          path: evidence/
-      - name: Verify PyPI serves all six attested files
-        run: >-
-          uvx --from pypi-attestations==0.0.30 --with packaging==26.1 python
-          scripts/verify_release_index.py
-          complete
-          --manifest evidence/release-artifact.json
-          --expected-commit "$GITHUB_SHA"
-          --integrity-template
-          'https://pypi.org/integrity/{distribution}/{version}/{filename}/provenance'
-          --publisher-repository VangelisTech/archetype
-          --publisher-environment release-pypi
-          --attestation-repository https://github.com/VangelisTech/archetype
-          --registry-artifact-host files.pythonhosted.org
-          --out pypi-index-evidence.json
-          --attempts 12
-          --interval-seconds 5
-      - name: Install base, selective, full-stack, and isolated Smol packages from PyPI
-        run: >-
-          uv run --no-project --with packaging==26.1 python scripts/registry_smoke.py
-          --manifest evidence/release-artifact.json
-          --out pypi-install-evidence.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: pypi-index-evidence
-          path: |
-            pypi-index-evidence.json
-            pypi-install-evidence.json
-          if-no-files-found: error
-
-  github-release:
-    needs: [authorize-release, registry-smoke]
-    if: github.actor == 'everettVT' && github.triggering_actor == 'everettVT'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: dist
-          path: dist/
-      - name: Reauthorize the immutable release ref before GitHub Release creation
-        run: >-
-          python scripts/verify_release_ref.py
-          --tag "$GITHUB_REF_NAME"
-          --expected-commit "$GITHUB_SHA"
-          --expected-tag-object "${{ needs.authorize-release.outputs.tag_object_sha }}"
-          --repository "$GITHUB_REPOSITORY"
-          --actor "$GITHUB_ACTOR"
-          --triggering-actor "$GITHUB_TRIGGERING_ACTOR"
-      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: dist/*
-          generate_release_notes: true
-          draft: false
+          retention-days: 14
+# Package-index publishing and external deployment require their own reviewed
+# current-package delivery configuration. This workflow verifies and retains;
+# it has no write token, provider secrets or automatic deployment side effect.

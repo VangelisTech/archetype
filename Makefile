@@ -6,8 +6,8 @@ SHELL := /bin/bash
 # Archetype dev workflow (uv + ruff + pre-commit)
 # ==============================================================================
 
-SOURCE_ROOTS := packages/archetype-ecs/src packages/archetype-research/src packages/archetype-smol/src
-PYTHONPATH ?= packages/archetype-ecs/src:packages/archetype-research/src:packages/archetype-smol/src
+SOURCE_ROOTS := packages/archetype-ecs/src packages/archetype-native/src packages/archetype-transports/src packages/archetype-smol/src
+PYTHONPATH ?= packages/archetype-ecs/src:packages/archetype-native/src:packages/archetype-transports/src:packages/archetype-smol/src
 VERSION := $(shell grep -m1 'version = ' packages/archetype-ecs/pyproject.toml | cut -d'"' -f2)
 RUFF_PATHS := packages tests evals bench scripts quality experiments examples
 SYNC_FLAGS := --all-packages --all-extras
@@ -24,7 +24,7 @@ help:
 	@echo "Quality:"
 	@echo "  make format         Format code (ruff)"
 	@echo "  make lint           Lint code (ruff)"
-	@echo "  make static         All version-independent blocking validation"
+	@echo "  make static         Current source blocking validation"
 	@echo "  make actionlint-audit  Validate active GitHub Actions workflows"
 	@echo "  make contract-audit Validate normative sources and executable oracles"
 	@echo "  make benchmark-audit Validate benchmark ownership and policies"
@@ -72,7 +72,7 @@ help:
 	@echo "  make test-infra     Run external-infrastructure tests (requires configured service)"
 	@echo ""
 	@echo "Build & Release:"
-	@echo "  make build          Build all five sdists and wheels"
+	@echo "  make build          Build the four current sdists and wheels"
 	@echo "  make package-smoke  Install and probe the built distribution matrix outside the checkout"
 	@echo "  make verify-pr      Complete pull-request profile"
 	@echo "  make verify-full    Main-branch profile"
@@ -205,17 +205,18 @@ complexity:
 	@echo "=== Raw line counts ==="
 	@uvx radon raw $(SOURCE_ROOTS) -s
 
+# Source marker lanes below retain historical 0.6 registrations. Use the matched
+# compatibility checkout for test-unit/contract/integration/process/test-cov.
+# Current 0.7 full/release profiles use current-reliability/current-coverage.
 # ------------------------------------------------------------------------------
 # Tests
 # ------------------------------------------------------------------------------
 
 .PHONY: test
 test:
-	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q -n auto --dist loadgroup
+	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) PYTHONDONTWRITEBYTECODE=1 DO_NOT_TRACK=1 uv run python scripts/run_current_contracts.py
+	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q packages/archetype-smol/tests
 
-# Narrow test target: run a specific path/file/nodeid.
-# Usage: make test-mod MOD=tests/lifecycle/
-# Fails fast if MOD is unset so it can't be confused with test-all.
 .PHONY: test-mod
 test-mod:
 	@if [ -z "$(MOD)" ]; then \
@@ -370,13 +371,11 @@ build: clean
 
 .PHONY: package-smoke
 package-smoke: build
-	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/package_smoke.py dist
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/package_smoke.py dist --out package-smoke-results.json
 
 .PHONY: examples-local
-examples-local:
-	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
-		--mode source --cadence pr --kind example --max-tier 1 \
-		--out operational-source-results.json
+examples-local: installed-native-acceptance
+	@echo "Current installed actual-native example and semantic receipts passed"
 
 .PHONY: examples-smoke
 examples-smoke: examples-local
@@ -390,67 +389,24 @@ OPERATIONAL_RUNTIME_RESULTS ?= operational-runtime-source-results.json
 OPERATIONAL_RELEASE_RESULTS ?= operational-release-results.json
 RELEASE_ARTIFACT_MANIFEST ?= release-artifact.json
 
-.PHONY: operational-runtime
-operational-runtime:
-	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
-		--mode source --cadence pr --max-tier 1 --require-run \
-		--scenario dogfood.runtime.loopback \
-		--out "$(OPERATIONAL_RUNTIME_RESULTS)"
-
-.PHONY: operational-commands
-operational-commands:
-	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
-		--mode source --cadence pr --max-tier 1 --require-run \
-		--scenario dogfood.commands.local \
-		--out "$(OPERATIONAL_COMMANDS_RESULTS)"
-
-.PHONY: operational-wheel
-operational-wheel:
-	@build_status=0; \
-		$(OPERATIONAL_BUILD_COMMAND) || build_status=$$?; \
-		wheel=""; \
-		if [ "$$build_status" -eq 0 ]; then \
-			wheel=$$(find "$(OPERATIONAL_DIST_DIR)" -maxdepth 1 -name 'archetype_ecs-*.whl' -print -quit 2>/dev/null); \
-		fi; \
-		if [ -z "$$wheel" ]; then \
-			wheel="$(OPERATIONAL_DIST_DIR)/.missing-operational-wheel.whl"; \
-		fi; \
-		runner_status=0; \
-		PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
-			--mode wheel --cadence pr --max-tier 1 --require-run \
-			--scenario example.00_quickstart \
-			--scenario example.01_world_mutations \
-			--scenario example.02_fork_counterfactual \
-			--scenario example.03_time_travel \
-			--scenario example.10_autoresearch \
-			--scenario dogfood.runtime.loopback \
-			--scenario dogfood.commands.local \
-			--scenario dogfood.evaluation.durable_receipt \
-			--scenario dogfood.artifacts.local \
-			--wheel "$$wheel" --wheel-dir "$(OPERATIONAL_DIST_DIR)" \
-			--out "$(OPERATIONAL_WHEEL_RESULTS)" || runner_status=$$?; \
-		if [ "$$build_status" -ne 0 ]; then \
-			exit "$$build_status"; \
-		fi; \
-		exit "$$runner_status"
-
-.PHONY: operational-wheel-existing
-operational-wheel-existing:
-	@$(MAKE) --no-print-directory operational-wheel OPERATIONAL_BUILD_COMMAND=true
+.PHONY: operational-runtime operational-commands operational-wheel operational-wheel-existing
+# The installed actual gate owns the current public runtime/API/MCP/CLI-independent
+# operator scenario. Historical command/workflow scenarios live on matched 0.6.
+operational-runtime operational-commands: installed-native-acceptance
+operational-wheel operational-wheel-existing: package-smoke installed-native-acceptance
 
 .PHONY: operational-external
 operational-external:
-	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
-		--mode source --cadence release --min-tier 5 --max-tier 6 --require-run \
-		--out operational-external-results.json
+	@test -n "$(ARCHETYPE_COMPAT_SOURCE)" || (echo "External 0.6 scenarios require matched ARCHETYPE_COMPAT_SOURCE; no 0.7 external deployment claim"; exit 1)
+	@cd "$(ARCHETYPE_COMPAT_SOURCE)" && $(MAKE) operational-external
 
 # The release workflow builds once after the source profile, package-smokes
-# those exact six artifacts, records every digest, and never rebuilds before
+# those exact eight artifacts, records every digest, and never rebuilds before
 # upload.
 .PHONY: release-artifact
 release-artifact:
 	@$(MAKE) --no-print-directory build
-	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/package_smoke.py "$(OPERATIONAL_DIST_DIR)"
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/package_smoke.py "$(OPERATIONAL_DIST_DIR)" --out package-smoke-results.json
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/release_artifact.py record \
 		--dist "$(OPERATIONAL_DIST_DIR)" --manifest "$(RELEASE_ARTIFACT_MANIFEST)"
 
@@ -471,38 +427,64 @@ define RUN_RELEASE_SCENARIOS
 endef
 
 .PHONY: operational-release
-operational-release: release-artifact
-	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 4 --out "$(OPERATIONAL_RELEASE_RESULTS)")
+operational-release: verify-release
 
 .PHONY: operational-release-openai
-operational-release-openai: verify-release-artifact
-	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario example.05_llm_agents --out operational-release-openai-results.json)
+operational-release-openai:
+	@test -n "$(ARCHETYPE_COMPAT_SOURCE)" || (echo "This retained scenario requires matched 0.6 ARCHETYPE_COMPAT_SOURCE"; exit 1)
+	@cd "$(ARCHETYPE_COMPAT_SOURCE)" && $(MAKE) operational-release-openai
 
 .PHONY: operational-release-r2
-operational-release-r2: verify-release-artifact
-	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.storage.r2 --out operational-release-r2-results.json)
+operational-release-r2:
+	@test -n "$(ARCHETYPE_COMPAT_SOURCE)" || (echo "This retained scenario requires matched 0.6 ARCHETYPE_COMPAT_SOURCE"; exit 1)
+	@cd "$(ARCHETYPE_COMPAT_SOURCE)" && $(MAKE) operational-release-r2
 
 .PHONY: operational-demand-biome
-operational-demand-biome: verify-release-artifact
-	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario example.14_biome_agent --out operational-demand-biome-results.json,ARCHETYPE_BIOME_LIVE=1,demand)
+operational-demand-biome:
+	@test -n "$(ARCHETYPE_COMPAT_SOURCE)" || (echo "This retained scenario requires matched 0.6 ARCHETYPE_COMPAT_SOURCE"; exit 1)
+	@cd "$(ARCHETYPE_COMPAT_SOURCE)" && $(MAKE) operational-demand-biome
 
 .PHONY: verify-pr
 verify-pr: static test package-smoke ddlog-check ddlog-python-check
 	@echo "PR verification profile passed"
 
 .PHONY: verify-full-source
-verify-full-source: static test-cov eval-conformance eval-capability examples-smoke operational-runtime operational-commands docs test-process eval-reliability
-	@echo "Full source verification profile passed"
+verify-full-source: static test docs package-smoke ddlog-check ddlog-python-check current-reliability current-coverage
+	@PYTHONPATH=$(PYTHONPATH):. uv run python -m evals.run --profile conformance --trials 1
 
-.PHONY: verify-full
-verify-full: verify-full-source package-smoke operational-wheel-existing
-	@echo "Full verification profile passed"
+.PHONY: current-reliability current-coverage
+current-reliability:
+	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) uv run python scripts/run_current_contracts.py --profile reliability --out current-reliability-results.json
 
-.PHONY: verify-release
-verify-release: verify-full-source operational-release
-	@echo "Release verification profile passed"
+# Coverage is evidence for the supported owner/transport modules; archived 0.6
+# families do not inflate this denominator or count as current runtime coverage.
+current-coverage:
+	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) uv run coverage run --source=archetype.runtime,archetype_native,archetype_transports scripts/run_current_contracts.py
+	@uv run coverage json -o current-coverage.json
+	@uv run coverage report --fail-under=0
+
+.PHONY: installed-native-acceptance
+installed-native-acceptance:
+	@test -n "$(ARCHETYPE_ACCEPTANCE_DRIVER)" || (echo "Actual DDlog driver is mandatory"; exit 1)
+	@test -n "$(ACCEPTANCE_STAGE)" || (echo "Provide a fresh absolute ACCEPTANCE_STAGE"; exit 1)
+	@uv run python scripts/run_native_acceptance.py --stage "$(ACCEPTANCE_STAGE)" --library "$(DDLOG_PYTHON_LIBRARY)" --driver "$(ARCHETYPE_ACCEPTANCE_DRIVER)"
+
+.PHONY: verify-full verify-release
+verify-full: verify-full-source installed-native-acceptance
+	@echo "Current source, installed real-native and documented-example evidence passed"
+
+verify-release: verify-full-source installed-native-acceptance
+	@uv run python scripts/release_artifact.py record --dist dist --manifest release-artifact.json
+	@uv run python scripts/release_artifact.py verify --dist dist --manifest release-artifact.json
+	@echo "Exact installed candidate acceptance passed; publication/deployment is separate"
 
 .NOTPARALLEL: verify-full verify-release
+
+.PHONY: test-compatibility
+# Run retained 0.6 contracts only against matching 0.6 source, never this facade.
+test-compatibility:
+	@test -n "$(ARCHETYPE_COMPAT_SOURCE)" || (echo "Provide a matched 0.6 ARCHETYPE_COMPAT_SOURCE checkout"; exit 1)
+	@cd "$(ARCHETYPE_COMPAT_SOURCE)" && uv run pytest $(MOD)
 
 .PHONY: release-check
 release-check: sync-dev verify-release
@@ -633,8 +615,8 @@ ddlog-check:
 
 # Installed-wheel/native evidence is an explicit local/release opt-in. This
 # ordinary profile uses simulated native transport and actual hosted Iceberg.
-DDLOG_PYTHON := python3
-DDLOG_PYTHON_LIBRARY := $(CURDIR)/target/debug/libarchetype_ddlog_python.$(if $(filter Darwin,$(shell uname)),dylib,so)
+DDLOG_PYTHON ?= python3
+DDLOG_PYTHON_LIBRARY ?= $(CURDIR)/target/debug/libarchetype_ddlog_python.$(if $(filter Darwin,$(shell uname)),dylib,so)
 .PHONY: ddlog-preview-audit ddlog-python-check
 ddlog-preview-audit:
 	@$(DDLOG_PYTHON) scripts/check_ddlog_preview.py
@@ -646,11 +628,11 @@ ddlog-transports-audit:
 	@$(DDLOG_PYTHON) scripts/check_ddlog_transports.py
 
 ddlog-transports-check: ddlog-transports-audit
-	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=packages/archetype-ddlog-preview/src:packages/archetype-ddlog-transports/src $(DDLOG_PYTHON) -m unittest discover -s packages/archetype-ddlog-transports/tests -v
+	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=packages/archetype-native/src:packages/archetype-transports/src $(DDLOG_PYTHON) -m unittest discover -s packages/archetype-transports/tests -v
 
 ddlog-python-check: ddlog-preview-audit
 	@cargo +1.95.0 fmt -p archetype-ddlog-python -- --check
 	@cargo +1.95.0 clippy -p archetype-ddlog-python --all-targets --locked -- -D warnings
 	@cargo +1.95.0 test -p archetype-ddlog-python --locked
 	@cargo +1.95.0 build -p archetype-ddlog-python --locked
-	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) PYTHONPATH=packages/archetype-ddlog-preview/src $(DDLOG_PYTHON) -m unittest discover -s packages/archetype-ddlog-preview/tests -v
+	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) PYTHONPATH=packages/archetype-native/src $(DDLOG_PYTHON) -m unittest discover -s packages/archetype-native/tests -v

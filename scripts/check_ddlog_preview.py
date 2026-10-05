@@ -14,12 +14,12 @@ def check(root: Path = ROOT) -> list[str]:
     metadata = tomllib.loads((root / "quality/ddlog-preview.toml").read_text())
     errors: list[str] = []
     expected = {
-        "classification": "isolated-runtime-preview",
-        "distribution": "archetype-ddlog-preview",
-        "module": "archetype_ddlog_preview",
-        "package": "packages/archetype-ddlog-preview",
+        "classification": "native-runtime-infrastructure",
+        "distribution": "archetype-native",
+        "module": "archetype_native",
+        "package": "packages/archetype-native",
         "native_crate": "crates/archetype-ddlog-python",
-        "contract": "docs/guide/ddlog-python-preview.md",
+        "contract": "docs/guide/runtime.md",
     }
     if metadata != expected:
         return ["DDlog preview metadata must match its exact infrastructure reservation"]

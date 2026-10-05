@@ -8,6 +8,7 @@ replaces = ["interfaces.iStorageService"]
 
 [[disposition]]
 operations = [
+  "cut_artifacts.CutHost.request",
   "activity_catalog.interfaces.ActivityCatalog.admit_activity",
   "activity_catalog.interfaces.ActivityCatalog.bind_provider_operation",
   "activity_catalog.interfaces.ActivityCatalog.claim_activity",

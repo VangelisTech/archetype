@@ -1,438 +1,62 @@
-# Artifacts and ingestion
+# Artifacts and verified index facts
 
-This page describes the retained 0.6 runtime. The local DDlog preview has a
-separate [exact-cut attachment contract](ddlog-artifacts-preview.md), including
-historical attribution and versioned common-root visibility.
-
-An artifact is a file occurrence that Archetype has copied into durable object
-storage and indexed for a world run. The implementation is deliberately a
-small data pipeline. There are no artifact claims, leases, publication state
-machines, bundle receipts, or reconciler.
-
-## 1. Ownership
-
-The feature is split at the authority boundary:
-
-```text
-archetype.artifacts
-  values + FileIngestionPipeline + stream scanners
-  storage-backed views + exact free handlers
-
-archetype.storage
-  Daft execution + Catalog table registration/read/write + Iceberg retry
-  durable world/run envelope + published-head authority
-```
-
-The cohesive `archetype.artifacts.pipeline.FileIngestionPipeline` keeps the
-lazy Daft graph for scan, persistence, reopening, and every common or
-specialized index together. Only pure metadata algorithms live separately in
-`scanners.py`; they stream where the format permits it. The family-owned free
-handlers configure that graph and call the storage port with explicit durable
-coordinates. The family has reviewed dependencies on core and storage only; it
-owns no live world, run, control-catalog, or background-job authority.
-
-`StorageService` is the single substrate authority. It owns the
-catalog-derived world/run envelope, extends conditional keys with that
-identity, admits terminal Daft execution, registers and resolves tables in
-`daft.Catalog`, compares schemas, reads and writes Iceberg, and retries
-optimistic commit conflicts. Image, audio, video, PDF, text, and diff handling
-are branches of one artifact-family workflow, not separate application
-services.
-
-## 2. Public file contract
-
-Submit one exact file or a Daft-readable glob with `ArtifactSource`. Express
-recursive discovery in the pattern itself, such as `./outputs/**/*`:
+Install `archetype-ecs[analysis]` for ingestion and Daft analysis. Cold occurrence
+facts use the native storage reader and do not require Daft.
 
 ```python
-from archetype import ArchetypeRuntime, ArtifactSource
-from archetype.core.config import StorageBackend, StorageConfig
+from archetype import ArtifactSource
 
-storage = StorageConfig(
-    uri="./archetype-data",
-    namespace="factory",
-    backend=StorageBackend.ICEBERG,
+files = world.artifacts("experiment_files")
+await files.publish()                       # immutable hosted context
+uploaded = await files.upload(
+    b"evidence\n", logical_path="note.txt", artifact_id=uuid7_string, cut=cut,
 )
-
-async with ArchetypeRuntime() as runtime:
-    world = runtime.world("software-factory", storage=storage)
-    await world.step()  # publish the durable head used for artifact attribution
-    (diff,) = await world.ingest_artifacts(
-        ArtifactSource(
-            source_uri="./worktree/change.diff",
-            logical_path="outputs/change.diff",
-        )
-    )
-    print(diff.artifact_id, diff.uri)
+page = await files.occurrences(cut=cut)
+common = dict(page.items[0].facts())
+frame = await files.analyze(index="text", cut=cut)
 ```
 
-`ArtifactRef` is the portable handoff:
+Inline upload accepts exact bytes up to 32 KiB, a canonical portable logical path
+and explicit canonical UUIDv7 occurrence. Retrying with the same occurrence and
+bytes preserves ingestion time and source identity; changed metadata conflicts.
 
-| Field | Meaning |
-|---|---|
-| `artifact_id` | UUIDv7 identity for this ingestion occurrence |
-| `logical_path` | Portable path meaningful to the submitting workflow |
-| `uri` | Durable content-addressed object URI |
-| `sha256` | Cryptographic content identity |
-| `xxhash3_64` | Fast scan/join fingerprint |
-| `media_type` | Detected MIME type |
-| `size_bytes` | Exact byte size |
-| `ingested_at` | Timestamp derived from `artifact_id` |
-
-There is no separate ingestion ID or ingestion timestamp. UUIDv7 supplies both
-occurrence identity and time. SHA-256 and XXH3-64 are calculated during the
-same streaming read.
-
-## 3. Source URI, logical path, and object URI
-
-The three paths answer different questions:
-
-| Coordinate | Question |
-|---|---|
-| `source_uri` | Where did this ingestion read the bytes? |
-| `logical_path` | Where does the file belong in the workflow output? |
-| `object_uri` | Where are the immutable bytes stored now? |
-
-`logical_path` is relative, slash-normalized, and rejects `..`. It remains
-portable when a sandbox disappears or an object-store prefix changes. An
-explicit `logical_path` wins; otherwise the resolved Daft file name is used.
-Collection patterns therefore require unique file names unless the caller
-submits the files separately with explicit logical paths.
-
-Two files in one ingestion may not resolve to the same logical path. The
-handler fails before publishing either occurrence.
-
-## 4. Occurrence and content identity
-
-Artifact ingestion is intentionally not idempotent. Every submitted file gets
-a fresh UUIDv7 `artifact_id`, even when its bytes have been seen before. This
-preserves the fact that the software factory observed or produced the file at
-a particular time.
-
-Equal bytes do reuse the same immutable object:
-
-```text
-{object_root}/objects/sha256/{first_two_hex}/{sha256}
-```
-
-The common index can therefore contain several occurrence rows pointing at
-one object URI. Analysis can group by `sha256` for content identity or by
-`artifact_id` for workflow history without conflating the two.
-
-Every artifact operation carries an explicit `StorageConfig`. Before scanning
-or copying a source, the handler resolves the durable `WorldRecord`, requires
-its recorded `run_id`, reads the published manifest head, and verifies that it
-equals the record's `tick_head`. That published durable head supplies every
-occurrence tick. Process-local liveness and an uncommitted in-memory tick
-cannot move attribution forward, and the handler never acquires a live-world
-registry lock. Missing coordinates, a missing run, or an absent or mismatched
-published head fail before file or index effects.
-
-## 5. Catalog and index contract
-
-Artifact publication calls `StorageService.append_world_rows()` with a stable
-table name, a typed Daft DataFrame, and `artifact_id` as the conditional key.
-At the storage boundary that operation:
-
-1. resolves the durable world and current run from the explicit storage
-   configuration
-2. rejects caller-supplied `world_id` or `run_id`
-3. verifies that every requested key column exists
-4. adds the `world_id` and `run_id` envelope
-5. performs a plain append when `key_columns` is empty, or a conditional append
-   when keys are present
-
-The conditional key is `("world_id", "run_id", *key_columns)`. It describes
-row identity for this append-only table view; it is not a global business key
-and does not create a claim protocol.
-
-`StorageService` performs the storage half: it creates or resolves the table
-through the active `daft.Catalog`, rejects typed schema drift, materializes the
-candidate graph once, and writes Iceberg. Conditional writes anti-join against
-the current table. If another writer wins an optimistic Iceberg commit,
-`StorageService` refreshes the table and recomputes that anti-join before
-retrying, so a stale pending set cannot duplicate the same logical key.
-
-The control and data planes remain distinct. The local SQLite control catalog,
-or the remote Cloudflare Durable Object implementation, owns world records,
-writer fences, command admission, and other small transactional coordination.
-Iceberg owns the artifact and ingestion data tables, their atomic snapshots,
-and multi-writer optimistic commits. The control catalog does not wrap an
-Iceberg append in a second transaction.
-
-The artifact common index is `artifact_files`, keyed by `artifact_id`:
-
-| Column | Purpose |
-|---|---|
-| `world_id`, `run_id` | Storage-owned durable envelope |
-| `artifact_id`, `ingested_at`, `tick` | Occurrence and world coordinates |
-| `source_uri`, `logical_path`, `object_uri` | Acquisition, workflow, and storage locations |
-| `size_bytes`, `mime_type`, `media_family` | Common file metadata |
-| `sha256`, `xxhash3_64` | Integrity and fast fingerprint |
-
-`world.artifacts()` returns the durable current run's common index. Typed
-extension tables remain internal artifact/storage surfaces until a specific
-supported query API needs them. Other families that publish durable typed rows
-define their own workflow meaning and call the same storage substrate; there
-is no generic ingestion facade.
-
-Reads may not depend on registration state held by the writer process. Given
-the same storage configuration and durable world record, a fresh application
-graph must resolve each existing named table through `daft.Catalog` and return
-only its current world/run rows. This cold-read rule applies equally to the
-common artifact index, typed media extensions, and family-owned typed tables
-composed over the same storage substrate.
-
-## 6. Typed media indexes
-
-The file scan asks `daft.File.mime_type()` for MIME classification; there is no
-Python `mimetypes` fallback. Routing may additionally inspect the logical suffix
-to recognize source text and patches without rewriting the MIME value. Present
-families receive a narrow extension table sharing the same `artifact_id`:
-
-| Table | Built-in metadata |
-|---|---|
-| `artifact_images` | width, height, format, mode |
-| `artifact_audio` | stream metadata and derived duration |
-| `artifact_video` | stream metadata and derived duration |
-| `artifact_pdf` | page count, encryption flag, title, author |
-| `artifact_text` | text kind, language, line count, UTF-8 validity |
-| `artifact_diff` | patch format, files, hunks, additions, deletions, binary files |
-
-Nested metadata structs are unnested directly into the table projection. A
-`.diff` or `.patch` occurrence has both a text row and a narrower structural
-diff row under the same `artifact_id`. Unknown binary files need no extension
-table; their common rows are still complete.
-
-The `FileIngestionPipeline` owns these Daft branches together. `scanners.py`
-contains only the pure parsers used for hashes, PDF metadata,
-text shape, and patch structure. Resize, resample, transcode, thumbnail, OCR,
-and embedding helpers are future derivative workflows. They must produce new
-artifacts instead of silently changing submitted bytes.
-
-Every specialized scan reads `object_uri`, after persistence, rather than
-reopening `source_uri`. This is a real durability boundary: remote source bytes
-may change or disappear immediately after the content-addressed copy, while
-the typed index must describe the immutable object that Archetype retained.
-
-## 7. Visibility and failure
-
-For each ingestion, execution is ordered:
-
-```text
-discover Daft files and occurrence identities
-  -> validate required sources and logical paths
-  -> stream, hash, and persist content-addressed objects
-  -> append present typed media indexes
-  -> append artifact_files
-  -> return ArtifactRef values
-```
-
-`artifact_files` is the visibility root and is written last. A failed media
-metadata scan cannot expose a common artifact row. Object bytes may already
-exist after such a failure; that is safe because content-addressed objects are
-immutable and unreferenced objects are not visible artifacts.
-
-Required sources that match no files fail closed. The local persistence pass
-streams through Daft's copy buffer into a same-filesystem temporary file while
-computing SHA-256, XXH3-64, and byte size from those same chunks. It then
-atomically publishes the resulting content address. A mutable source is
-therefore addressed by the bytes actually copied, without a discovery hash,
-verification reread, or destination reread.
-
-Daft 0.7.19 exposes read-only `File` values and its `upload()` expression
-accepts a Binary column rather than a streaming file source. Remote persistence
-therefore performs the same single source read but temporarily materializes
-that payload for upload. This implementation limitation is explicit and does
-not impose a total artifact-size policy; it can be replaced by Daft's public
-writable/multipart file surface when that ships.
-
-No claim or recovery state surrounds this pipeline. Callers retry by making a
-new occurrence. If the content copy already completed, the retry reuses the
-verified object.
-
-## 8. Evaluation results
-
-Evaluation pins the world's visible component snapshot from explicit storage
-coordinates, runs the requested grader, and appends one row to
-`evaluation_results`, keyed by `evaluation_id` inside the world run. Its free
-family handler writes through `StorageService`; it does not consult the live
-registry or the general ingestion facade. A forked subject includes its
-current-run visibility and every durable ancestor segment at that segment's
-fork-time tick cap. All segment allowlists are captured and reused before
-grading; each non-empty segment's world/run, cap, and immutable manifest head
-are bound into the receipt subject identity. Equal-cap zero-width ancestry is
-pinned for integrity but contributes no subject rows or digest segment.
-
-For a no-lineage fork, evaluation admits child-only rows when that run owns
-tick zero or when its parent is absent from the target catalog, as happens
-after an intentional cross-store fork. The latter parent-absence test is the
-current durable severance signal; a future lifecycle schema can replace that
-inference with an explicit lineage-mode marker. If the parent is present and
-the child begins later than tick zero, evaluation fails closed rather than
-persisting a partial receipt.
-
-Reusing an evaluation ID with the same pinned subject and grader contract
-returns the persisted result without grading again. Reusing it for a different
-subject or contract fails loudly. The result remains an ordinary Iceberg row;
-a narrow evaluation lease in the existing control catalog serializes grader
-execution across processes until that row is durable. Failed owners release
-immediately, expired owners can be recovered, and recovery checks for an
-already-appended result before running the grader again. This coordination is
-evaluation-specific and does not add claims or publication state to artifact
-ingestion.
-
-## 9. Security boundary
-
-Generic artifact ingestion stores the bytes the caller submits. Workflows that
-handle potentially secret-bearing content must sanitize before calling it. Sanitization policy remains with the owning workflow.
-
-The common rule is simple: specialized workflows own pre-durability safety;
-the artifacts family owns exact file persistence and indexing; operation
-models carry explicit durable coordinates; and `StorageService` owns the
-world/run envelope, append choice, Catalog, and terminal Daft execution
-authority.
-
-## 10. Task-anchored artifact context
-
-`ArtifactContext` names one task-scoped interpretation of an artifact set. Its
-UUIDv7 `context_id` identifies the interpretation; artifact UUIDs continue to
-identify the individual ingestion occurrences. The contract does not create a
-second storage service or copy the files again.
-
-The world must already have a published durable head. For a fresh handle, call
-`await world.step()` before submitting the context's artifacts.
+For larger files or patterns use the existing offline batch graph:
 
 ```python
-from daft.ai.provider import load_openai
-
-from archetype import ArtifactContext, ArtifactSource
-from archetype.artifacts import analyze_artifacts, synthesize_artifact_context
-
-provider = load_openai()
-
-submitted = await world.ingest_artifacts(
-    ArtifactSource(source_uri="./evidence/change.patch", logical_path="change.patch"),
-    ArtifactSource(source_uri="./evidence/design.md", logical_path="design.md"),
-)
-context = ArtifactContext(
-    task="Explain whether this change preserves immutable source identity.",
-    artifact_ids=tuple(artifact.artifact_id for artifact in submitted),
-)
-index = await world.artifacts()
-analyses = analyze_artifacts(
-    index,
-    context,
-    provider=provider,
-    model="gpt-5-mini",
-)
-synthesis = synthesize_artifact_context(
-    analyses,
-    context,
-    provider=provider,
-    model="gpt-5-mini",
-)
+collection = runtime.artifacts("collection")
+await collection.publish()                  # no live world or invented tick
+prepared = await collection.prepare_files((
+    ArtifactSource(source_uri="/absolute/data/*.wav"),
+    ArtifactSource(source_uri="/absolute/data/report.pdf"),
+))
+receipts = await collection.publish_files(prepared)
+# Retain `prepared`; exact publication retry uses the same metadata and UUIDs.
+assert await collection.publish_files(prepared) == receipts
 ```
 
-`ArtifactContext` binds the authoritative task and exact artifact occurrence
-IDs under one context ID, so the same interpretation identity cannot silently
-refer to a different evidence set. The first transform never treats the
-complete world index as an implicit context pack: Daft filters it by those IDs
-before giving the selected artifacts one prompt each. Files can be analyzed in
-parallel without issuing model calls for unrelated run artifacts. Every prompt
-carries the task, context ID, logical path, MIME type, and the staged
-`daft.File`. Artifact contents are explicitly marked as untrusted evidence
-rather than instructions. The second transform applies the same selection and
-reduces the attributed observations into one answer while retaining logical
-paths and artifact IDs.
+Discovery and indexing run outside live execution. Publication allows at most 32
+occurrences and uses native read admission of 64 MiB per file and 256 MiB aggregate.
+The graph's discovery and parser memory are not bounded by HTTP envelope limits.
+Sources must resolve to distinct logical paths. These local paths never become
+HTTP/MCP arguments. Remote clients use bounded inline uploads or an operator-run
+batch preparation; there is no public arbitrary filesystem request tunnel.
 
-These are family-owned DataFrame transforms, not application orchestration.
-They do not choose a catalog, persist model output, or decide application state.
-An application processor may persist the resulting rows or use them as evidence for
-a transition. The selected Daft AI provider determines which content
-modalities its model accepts; storage and typed indexing support do not imply
-that every model can directly interpret every media type.
+`occurrences()` selects cutless rows; `occurrences(cut=cut)` selects that exact cut;
+`occurrences(all=True)` selects all occurrences within the context, with bounded
+pagination. Future world cuts never retroactively attribute cutless occurrences.
 
-### Cloud dogfood
+Common facts include logical path, UUID-derived ingestion time, hashes, size,
+media kind and context/world/run/cut attribution. Typed facts include image
+width/height/format/mode; audio sample rate/channels/frames/duration/format/subtype;
+video size/frame count/fps/time base/duration; PDF page count/encryption/title/author;
+text kind/language/line count/UTF-8; and diff format/file/hunk/line/binary counts.
+Unknown metadata remains `None`. `occurrence.facts("audio")` returns an immutable
+field/value tuple. `analyze(index="audio")` creates a lazy bounded Daft frame.
+Wire integer, Bool and Float64 tags remain exact; timestamps use decimal
+`timestamp_us` since UTC epoch. Physical object paths and publication proofs are
+excluded; semantic titles and authors are preserved.
 
-The protected infrastructure test sends one bounded context pack through the
-real Cloudflare stack:
-
-```text
-Hugging Face Markdown + MP3 + MP4 + PDF
-local Markdown + Python + git patch + PNG
-  -> content-addressed R2 objects
-  -> Daft Catalog / Iceberg tables whose metadata and data live on R2
-  -> fresh catalog + fresh application graph
-  -> cold queries of every populated table
-```
-
-The cold query result is deliberately reviewable as one small table:
-
-| Table | Rows | Join back to `artifact_files` |
-| --- | ---: | --- |
-| `artifact_files` | 9 | visibility root |
-| `artifact_images` | 1 | `artifact_id` |
-| `artifact_audio` | 1 | `artifact_id` |
-| `artifact_video` | 1 | `artifact_id` |
-| `artifact_pdf` | 1 | `artifact_id` |
-| `artifact_text` | 5 | `artifact_id` |
-| `artifact_diff` | 1 | `artifact_id` |
-
-The test checks metadata and logical-path attribution after the restart, UUIDv7
-identity-derived timestamps, both content hashes, and Daft's unmodified MIME
-classification—not merely that the table names exist. It then destroys its
-unique catalog namespace and R2 prefixes. Local contract tests generate real
-PNG, WAV, MP4, and PDF fixtures and additionally
-delete an acquisition source after object persistence, proving that metadata
-scans use the staged object. Live model calls remain an explicit
-credential-bearing external check; the deterministic contract tests validate
-the task anchoring and source attribution without pretending that a mocked
-provider is model evidence.
-
-## Whole-storage relocation preserves occurrences
-
-Local whole-storage migration treats `artifact_files` as the authoritative
-visible occurrence inventory. It verifies each referenced source object,
-copies each distinct content identity once, reads the destination object back,
-and then writes the relocated common index. This path does not call
-`ingest_artifacts()` and does not mint a new occurrence.
-
-Only `artifact_files.object_uri` changes. `artifact_id`, `ingested_at`,
-`source_uri`, logical path, World/run/tick attribution, hashes, size, media
-classification, typed-index joins, and downstream `source_artifact_id` joins
-remain exact. Source-table evidence and relocated-destination evidence are
-therefore separate: the permitted URI transformation intentionally changes
-the common table's content digest. Existing destination content-addressed
-objects are reusable only after full verification and are never overwritten
-with conflicting bytes.
-
-Local v1 supports local Artifact roots only. See
-[Storage Migration](storage-migration.md) for destination ordering, failure,
-and receipt requirements.
-
-## 11. Migration from the 0.4 artifact surface
-
-This refactor is an intentional breaking change from the artifact API shipped
-in `0.4.1`. The first release containing it must be `0.5.0` or later; it must
-not be published as another `0.4.x` release.
-
-The old surface mixed file persistence with claims, publication recovery,
-checkpoint bundles, and entity receipts. The replacement keeps file
-occurrence identity and content durability while removing that orchestration:
-
-| 0.4 surface | 0.5 direction |
-| --- | --- |
-| `ArtifactBundleRequest` and `ArtifactCandidate` | one or more `ArtifactSource` values |
-| `ArtifactPublishReceipt`, `ArtifactReceipt`, and `MaterializedArtifact` | immutable `ArtifactRef` values |
-| `world.publish_artifact_bundle(...)` | `world.ingest_artifacts(...)` |
-| `world.artifact_bundles(...)` | `world.artifacts()` and typed artifact indexes |
-| `world.reconcile_artifact_bundles(...)` | removed; retry creates a new occurrence and reuses verified content |
-| generic `world.ingest_files(...)` / `world.write_artifacts(...)` | `world.ingest_artifacts(...)` for files, or an owning family workflow over `StorageService` for typed rows |
-| `world.publish(...)` for external component rows | `world.spawn(...)` for world state, or an owning application workflow for durable tabular data |
-
-`ArtifactStoreConfig` retains its name but now configures only the object root,
-file-ingestion I/O, and upload concurrency. Callers must construct the new model
-rather than expecting the former bundle/checkpoint fields. There are deliberately
-no compatibility aliases for claim, receipt, bundle-finalization, or reconciler
-types: preserving them would retain the machinery this migration removes.
+Cold reads need only the native library and store. Removing source files,
+registry, build directory and driver does not change published facts. Forks create
+a distinct hosted context; original occurrences remain attributed to their source
+context and are not silently copied as new child occurrences.

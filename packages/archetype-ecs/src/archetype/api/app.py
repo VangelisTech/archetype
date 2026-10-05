@@ -1,99 +1,98 @@
-# Copyright 2025 Vangelis Technologies Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright 2026 Vangelis Technologies Inc.
+# SPDX-License-Identifier: Apache-2.0
+"""Owned HTTP/MCP host over the same native runtime and closed operations."""
 
-"""FastAPI application factory."""
+from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
 from contextlib import asynccontextmanager
-from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, FastAPI
+if TYPE_CHECKING:
+    from archetype_native.ingress import PrincipalVerifier
 
-from archetype import __version__
-from archetype._logging import configure_host_observability
-from archetype.api.routes import FRAMEWORK_ROUTERS
-from archetype.world_libraries import WorldLibraryManifest, resolve_world_libraries
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Own one process resource graph for the exact FastAPI lifespan."""
-    if hasattr(app.state, "resources"):
-        retained = app.state.resources
-        await retained.aclose()
-        del app.state.resources
-
-    # Composition stays lazy: importing the ASGI module and calling
-    # ``create_app`` must not construct providers, catalogs, or tasks.
-    from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
-
-    configure_host_observability(service_name="archetype-api")
-    resources = build_runtime_resources(
-        RuntimeBootstrapConfig.from_env(
-            world_libraries=app.state.world_library_manifests,
-            world_library_configs=app.state.world_library_configs,
-        )
-    )
-    app.state.resources = resources
-    try:
-        yield
-    finally:
-        await resources.aclose()
-        del app.state.resources
+from archetype.api.config import ServerConfig
+from archetype.api.principals import PrincipalDirectory
+from archetype.wiring import artifact_workflow, build_runtime_resources
 
 
-def create_app(
-    *,
-    world_libraries: tuple[WorldLibraryManifest, ...] | None = None,
-    world_library_configs: Mapping[str, object] | None = None,
-) -> FastAPI:
-    """Create and configure the FastAPI application."""
-    manifests = resolve_world_libraries(
-        world_libraries,
-        framework_version=__version__,
-    )
-    configs = dict(world_library_configs or {})
-    unknown_configs = set(configs) - {manifest.name for manifest in manifests}
-    if unknown_configs:
+def create_app(*, config: ServerConfig | None = None, verifier: PrincipalVerifier | None = None):
+    """Operator factory. Binds no socket; requires explicit principal/resource grants."""
+    from archetype_native.ingress import Ingress
+    from archetype_transports import create_app as transport_app
+    from starlette.applications import Starlette
+    from starlette.responses import Response
+    from starlette.routing import Mount
+
+    selected = ServerConfig.from_env() if config is None else config
+    verifier = PrincipalDirectory.from_env() if verifier is None else verifier
+    if verifier.configured is not True or not callable(getattr(verifier, "authenticate", None)):
         raise ValueError(
-            "world-library configs have no resolved manifest: " + ", ".join(sorted(unknown_configs))
+            "Configure a real principal verifier or ARCHETYPE_PRINCIPALS_PATH directory"
         )
-    app = FastAPI(
-        title="Archetype ECS",
-        description="Dataframe-first ECS runtime for simulations and AI agents.",
-        version=__version__,
-        lifespan=lifespan,
-    )
-    app.state.world_library_manifests = manifests
-    app.state.world_library_configs = MappingProxyType(configs)
-    for router in FRAMEWORK_ROUTERS:
-        app.include_router(router)
-    for manifest in manifests:
-        for factory in manifest.api_router_factories:
-            router = factory()
-            if not isinstance(router, APIRouter):
-                raise TypeError(
-                    f"world library {manifest.name!r} API factory did not return APIRouter"
-                )
-            app.include_router(router)
+    runtime = build_runtime_resources(selected)
+    inner: Any = None
+    cleanup: asyncio.Task[None] | None = None
+    owned_ingress: Any = None
 
-    @app.get("/")
-    async def root():
-        return {"name": "archetype-ecs", "version": __version__}
+    async def proxy(scope, receive, send):
+        if inner is None:
+            await Response("Server unavailable", status_code=503)(scope, receive, send)
+            return
+        await inner(scope, receive, send)
 
-    @app.get("/healthz")
-    async def healthz():
-        return {"status": "ok"}
+    async def close_owned():
+        if owned_ingress is not None:
+            await owned_ingress.drain()
+        await runtime.shutdown()
 
+    async def shutdown():
+        """Operator cleanup retry; retains the same native owner and never reopens."""
+        nonlocal cleanup
+        if cleanup is None or (cleanup.done() and cleanup.exception() is not None):
+            cleanup = asyncio.create_task(close_owned())
+        cancelled = None
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError as error:
+                cancelled = error
+        cleanup.result()
+        if cancelled is not None:
+            raise cancelled
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        nonlocal inner, owned_ingress
+        await runtime.__aenter__()
+        try:
+            host = await runtime._activate()
+            ingress = Ingress(
+                host,
+                verifier=verifier,
+                resources=selected.resources,
+                grants=selected.grants,
+                artifact_workflow=artifact_workflow(host),
+            )
+            owned_ingress = ingress
+            inner = transport_app(ingress)
+            close_error = None
+            async with inner.router.lifespan_context(inner):
+                try:
+                    yield
+                finally:
+                    try:
+                        await shutdown()
+                    except Exception as error:
+                        close_error = error
+            if close_error is not None:
+                raise close_error
+        finally:
+            inner = None
+            if cleanup is None:
+                await shutdown()
+
+    app = Starlette(routes=[Mount("/", app=proxy)], lifespan=lifespan)
+    # The operator may retry failed cleanup without accessing or replacing Host.
+    app.state.aclose = shutdown
     return app

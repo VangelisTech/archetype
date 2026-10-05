@@ -11,7 +11,7 @@ mod store_tests;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-pub const DDLOG_REVISION: &str = "37bdd6c222b62c1ef6410b2f7f242e18069ce44e";
+pub const DDLOG_REVISION: &str = "e7bec261336ac5cdaa6d99778feeaedcb03a73ae";
 pub const ADAPTER_ABI: &str = "archetype-ddlog-cut-v1";
 
 pub(crate) fn digest(value: &impl Serialize) -> anyhow::Result<String> {
