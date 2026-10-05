@@ -213,7 +213,7 @@ complexity:
 # ------------------------------------------------------------------------------
 
 .PHONY: test
-test: retained-value-contracts
+test: retained-value-contracts docs-workflow-contracts
 	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) PYTHONDONTWRITEBYTECODE=1 DO_NOT_TRACK=1 uv run python scripts/run_current_contracts.py
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q packages/archetype-smol/tests
 
@@ -484,6 +484,10 @@ verify-release: verify-full-source
 	@echo "Exact installed candidate acceptance passed; publication/deployment is separate"
 
 .NOTPARALLEL: verify-full verify-release
+
+.PHONY: docs-workflow-contracts
+docs-workflow-contracts:
+	@PYTHONPATH=$(PYTHONPATH):. uv run pytest --noconftest -q tests/scripts/test_docs_workflow.py
 
 .PHONY: retained-value-contracts
 retained-value-contracts:
