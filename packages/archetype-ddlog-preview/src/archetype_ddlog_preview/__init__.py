@@ -19,9 +19,10 @@ __all__ = ["Host", "NativeError", "ProtocolError", "ConstructionCleanupError"]
 class NativeError(RuntimeError):
     """Native failure, with no implied rollback or permission to replay inputs."""
 
-    def __init__(self, kind: str, message: str, operation: str):
+    def __init__(self, kind: str, message: str, operation: str, *, code: str | None = None):
         super().__init__(f"{operation}: {kind}: {message}")
         self.kind, self.operation = kind, operation
+        self.code = code
 
 
 class ProtocolError(RuntimeError):
@@ -174,7 +175,9 @@ class Host:
                 self._handle = response["value"]["handle"]
             if not response["ok"]:
                 error = response["error"]
-                raise NativeError(error["kind"], error["message"], operation)
+                raise NativeError(
+                    error["kind"], error["message"], operation, code=error.get("code")
+                )
             if status != 0:
                 raise ProtocolError("Native status/envelope mismatch")
             return response["value"]
@@ -217,6 +220,8 @@ class Host:
                 type(error.get(k)) is not str for k in ("kind", "message")
             ):
                 raise ProtocolError("Malformed native error")
+            if "code" in error and type(error["code"]) is not str:
+                raise ProtocolError("Malformed native error code")
         return response
 
     def request(self, op: str, **arguments: Any) -> Any:

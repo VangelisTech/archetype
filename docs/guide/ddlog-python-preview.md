@@ -104,8 +104,55 @@ Use `history(world, run, offset=0, limit=100)` and
 `read(receipt, component, offset=0, limit=1000)` for published cuts. Reads return
 logical component rows, schema, total row count and a next offset. Integers stay
 exact beyond 2**53. Historical and explicitly empty cuts remain readable.
-Pagination bounds the returned JSON, not Iceberg's internal scan memory; reads
-currently materialize the selected component through the existing store.
+Storage enforces [local read limits v1](#storage-read-limits-v1) before normal
+format decoding. Component pages decode only the requested slice of the exact
+hash-verified full-cut object after verifying its pinned snapshot.
+
+## Storage read limits v1
+
+Each native operation borrows the same CutStore owner and publication lock,
+with an operation-scoped catalog client and FileIO budget. Nested verification
+shares that budget; background IO retains its original budget. Opening a new
+operation never resets an earlier reader's counters or creates another owner.
+
+| Bound | Limit |
+|---|---:|
+| File reads, including repeated proof reads | 512 |
+| Total admitted file/range bytes | 256 MiB |
+| One data/content object | 64 MiB |
+| One catalog, manifest, journal or preparation object | 2 MiB |
+| Scanned rows and decoded rows, each counted across the operation | 250,000 |
+| Metadata structural items | 500,000 |
+| Nesting depth | 32 |
+| Parquet columns / row groups per object | 256 / 1,024 |
+| Parquet page bytes / returned page bytes | 2 MiB / 2 MiB |
+| Conservative expanded bytes per object / operation | 64 MiB / 256 MiB |
+
+File sizes are checked on opened descriptors before allocation, and reads stop
+at the admitted length plus one byte to detect growth. Metadata structure,
+collection/scalar allocation claims, page encodings and row inventories are
+checked before library decoding. The local v1 format accepts the flat,
+uncompressed JSON/Avro/Parquet emitted by these writers. Compressed or nested
+formats and unsupported page encodings fail explicitly. Embedded Arrow IPC
+schema metadata is ignored; physical types and field IDs remain verified.
+Repeated dictionary strings use a conservative expanded-byte admission bound,
+so some small compressed-in-memory representations can exceed the read budget.
+These are IO and decoder admission bounds, not a hard process RSS or time limit.
+
+History and artifact-root discovery scan bounded metadata to establish exact
+totals; they either return a complete validated page or fail, never silently
+truncate the inventory. A larger offset or smaller page does not bypass scan
+limits. Full journal/component verification for restore and attachments shares
+the same limits. Content digest verification is streamed with byte admission.
+No limit changes cut identity, snapshot selection, retractions or empty outputs.
+
+Owned read-boundary failures add an optional `NativeError.code`:
+`resource_limit`, `corrupt_data`, `invalid_request`, or `unsupported_format`.
+Other upstream failures remain opaque. Legacy native envelopes without a code
+remain accepted. Private native diagnostic messages remain available to the
+trusted caller; shared ingress exposes only approved codes and always reports
+`unknown` after dispatch. A factual read failure does not prove rollback,
+absence, cancellation or permission to replay a mutation.
 
 Read/restore consume only `{world, run, tick, cut_id}` from the returned receipt
 (or accept that compact reference directly). The Rust boundary resolves the

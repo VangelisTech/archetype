@@ -3,7 +3,7 @@
 Status: trusted local preview. This contract adds later file attachments to the
 existing hosted DDlog `CutStore`. It requires the native library built from this
 source revision and the matching `archetype-ecs` artifact/storage modules. The
-stdlib-only `archetype-ddlog-preview` wheel remains unchanged at 0.1.2. Its raw
+stdlib-only `archetype-ddlog-preview` wheel is version 0.1.2. Its raw
 request method is an internal integration port, not the intended beginner API.
 
 ## Exact attribution and ownership
@@ -113,8 +113,11 @@ contract, nor claim arbitrary Arrow schema evolution or nested metadata support.
 
 A submission contains at most 32 occurrences, with at most 192 KiB per encoded
 metadata object and the existing 1 MiB native request limit. A read page contains
-at most 32 roots and is also subject to the existing 16 MiB response limit. The
-underlying Iceberg scan is not memory-bounded by pagination. Offsets refer to the
+at most 32 roots and 2 MiB, within the existing 16 MiB ABI response envelope.
+The [operation-scoped read limits](ddlog-python-preview.md#storage-read-limits-v1)
+also bound metadata scans, full-cut verification, preparation decoding and
+streamed content verification; exceeding a bound returns an explicit failure.
+Offsets refer to the
 current occurrence list; concurrent new attachments are not a frozen page cursor.
 
 Artifact-only world contexts, forks, public runtime facade migration, remote

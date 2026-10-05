@@ -50,6 +50,9 @@ HTTP_STATUS = {
     "busy": 429,
     "unavailable": 503,
     "operation_failed": 500,
+    "corrupt_data": 500,
+    "resource_limit": 422,
+    "unsupported_format": 422,
 }
 
 

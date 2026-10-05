@@ -9,6 +9,7 @@ description = "Archetype ECS cuts over the DDlog Runtime execution owner"
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 arrow-array = "59.2"
 arrow-cast = "59.2"
 arrow-schema = "59.2"
@@ -24,6 +25,7 @@ serde_json.workspace = true
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["any", "sqlite", "runtime-tokio"] }
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync"] }
+typetag = "0.2"
 url = "2"
 uuid.workspace = true
 

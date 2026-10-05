@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Protocol
 
-from archetype_ddlog_preview import Host
+from archetype_ddlog_preview import Host, NativeError
 from archetype_ddlog_preview import wire as w
 
 
@@ -284,6 +284,14 @@ class Ingress:
                     "value": projected,
                 }
             )
+        except NativeError as error:
+            code = (
+                error.code
+                if error.code
+                in {"resource_limit", "corrupt_data", "invalid_request", "unsupported_format"}
+                else "operation_failed"
+            )
+            return _error(code, dispatched=True)
         except Exception:
             # Neither opaque native text nor post-dispatch encoding failure
             # proves rollback, absence, conflict, or permission to retry.

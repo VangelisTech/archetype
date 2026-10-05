@@ -15,7 +15,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from archetype_ddlog_preview import ConstructionCleanupError, Host, NativeError, _Buffer
+from archetype_ddlog_preview import (
+    ConstructionCleanupError,
+    Host,
+    NativeError,
+    ProtocolError,
+    _Buffer,
+)
 
 REPO = Path(__file__).resolve().parents[3]
 LIBRARY = Path(os.environ["DDLOG_PYTHON_LIBRARY"]).resolve()
@@ -39,6 +45,22 @@ def wait(probe, done, timeout=180):
 
 def pin(record):
     return {k: record[k] for k in ("processor_id", "version")}
+
+
+class ErrorEnvelopeTests(unittest.TestCase):
+    def test_legacy_and_typed_error_envelopes(self):
+        for code in (None, "resource_limit", 7):
+            error = {"kind": "operation", "message": "/private/diagnostic"}
+            if code is not None:
+                error["code"] = code
+            raw = json.dumps({"ok": False, "error": error}).encode()
+            memory = ctypes.create_string_buffer(raw)
+            output = _Buffer(ctypes.cast(memory, ctypes.c_void_p), len(raw))
+            if code == 7:
+                with self.assertRaises(ProtocolError):
+                    Host._response(output)
+            else:
+                self.assertEqual(Host._response(output)["error"].get("code"), code)
 
 
 class Fixture:
@@ -171,6 +193,37 @@ class Fixture:
 
 
 class BindingTests(unittest.TestCase):
+    def test_file_io_fault_survives_native_error_chain(self):
+        f = self.f
+        # The initial cuts table exists without executing a native program.
+        metadata = next((f.root / "storage/warehouse/cuts/metadata").glob("*.metadata.json"))
+        with metadata.open("r+b") as stream:
+            stream.truncate(3 << 20)
+        with self.assertRaises(NativeError) as failure:
+            f.host.history("alpha", "run_a")
+        self.assertEqual(failure.exception.code, "resource_limit")
+
+    def test_native_status_and_stop_do_not_reopen_analytical_catalog(self):
+        f = Fixture()
+        self.addCleanup(f.close)
+        binding = f.world("independent", f.program())
+        native_id = binding["scope"]["native_world"]
+        f.host.start(native_id)
+        f.running(binding)
+        catalog = f.root / "storage/catalog.sqlite"
+        saved = catalog.with_suffix(".saved")
+        catalog.rename(saved)
+        catalog.mkdir()
+        try:
+            with self.assertRaises(NativeError):
+                f.host.history("independent", "run_a")
+            self.assertEqual(f.host.status(native_id)["state"], "running")
+            f.host.stop(native_id)
+            self.assertEqual(f.host.status(native_id)["state"], "stopped")
+        finally:
+            catalog.rmdir()
+            saved.rename(catalog)
+
     def setUp(self):
         self.f = Fixture()
         self.addCleanup(self.f.close)
@@ -435,6 +488,10 @@ def recovery(test, f):
     sibling = f.host.publish(b, kb)
     f.confirm(b, kb, sibling)
     test.assertEqual(f.host.read(first, "label")["rows"], [[ENTITY, "héllo world"]])
+    for arguments in ({"limit": 0}, {"limit": 1001}, {"offset": 2}):
+        with test.assertRaises(NativeError) as failure:
+            f.host.read(first, "label", **arguments)
+        test.assertEqual(failure.exception.code, "invalid_request")
     test.assertEqual(
         f.host.read(first, "status")["rows"], [[ENTITY, "ready" if f.native else "héllo world"]]
     )

@@ -6,9 +6,7 @@ use arrow_schema::{DataType, Field};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use iceberg::arrow::arrow_schema_to_schema_auto_assign_ids;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use sha2::{Digest, Sha256};
-use std::io::Read;
 
 const COMMON: &str = "cut_artifact_files_v1";
 const TYPED: &[&str] = &["audio", "diff", "images", "pdf", "text", "video"];
@@ -81,7 +79,7 @@ struct PreparedObject {
 
 impl CutStore {
     pub async fn attachment_root(&self, cut: &CutReceipt) -> Result<PathBuf> {
-        self.verified_cut(cut).await?;
+        self.read_scope().await?.verified_cut(cut).await?;
         Ok(self.root.join("artifact_objects"))
     }
 
@@ -100,6 +98,17 @@ impl CutStore {
         attachments: &[Attachment],
         fault: AttachmentFault,
     ) -> Result<Vec<AttachmentReceipt>> {
+        self.read_scope()
+            .await?
+            .attach_inner(cut, attachments, fault)
+            .await
+    }
+    async fn attach_inner(
+        &self,
+        cut: &CutReceipt,
+        attachments: &[Attachment],
+        fault: AttachmentFault,
+    ) -> Result<Vec<AttachmentReceipt>> {
         let _guard = self.publication.lock().await;
         self.verified_cut(cut).await?;
         ensure!(
@@ -110,7 +119,7 @@ impl CutStore {
         let mut ids = std::collections::BTreeSet::new();
         // Validate the entire submission before any index commits.
         for attachment in attachments {
-            let common = decode(&attachment.common)?;
+            let common = decode_bounded(&attachment.common, &self.budget)?;
             let id = text(&common, "artifact_id")?.to_owned();
             let uuid = uuid::Uuid::parse_str(&id)?;
             ensure!(
@@ -125,7 +134,7 @@ impl CutStore {
             let mut typed = BTreeMap::new();
             for (name, encoded) in &attachment.typed {
                 ensure!(TYPED.contains(&name.as_str()), "Unknown typed index");
-                let batch = decode(encoded)?;
+                let batch = decode_bounded(encoded, &self.budget)?;
                 validate_schema(name, &batch)?;
                 ensure!(
                     text(&batch, "artifact_id")? == id,
@@ -229,15 +238,16 @@ impl CutStore {
                 )) == Path::new(&proof.object),
             "Index table/object identity mismatch"
         );
-        self.verify_snapshot(
-            &table,
-            proof.snapshot,
-            id,
-            &(proof.object.clone(), proof.object_sha256.clone()),
-            1,
-        )
-        .await?;
-        let batch = decode_bytes(fs::read(&proof.object)?.into())?;
+        let bytes = self
+            .verify_snapshot(
+                &table,
+                proof.snapshot,
+                id,
+                &(proof.object.clone(), proof.object_sha256.clone()),
+                1,
+            )
+            .await?;
+        let batch = decode_bytes(bytes, &self.budget)?;
         ensure!(
             text(&batch, "artifact_id")? == id,
             "Index occurrence mismatch"
@@ -253,6 +263,21 @@ impl CutStore {
         offset: usize,
         limit: usize,
     ) -> Result<(Vec<AttachmentRead>, usize)> {
+        self.read_scope()
+            .await?
+            .attachments_inner(cut, offset, limit)
+            .await
+    }
+    async fn attachments_inner(
+        &self,
+        cut: &CutReceipt,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<AttachmentRead>, usize)> {
+        bounds::request(
+            (1..=32).contains(&limit),
+            "Attachment read limit must be 1..32",
+        )?;
         let _guard = self.publication.lock().await;
         self.verified_cut(cut).await?;
         ensure!(
@@ -268,15 +293,13 @@ impl CutStore {
             ensure!(offset == 0, "Offset past attachments");
             return Ok((vec![], 0));
         }
-        let mut scan = table
-            .scan()
-            .with_filter(Reference::new("cut_id").equal_to(Datum::string(&cut.cut_id)))
-            .build()?
-            .to_arrow()
-            .await?;
         let mut ids = std::collections::BTreeSet::new();
-        while let Some(batch) = scan.try_next().await? {
-            for id in strings(&batch, "artifact_id")?.iter() {
+        for batch in self.scan_metadata(&table).await? {
+            for (index, id) in strings(&batch, "artifact_id")?.iter().enumerate() {
+                if strings(&batch, "cut_id")?.value(index) != cut.cut_id {
+                    continue;
+                }
+                self.budget.items(1)?;
                 ensure!(
                     ids.insert(id.ok_or_else(|| anyhow!("Null occurrence"))?.to_owned()),
                     "Duplicate visible occurrence"
@@ -284,7 +307,7 @@ impl CutStore {
             }
         }
         let total = ids.len();
-        ensure!(offset <= total, "Offset past attachments");
+        bounds::request(offset <= total, "Offset past attachments")?;
         let mut results = Vec::new();
         for id in ids.into_iter().skip(offset).take(limit) {
             let snapshot_id = find_snapshot(&table, &id)?
@@ -312,9 +335,10 @@ impl CutStore {
             let common = self.read_index(&proof, &id).await?;
             verify_scope(&common, cut)?;
             self.verify_content(&common, false)?;
-            let typed_proofs: BTreeMap<String, IndexReceipt> =
-                serde_json::from_str(text(&common, "typed_receipts_json")?)?;
-            let intent_bytes = fs::read(self.attachment_intent(&id))?;
+            let proof_json = text(&common, "typed_receipts_json")?;
+            preflight::json(proof_json.as_bytes(), &self.budget)?;
+            let typed_proofs: BTreeMap<String, IndexReceipt> = serde_json::from_str(proof_json)?;
+            let intent_bytes = self.budget.read_metadata(&self.attachment_intent(&id))?;
             ensure!(
                 crate::hash(&intent_bytes) == text(&common, "intent_sha256")?,
                 "Prepared metadata changed"
@@ -332,7 +356,10 @@ impl CutStore {
                 intent.attachment.typed.keys().eq(typed_proofs.keys()),
                 "Typed inventory mismatch"
             );
-            let expected = stamp(&decode(&intent.attachment.common)?, cut)?;
+            let expected = stamp(
+                &decode_bounded(&intent.attachment.common, &self.budget)?,
+                cut,
+            )?;
             let expected = append_string(&expected, "intent_sha256", &crate::hash(&intent_bytes))?;
             let expected = append_string(
                 &expected,
@@ -352,7 +379,10 @@ impl CutStore {
                 );
                 let batch = self.read_index(&proof, &id).await?;
                 verify_scope(&batch, cut)?;
-                let expected = stamp(&decode(&intent.attachment.typed[&name])?, cut)?;
+                let expected = stamp(
+                    &decode_bounded(&intent.attachment.typed[&name], &self.budget)?,
+                    cut,
+                )?;
                 ensure!(
                     crate::hash(&encode_batch(&physical_batch(&expected)?.1)?)
                         == proof.object_sha256,
@@ -365,6 +395,7 @@ impl CutStore {
                 common: STANDARD.encode(encode_batch(&common)?),
                 typed,
             });
+            bounds::page(&results, self.budget.limits.page_bytes)?;
         }
         Ok((results, total))
     }
@@ -401,24 +432,14 @@ impl CutStore {
             path.canonicalize()? == path,
             "Content path must not use symlinks"
         );
-        let mut file = File::open(&path)?;
         let mut hasher = Sha256::new();
-        let mut size = 0i64;
-        let mut buffer = [0u8; 65536];
-        loop {
-            let count = file.read(&mut buffer)?;
-            if count == 0 {
-                break;
-            }
-            hasher.update(&buffer[..count]);
-            size += count as i64;
-        }
+        let size = self.budget.content(&path, |bytes| hasher.update(bytes))? as i64;
         ensure!(
             format!("{:x}", hasher.finalize()) == digest && integer(common, "size_bytes")? == size,
             "Content size/digest mismatch"
         );
         if sync {
-            file.sync_all()?;
+            File::open(&path)?.sync_all()?;
             let mut directory = path.parent().unwrap();
             loop {
                 File::open(directory)?.sync_all()?;
@@ -457,15 +478,22 @@ fn receipt(cut: &CutReceipt, artifact_id: String, common: IndexReceipt) -> Attac
         common,
     }
 }
+#[cfg(test)]
 fn decode(encoded: &str) -> Result<RecordBatch> {
+    decode_bounded(encoded, &bounds::Budget::new(bounds::Limits::default()))
+}
+fn decode_bounded(encoded: &str, budget: &bounds::Budget) -> Result<RecordBatch> {
     ensure!(
         encoded.len() <= 192 * 1024,
         "Occurrence metadata exceeds 192 KiB"
     );
-    decode_bytes(STANDARD.decode(encoded)?.into())
+    budget.bytes(encoded.len() as u64)?;
+    let bytes = STANDARD.decode(encoded)?;
+    preflight::parquet(bytes.clone().into(), budget)?;
+    decode_bytes(bytes.into(), budget)
 }
-fn decode_bytes(bytes: Bytes) -> Result<RecordBatch> {
-    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+fn decode_bytes(bytes: Bytes, budget: &bounds::Budget) -> Result<RecordBatch> {
+    let builder = preflight::builder(bytes.clone())?;
     ensure!(
         builder.metadata().file_metadata().num_rows() == 1,
         "Expected one occurrence per metadata object"
@@ -474,12 +502,9 @@ fn decode_bytes(bytes: Bytes) -> Result<RecordBatch> {
         builder.schema().fields().len() <= 64,
         "Too many metadata columns"
     );
-    let mut reader = builder.with_batch_size(1).build()?;
-    let batch = reader
-        .next()
-        .ok_or_else(|| anyhow!("Missing occurrence"))??;
-    ensure!(reader.next().is_none(), "Unexpected metadata batches");
-    Ok(batch)
+    let mut batches = decode_object(bytes, 0, 1, budget)?;
+    bounds::corrupt(batches.len() == 1, "Missing occurrence")?;
+    Ok(batches.remove(0))
 }
 fn text<'a>(batch: &'a RecordBatch, column: &str) -> Result<&'a str> {
     let array = strings(batch, column)?;

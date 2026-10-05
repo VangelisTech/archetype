@@ -3,7 +3,7 @@ use anyhow::{Result, anyhow, ensure};
 use archetype_ddlog::{
     component::Component,
     hosted::{HostedCutAdapter, HostedScope, publication_policy},
-    store::{CutReceipt, CutStore, attachments::Attachment},
+    store::{CutReceipt, CutStore, attachments::Attachment, bounds},
 };
 use arrow_array::{Array, Int64Array, StringArray};
 use ddlog_runtime::{
@@ -178,16 +178,31 @@ impl Resources {
             ..Default::default()
         }))
     }
-    fn receipt(&self, key: ReceiptRef) -> Result<CutReceipt> {
-        let history = self
-            .runtime
-            .block_on(self.store.history(&key.world, &key.run))?;
+    fn receipt(&self, store: &CutStore, key: ReceiptRef) -> Result<CutReceipt> {
+        let history = self.runtime.block_on(store.history(&key.world, &key.run))?;
         history
             .into_iter()
             .find(|r| r.tick == key.tick && r.cut_id == key.cut_id)
-            .ok_or_else(|| anyhow!("Unknown exact published cut identity"))
+            .ok_or_else(|| {
+                bounds::fault(
+                    bounds::FaultCode::InvalidRequest,
+                    "Unknown exact published cut identity",
+                )
+            })
     }
     pub fn call(&self, op: Operation) -> Result<Value> {
+        let store = match &op {
+            Operation::Register { .. }
+            | Operation::Definitions { .. }
+            | Operation::Create { .. }
+            | Operation::Bind { .. }
+            | Operation::Start { .. }
+            | Operation::Status { .. }
+            | Operation::Stop { .. }
+            | Operation::Inventory { .. }
+            | Operation::AdmissionStatus { .. } => self.store.clone(),
+            _ => self.runtime.block_on(self.store.read_scope())?,
+        };
         match op {
             Operation::Register { request } => native(self.manager()?.register(request)),
             Operation::Definitions {} => native(self.manager()?.definitions()),
@@ -228,17 +243,17 @@ impl Resources {
                 expected_head,
                 admission,
             } => {
-                ensure!(
+                bounds::request(
                     admission
                         .changes
                         .iter()
                         .flat_map(|c| &c.values)
                         .all(|v| v.is_string() || v.as_i64().is_some()),
-                    "Cells must be signed Int64 or string; no bool, null or float"
-                );
+                    "Cells must be signed Int64 or string; no bool, null or float",
+                )?;
                 let a = self.bind(binding)?;
                 let ticket = self.runtime.block_on(a.prepare_admission(
-                    &self.store,
+                    &store,
                     expected_head.as_deref(),
                     admission,
                 ))?;
@@ -254,7 +269,7 @@ impl Resources {
                     std::thread::yield_now();
                 }
                 let cut = capture.finish()?;
-                let published = self.runtime.block_on(a.publish(&self.store, &cut))?;
+                let published = self.runtime.block_on(a.publish(&store, &cut))?;
                 Ok(json!(published.receipt()))
             }
             Operation::Reconcile {
@@ -265,7 +280,7 @@ impl Resources {
             } => {
                 let a = self.bind(binding)?;
                 let published = self.runtime.block_on(a.reconcile(
-                    &self.store,
+                    &store,
                     tick,
                     expected_parent.as_deref(),
                     &key,
@@ -282,7 +297,7 @@ impl Resources {
                 // only reconstructs private authority for the existing exact head.
                 let history = self
                     .runtime
-                    .block_on(self.store.history(&binding.scope.world, &binding.scope.run))?;
+                    .block_on(store.history(&binding.scope.world, &binding.scope.run))?;
                 ensure!(
                     history
                         .last()
@@ -291,7 +306,7 @@ impl Resources {
                 );
                 let a = self.bind(binding)?;
                 let published = self.runtime.block_on(a.reconcile(
-                    &self.store,
+                    &store,
                     tick,
                     expected_parent.as_deref(),
                     &key,
@@ -304,12 +319,13 @@ impl Resources {
                 offset,
                 limit,
             } => {
-                ensure!((1..=100).contains(&limit), "History limit must be 1..100");
-                let history = self.runtime.block_on(self.store.history(&world, &run))?;
-                ensure!(offset <= history.len(), "Offset past history");
-                let end = offset.saturating_add(limit).min(history.len());
+                bounds::request((1..=100).contains(&limit), "History limit must be 1..100")?;
+                let (history, total) = self
+                    .runtime
+                    .block_on(store.history_page(&world, &run, offset, limit))?;
+                let end = offset + history.len();
                 Ok(
-                    json!({"receipts":history[offset..end],"next_offset":(end<history.len()).then_some(end),"total":history.len()}),
+                    json!({"receipts":history,"next_offset":(end<total).then_some(end),"total":total}),
                 )
             }
             Operation::Read {
@@ -318,34 +334,27 @@ impl Resources {
                 offset,
                 limit,
             } => {
-                ensure!((1..=1000).contains(&limit), "Read limit must be 1..1000");
-                let receipt = self.receipt(receipt)?;
+                bounds::request((1..=1000).contains(&limit), "Read limit must be 1..1000")?;
+                let receipt = self.receipt(&store, receipt)?;
                 let batches = self
                     .runtime
-                    .block_on(self.store.read(&receipt, &component))?;
+                    .block_on(store.read_page(&receipt, &component, offset, limit))?;
                 let table = &receipt.components[&component];
-                ensure!(offset <= table.rows, "Offset past component");
                 let mut rows = Vec::new();
-                let mut seen = 0;
                 for batch in batches {
                     for index in 0..batch.num_rows() {
-                        if seen >= offset && rows.len() < limit {
-                            let mut row = Vec::new();
-                            for column in batch.columns().iter().skip(1) {
-                                ensure!(!column.is_null(index), "Null component cell");
-                                if let Some(c) = column.as_any().downcast_ref::<Int64Array>() {
-                                    row.push(json!(c.value(index)));
-                                } else if let Some(c) =
-                                    column.as_any().downcast_ref::<StringArray>()
-                                {
-                                    row.push(json!(c.value(index)));
-                                } else {
-                                    anyhow::bail!("Unsupported Arrow component type");
-                                }
+                        let mut row = Vec::new();
+                        for column in batch.columns().iter().skip(1) {
+                            ensure!(!column.is_null(index), "Null component cell");
+                            if let Some(c) = column.as_any().downcast_ref::<Int64Array>() {
+                                row.push(json!(c.value(index)));
+                            } else if let Some(c) = column.as_any().downcast_ref::<StringArray>() {
+                                row.push(json!(c.value(index)));
+                            } else {
+                                anyhow::bail!("Unsupported Arrow component type");
                             }
-                            rows.push(row);
                         }
-                        seen += 1;
+                        rows.push(row);
                     }
                 }
                 let end = offset + rows.len();
@@ -359,20 +368,16 @@ impl Resources {
                 expected_generation,
             } => {
                 let a = self.bind(binding)?;
-                let receipt = self.receipt(receipt)?;
-                let ticket = self
-                    .runtime
-                    .block_on(a.prepare_restore(&self.store, &receipt))?;
+                let receipt = self.receipt(&store, receipt)?;
+                let ticket = self.runtime.block_on(a.prepare_restore(&store, &receipt))?;
                 ticket.restore(&mut *self.manager()?, expected_generation)
             }
             Operation::ArtifactCut { binding, receipt } => {
                 let a = self.bind(binding)?;
-                let receipt = self.receipt(receipt)?;
+                let receipt = self.receipt(&store, receipt)?;
                 self.runtime
-                    .block_on(a.verify_attachment_cut(&self.store, &receipt))?;
-                let root = self
-                    .runtime
-                    .block_on(self.store.attachment_root(&receipt))?;
+                    .block_on(a.verify_attachment_cut(&store, &receipt))?;
+                let root = self.runtime.block_on(store.attachment_root(&receipt))?;
                 Ok(json!({"object_root": root}))
             }
             Operation::AttachArtifacts {
@@ -381,12 +386,12 @@ impl Resources {
                 attachments,
             } => {
                 let a = self.bind(binding)?;
-                let receipt = self.receipt(receipt)?;
+                let receipt = self.receipt(&store, receipt)?;
                 self.runtime
-                    .block_on(a.verify_attachment_cut(&self.store, &receipt))?;
+                    .block_on(a.verify_attachment_cut(&store, &receipt))?;
                 Ok(json!(
                     self.runtime
-                        .block_on(self.store.attach(&receipt, &attachments))?
+                        .block_on(store.attach(&receipt, &attachments))?
                 ))
             }
             Operation::ReadArtifacts {
@@ -396,12 +401,12 @@ impl Resources {
                 limit,
             } => {
                 let a = self.bind(binding)?;
-                let receipt = self.receipt(receipt)?;
+                let receipt = self.receipt(&store, receipt)?;
                 self.runtime
-                    .block_on(a.verify_attachment_cut(&self.store, &receipt))?;
+                    .block_on(a.verify_attachment_cut(&store, &receipt))?;
                 let (items, total) = self
                     .runtime
-                    .block_on(self.store.attachments(&receipt, offset, limit))?;
+                    .block_on(store.attachments(&receipt, offset, limit))?;
                 let end = offset + items.len();
                 Ok(
                     json!({"items": items, "total": total, "next_offset": (end < total).then_some(end)}),

@@ -162,6 +162,7 @@ dependencies = [
  "arrow-array",
  "arrow-cast",
  "arrow-schema",
+ "async-trait",
  "base64 0.22.1",
  "bytes",
  "ddlog-runtime",
@@ -175,6 +176,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "typetag",
  "url",
  "uuid",
 ]

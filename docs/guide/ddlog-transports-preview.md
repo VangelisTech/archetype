@@ -37,7 +37,11 @@ The transport wheel does not extract or package an authentication authority.
 `Content-Type: application/json` and `Authorization: Bearer …`. It returns the
 same safe ingress response. Success is HTTP 200. Shared invalid request,
 authentication, authorization, busy, unavailable and native-failure results map
-to 400, 401, 403, 429, 503 and 500 respectively. No retry is performed.
+to 400, 401, 403, 429, 503 and 500 respectively. Owned native `resource_limit`
+and `unsupported_format` facts map to 422; `corrupt_data` maps to 500 and
+`invalid_request` to 400. HTTP and MCP preserve the same shared envelope.
+Every failure after dispatch still reports `outcome: unknown`; private native
+diagnostics are omitted. No retry is performed.
 
 `/mcp` is the official SDK's stateless Streamable HTTP endpoint with JSON
 responses. SDK initialization, JSON-RPC methods, negotiation, transport tasks
@@ -99,8 +103,9 @@ Request/response caps and retained-call limits do not bound native execution
 cost, status diagnostics, internal catalog scans, latency, connection counts,
 or total pre-dispatch parsing concurrency. History and component reads remain
 absent; arbitrary registration/configuration and raw native calls remain local
-trusted operations. Production connection/rate limits, native typed errors,
-bounded storage reads, distributed ownership and broader migration are separate
+trusted operations. [Storage read limits and factual codes](ddlog-python-preview.md#storage-read-limits-v1)
+apply at the native boundary. Production connection/rate limits,
+distributed ownership and broader migration are separate
 work.
 
 ## Focused executable evidence

@@ -27,17 +27,44 @@ pub struct Buffer {
 #[derive(Debug)]
 struct Error {
     kind: &'static str,
+    code: Option<&'static str>,
     message: String,
 }
 impl Error {
     fn new(kind: &'static str, e: impl std::fmt::Display) -> Self {
         Self {
             kind,
+            code: None,
             message: e.to_string(),
+        }
+    }
+    fn operation(error: anyhow::Error) -> Self {
+        let code = error.chain().find_map(|source| {
+            source
+                .downcast_ref::<archetype_ddlog::store::bounds::Fault>()
+                .map(|fault| fault.code.as_str())
+        });
+        Self {
+            kind: "operation",
+            code,
+            message: format!("{error:#}"),
         }
     }
 }
 type Result<T> = std::result::Result<T, Error>;
+struct LimitedOutput(Vec<u8>);
+impl std::io::Write for LimitedOutput {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > MAX_OUTPUT.saturating_sub(self.0.len()) {
+            return Err(std::io::Error::other("Response byte limit"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 fn owner() -> Result<()> {
     let pid = std::process::id();
     let recorded = PID
@@ -77,10 +104,17 @@ unsafe fn emit(out: *mut Buffer, result: Result<Value>) -> i32 {
     let failed = result.is_err();
     let value = match result {
         Ok(value) => json!({"ok":true,"value":value}),
-        Err(e) => json!({"ok":false,"error":{"kind":e.kind,"message":e.message}}),
+        Err(e) => {
+            let mut error = json!({"kind":e.kind,"message":e.message});
+            if let Some(code) = e.code {
+                error["code"] = json!(code);
+            }
+            json!({"ok":false,"error":error})
+        }
     };
-    let mut bytes = serde_json::to_vec(&value).expect("JSON Value always serializes");
-    let overflow = bytes.len() > MAX_OUTPUT;
+    let mut writer = LimitedOutput(Vec::new());
+    let overflow = serde_json::to_writer(&mut writer, &value).is_err();
+    let mut bytes = writer.0;
     if overflow {
         bytes=br#"{"ok":false,"error":{"kind":"response_limit","message":"Response exceeds 16 MiB; operation may have completed; inspect exact identity"}}"#.to_vec();
     }
@@ -155,7 +189,7 @@ pub unsafe extern "C" fn arct_ddlog_call(
                 lease.resources.as_ref().unwrap().call(op)
             }));
             match result {
-                Ok(result) => result.map_err(|e| Error::new("operation", e)),
+                Ok(result) => result.map_err(Error::operation),
                 Err(_) => {
                     host.poison();
                     Err(Error::new(
@@ -211,6 +245,36 @@ pub unsafe extern "C" fn arct_ddlog_buffer_free(buffer: *mut Buffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_owned_faults_receive_factual_codes() {
+        use archetype_ddlog::store::bounds::{FaultCode, fault};
+        for code in [
+            FaultCode::ResourceLimit,
+            FaultCode::CorruptData,
+            FaultCode::InvalidRequest,
+            FaultCode::UnsupportedFormat,
+        ] {
+            let error = Error::operation(fault(code, "/private/token").context("catalog context"));
+            assert_eq!(error.code, Some(code.as_str()));
+            assert!(error.message.contains("/private/token"));
+        }
+        assert!(
+            Error::operation(anyhow::anyhow!(
+                "resource_limit corrupt_data unknown world rollback"
+            ))
+            .code
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn output_writer_rejects_before_extending_past_limit() {
+        use std::io::Write;
+        let mut output = LimitedOutput(vec![0; MAX_OUTPUT - 1]);
+        assert!(output.write_all(&[1, 2]).is_err());
+        assert_eq!(output.0.len(), MAX_OUTPUT - 1);
+    }
 
     #[test]
     fn boundary_contains_panic_and_returns_owned_error() {

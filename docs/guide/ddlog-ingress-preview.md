@@ -108,9 +108,12 @@ checkpoint objects, full manifests and diagnostic error text are never exposed.
 
 Success has `{version, ok, resource, operation, value}`. Failure has
 `{version, ok, error: {code, outcome}}`. Pre-dispatch authentication, request,
-authorization, capacity and closing failures report `not_dispatched`. Native or
-post-dispatch projection failures report `operation_failed` with `unknown`
-outcome. Native text is never parsed into not-found/conflict/retry semantics.
+authorization, capacity and closing failures report `not_dispatched`. Owned
+native read-boundary facts may report `resource_limit`, `corrupt_data`,
+`invalid_request` or `unsupported_format`. Other native failures and
+post-dispatch projection failures report `operation_failed`. Every failure after
+dispatch retains `unknown` outcome. Native text is never parsed into
+not-found/conflict/retry semantics.
 A failed or lost response is not rollback evidence. Retain the original
 admission key and query its exact identity through authorized admission status.
 
@@ -135,11 +138,13 @@ Response caps and concurrency limits do **not** bound individual backend cost
 or latency. Native status performs diagnostic work; admission status may adopt
 and persist a completed boundary. Hosted operations also bind through native
 status and may scan catalog history. They are not pure, cheap read promises or
-hard-deadline services. History and component reads are omitted because their
-current paging materializes complete history/component data before slicing.
+hard-deadline services. Native storage now enforces
+[read limits v1](ddlog-python-preview.md#storage-read-limits-v1), including exact
+component page decoding and bounded metadata scans. History and component read
+transport operations remain outside this ingress's current operation allowlist.
 
-Before broader hosting, lower-level work remains: bounded/selective catalog
-and component reads preserving exact snapshot verification; stable typed native
+Before broader hosting, work remains: history and component read transport
+operations preserving exact snapshot verification; broader typed native
 errors where callers need conflict/not-found distinctions; lean diagnostic
 projections if status cost must be bounded; and production transport/authentication
 composition beyond the local static-credential adapters. No new manager, scheduler, tick loop, admission ledger

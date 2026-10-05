@@ -300,6 +300,37 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error"], {"code": "operation_failed", "outcome": "unknown"})
         self.assertNotIn("/private", json.dumps(result))
 
+    async def test_factual_native_codes_preserve_unknown_mutation_outcome(self):
+        for code in (
+            "resource_limit",
+            "corrupt_data",
+            "invalid_request",
+            "unsupported_format",
+            "rollback",
+            None,
+        ):
+            with (
+                self.subTest(code=code),
+                patch.object(
+                    self.backend,
+                    "admit",
+                    create=True,
+                    side_effect=NativeError(
+                        "operation", "/private/key " + TOKEN, "admit", code=code
+                    ),
+                ),
+            ):
+                result = await self.invoke("admit", admit_args("9007199254740993"))
+            expected = (
+                code
+                if code
+                in {"resource_limit", "corrupt_data", "invalid_request", "unsupported_format"}
+                else "operation_failed"
+            )
+            self.assertEqual(result["error"], {"code": expected, "outcome": "unknown"})
+            self.assertNotIn("/private", json.dumps(result))
+            self.assertNotIn(TOKEN, json.dumps(result))
+
     async def test_known_apply_failed_freeze_remains_inspectable(self):
         result = {
             "id": "native-a",

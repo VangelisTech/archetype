@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -14,11 +14,9 @@ use futures::TryStreamExt;
 use iceberg::{
     Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent,
     arrow::schema_to_arrow_schema,
-    expr::Reference,
-    io::LocalFsStorageFactory,
     spec::{
-        DataContentType, DataFile, DataFileBuilder, DataFileFormat, Datum, FormatVersion,
-        ManifestStatus, NestedField, PrimitiveType, Schema, Type,
+        DataContentType, DataFile, DataFileBuilder, DataFileFormat, FormatVersion, ManifestStatus,
+        NestedField, PrimitiveType, Schema, Type,
     },
     table::Table,
     transaction::{ApplyTransactionAction, Transaction},
@@ -31,6 +29,11 @@ use tokio::sync::Mutex;
 use crate::{component::ComponentSchema, world::FrozenCut};
 
 pub mod attachments;
+mod bounded_io;
+#[cfg(test)]
+mod bounded_reads;
+pub mod bounds;
+mod preflight;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -69,11 +72,14 @@ pub enum PublicationFault {
     AfterManifest,
 }
 
+#[derive(Clone)]
 pub struct CutStore {
     root: PathBuf,
     catalog: Arc<dyn Catalog>,
-    _owner: File,
-    publication: Mutex<()>,
+    _owner: Arc<File>,
+    publication: Arc<Mutex<()>>,
+    budget: Arc<bounds::Budget>,
+    scoped: bool,
 }
 
 impl CutStore {
@@ -94,6 +100,25 @@ impl CutStore {
         }
         File::open(&root)?.sync_all()?;
         File::open(root.parent().unwrap())?.sync_all()?;
+        let budget = bounds::Budget::new(bounds::Limits::default());
+        let catalog = Self::catalog(&root, budget.clone()).await?;
+        let namespace = NamespaceIdent::new("archetype".into());
+        if !catalog.namespace_exists(&namespace).await? {
+            catalog.create_namespace(&namespace, HashMap::new()).await?;
+        }
+        let store = Self {
+            root,
+            catalog,
+            _owner: Arc::new(owner),
+            publication: Arc::new(Mutex::new(())),
+            budget,
+            scoped: false,
+        };
+        store.table("cuts", cut_schema()?).await?;
+        Ok(store)
+    }
+
+    async fn catalog(root: &Path, budget: Arc<bounds::Budget>) -> Result<Arc<dyn Catalog>> {
         let catalog = SqlCatalogBuilder::default()
             .uri(format!(
                 "sqlite://{}?mode=rwc",
@@ -102,21 +127,28 @@ impl CutStore {
             .warehouse_location(root.join("warehouse").to_string_lossy().into_owned())
             .sql_bind_style(SqlBindStyle::QMark)
             .prop("pool.max-connections", "1")
-            .with_storage_factory(Arc::new(LocalFsStorageFactory))
+            .with_storage_factory(Arc::new(bounded_io::BoundedIo {
+                root: root.to_path_buf(),
+                budget,
+            }))
             .load("archetype", HashMap::new())
             .await?;
-        let namespace = NamespaceIdent::new("archetype".into());
-        if !catalog.namespace_exists(&namespace).await? {
-            catalog.create_namespace(&namespace, HashMap::new()).await?;
+        Ok(Arc::new(catalog))
+    }
+
+    /// A new client for the same physical catalog, borrowing the same exclusive
+    /// owner and publication lock. Its FileIO budget remains bound to spawned IO.
+    pub async fn read_scope(&self) -> Result<Self> {
+        if self.scoped {
+            return Ok(self.clone());
         }
-        let store = Self {
-            root,
-            catalog: Arc::new(catalog),
-            _owner: owner,
-            publication: Mutex::new(()),
-        };
-        store.table("cuts", cut_schema()?).await?;
-        Ok(store)
+        let budget = bounds::Budget::new(self.budget.limits.clone());
+        Ok(Self {
+            catalog: Self::catalog(&self.root, budget.clone()).await?,
+            budget,
+            scoped: true,
+            ..self.clone()
+        })
     }
 
     async fn table(&self, name: &str, schema: Schema) -> Result<Table> {
@@ -173,9 +205,48 @@ impl CutStore {
         cut: &FrozenCut,
         fault: PublicationFault,
     ) -> Result<CutReceipt> {
+        self.read_scope().await?.publish_inner(cut, fault).await
+    }
+
+    async fn publish_inner(&self, cut: &FrozenCut, fault: PublicationFault) -> Result<CutReceipt> {
         let _guard = self.publication.lock().await;
+        #[derive(Serialize)]
+        struct Journal<'a> {
+            cut: &'a FrozenCut,
+            sha256: &'a str,
+        }
+        // Count the exact envelope first: identity serializes the cut and
+        // validation parses its checkpoint. Neither may precede admission.
+        bounds::page(
+            &Journal {
+                cut,
+                sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+            },
+            self.budget.limits.metadata_bytes,
+        )?;
         cut.validate()?;
         let cut_id = cut.identity()?;
+        let journal = bounds::encode_metadata(
+            &Journal {
+                cut,
+                sha256: &cut_id,
+            },
+            self.budget.limits.metadata_bytes,
+        )?;
+        preflight::json(&journal, &self.budget)?;
+        // Reject a cut whose own local v1 outputs cannot be read before any
+        // durable publication intent or component commit is created.
+        for relation in cut.relations.values() {
+            if !relation.rows.is_empty() {
+                let bytes = encode_batch(&relation.schema.batch(&cut_id, &relation.rows)?)?;
+                bounds::cap(
+                    bytes.len() as u64,
+                    self.budget.limits.file_bytes,
+                    "Component object bytes",
+                )?;
+                preflight::parquet(bytes.into(), &self.budget)?;
+            }
+        }
         let history = self.history(&cut.world, &cut.run).await?;
         if let Some(existing) = history.iter().find(|r| r.tick == cut.tick) {
             ensure!(
@@ -192,10 +263,7 @@ impl CutStore {
         );
         // Persist frozen outputs AND DDlog checkpoint before any table commit.
         // A different payload cannot steal the same world/run/tick on retry.
-        immutable(
-            &self.journal(&cut.world, &cut.run, cut.tick),
-            &serde_json::to_vec(&serde_json::json!({"cut":cut,"sha256":cut_id}))?,
-        )?;
+        immutable(&self.journal(&cut.world, &cut.run, cut.tick), &journal)?;
         let mut components = BTreeMap::new();
         for (name, relation) in &cut.relations {
             let table_name = format!("component_{}", relation.schema.identity()?);
@@ -271,11 +339,14 @@ impl CutStore {
 
     /// Recover publication after a process restart without executing DDlog.
     pub async fn retry(&self, world: &str, run: &str, tick: u64) -> Result<CutReceipt> {
+        self.read_scope().await?.retry_inner(world, run, tick).await
+    }
+    async fn retry_inner(&self, world: &str, run: &str, tick: u64) -> Result<CutReceipt> {
         ensure!(
             crate::identifier(world) && crate::identifier(run),
             "Invalid world/run"
         );
-        let cut = FrozenCut::decode_journal(&fs::read(self.journal(world, run, tick))?)?;
+        let cut = self.load_frozen(world, run, tick)?;
         ensure!(
             cut.world == world && cut.run == run && cut.tick == tick,
             "Journal identity mismatch"
@@ -286,6 +357,9 @@ impl CutStore {
     /// Recovery payload is separate from analytical tables and keeps its exact
     /// upstream managed checkpoint envelope. No rows reconstruct native inputs.
     pub async fn checkpoint(&self, receipt: &CutReceipt) -> Result<Vec<u8>> {
+        self.read_scope().await?.checkpoint_inner(receipt).await
+    }
+    async fn checkpoint_inner(&self, receipt: &CutReceipt) -> Result<Vec<u8>> {
         self.require_visible(receipt).await?;
         let cut = self.load_frozen(&receipt.world, &receipt.run, receipt.tick)?;
         validate_receipt(receipt, &cut)?;
@@ -297,7 +371,9 @@ impl CutStore {
             crate::identifier(world) && crate::identifier(run),
             "Invalid world/run"
         );
-        let cut = FrozenCut::decode_journal(&fs::read(self.journal(world, run, tick))?)?;
+        let cut = FrozenCut::decode_journal(
+            &self.budget.read_metadata(&self.journal(world, run, tick))?,
+        )?;
         ensure!(
             cut.world == world && cut.run == run && cut.tick == tick,
             "Journal attribution mismatch"
@@ -307,18 +383,40 @@ impl CutStore {
 
     /// Complete journal, final-manifest and pinned component verification.
     pub(crate) async fn verified_cut(&self, receipt: &CutReceipt) -> Result<FrozenCut> {
-        self.verify_cut(receipt).await?;
-        self.load_frozen(&receipt.world, &receipt.run, receipt.tick)
+        let scope = self.read_scope().await?;
+        scope.verify_cut(receipt).await?;
+        scope.load_frozen(&receipt.world, &receipt.run, receipt.tick)
     }
 
     pub async fn history(&self, world: &str, run: &str) -> Result<Vec<CutReceipt>> {
+        self.read_scope().await?.history_inner(world, run).await
+    }
+    pub async fn history_page(
+        &self,
+        world: &str,
+        run: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<CutReceipt>, usize)> {
+        bounds::request((1..=100).contains(&limit), "History limit must be 1..100")?;
+        let scope = self.read_scope().await?;
+        let history = scope.history_inner(world, run).await?;
+        bounds::request(offset <= history.len(), "Offset past history")?;
+        let end = offset.saturating_add(limit).min(history.len());
+        bounds::page(&history[offset..end], scope.budget.limits.page_bytes)?;
+        Ok((history[offset..end].to_vec(), history.len()))
+    }
+    async fn history_inner(&self, world: &str, run: &str) -> Result<Vec<CutReceipt>> {
+        bounds::request(
+            crate::identifier(world) && crate::identifier(run),
+            "Invalid world/run",
+        )?;
         let table = self.catalog.load_table(&ident("cuts")?).await?;
         if table.metadata().current_snapshot().is_none() {
             return Ok(vec![]);
         }
-        let mut batches = table.scan().build()?.to_arrow().await?;
         let mut receipts: Vec<CutReceipt> = vec![];
-        while let Some(batch) = batches.try_next().await? {
+        for batch in self.scan_metadata(&table).await? {
             let ids = strings(&batch, "cut_id")?;
             let values = strings(&batch, "receipt_json")?;
             for i in 0..batch.num_rows() {
@@ -326,7 +424,15 @@ impl CutStore {
                     !ids.is_null(i) && !values.is_null(i),
                     "Invalid manifest row"
                 );
-                let receipt: CutReceipt = serde_json::from_str(values.value(i))?;
+                bounds::cap(
+                    values.value(i).len() as u64,
+                    self.budget.limits.metadata_bytes,
+                    "Receipt bytes",
+                )?;
+                preflight::json(values.value(i).as_bytes(), &self.budget)?;
+                self.budget.items(1)?;
+                let receipt: CutReceipt = serde_json::from_str(values.value(i))
+                    .map_err(|e| bounds::fault(bounds::FaultCode::CorruptData, e.to_string()))?;
                 ensure!(receipt.cut_id == ids.value(i), "Manifest identity mismatch");
                 if receipt.world == world && receipt.run == run {
                     receipts.push(receipt);
@@ -382,11 +488,48 @@ impl CutStore {
     /// Sanctioned read path: validate the final manifest, pin each relation's
     /// snapshot, then select exactly this full cut. Never use latest-row-wins.
     pub async fn read(&self, receipt: &CutReceipt, component: &str) -> Result<Vec<RecordBatch>> {
+        self.read_scope()
+            .await?
+            .read_inner(receipt, component, 0, None)
+            .await
+    }
+
+    /// Decode only the requested rows of the exact hash-verified full-cut object.
+    /// Physical proof reads and structural admission still consume one scope.
+    pub async fn read_page(
+        &self,
+        receipt: &CutReceipt,
+        component: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<RecordBatch>> {
+        bounds::request((1..=1000).contains(&limit), "Read limit must be 1..1000")?;
+        self.read_scope()
+            .await?
+            .read_inner(receipt, component, offset, Some(limit))
+            .await
+    }
+
+    async fn read_inner(
+        &self,
+        receipt: &CutReceipt,
+        component: &str,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Result<Vec<RecordBatch>> {
         self.require_visible(receipt).await?;
-        let selected = receipt
-            .components
-            .get(component)
-            .ok_or_else(|| anyhow!("Component absent from cut"))?;
+        let selected = receipt.components.get(component).ok_or_else(|| {
+            bounds::fault(
+                bounds::FaultCode::InvalidRequest,
+                "Component absent from cut",
+            )
+        })?;
+        bounds::request(offset <= selected.rows, "Offset past component")?;
+        bounds::cap(
+            selected.rows as u64,
+            self.budget.limits.rows,
+            "Selected rows",
+        )?;
         let table = self.catalog.load_table(&ident(&selected.table)?).await?;
         ensure!(
             table.metadata().uuid().to_string() == selected.table_uuid
@@ -414,28 +557,43 @@ impl CutStore {
             .object_sha256
             .as_ref()
             .ok_or_else(|| anyhow!("Missing object digest"))?;
-        self.verify_snapshot(
-            &table,
-            snapshot,
-            &receipt.cut_id,
-            &(object.clone(), digest.clone()),
-            selected.rows,
-        )
-        .await?;
-        let mut scan = table
-            .scan()
-            .snapshot_id(snapshot)
-            .with_filter(Reference::new("cut_id").equal_to(Datum::string(&receipt.cut_id)))
-            .build()?
-            .to_arrow()
+        let bytes = self
+            .verify_snapshot(
+                &table,
+                snapshot,
+                &receipt.cut_id,
+                &(object.clone(), digest.clone()),
+                selected.rows,
+            )
             .await?;
+        self.budget.decoding()?;
+        let count = limit.unwrap_or(selected.rows).min(selected.rows - offset);
+        let scan = decode_object(bytes, offset, count, &self.budget)?;
         let mut batches = vec![];
         let mut rows = 0;
-        while let Some(batch) = scan.try_next().await? {
+        let mut page_bytes = 0u64;
+        for batch in scan {
+            page_bytes = page_bytes
+                .checked_add(batch.get_array_memory_size() as u64)
+                .ok_or_else(|| {
+                    bounds::fault(bounds::FaultCode::ResourceLimit, "Page size overflow")
+                })?;
+            if limit.is_some() {
+                bounds::cap(
+                    page_bytes,
+                    self.budget.limits.page_bytes,
+                    "Decoded page bytes",
+                )?;
+            }
+            let ids = strings(&batch, "cut_id")?;
+            bounds::corrupt(
+                ids.iter().all(|id| id == Some(receipt.cut_id.as_str())),
+                "Object contains another cut",
+            )?;
             rows += batch.num_rows();
             batches.push(batch);
         }
-        ensure!(rows == selected.rows, "Published row inventory mismatch");
+        bounds::corrupt(rows == count, "Published row inventory mismatch")?;
         Ok(batches)
     }
 
@@ -453,6 +611,61 @@ impl CutStore {
             .join(format!("{table}.{cut_id}.{digest}.parquet"));
         immutable(&path, &bytes)?;
         Ok((path.to_string_lossy().into_owned(), digest))
+    }
+
+    /// Local append-only metadata tables. File planning remains Iceberg-owned;
+    /// each admitted file is decoded sequentially with the same operation budget.
+    async fn scan_metadata(&self, table: &Table) -> Result<Vec<RecordBatch>> {
+        let mut tasks = table
+            .scan()
+            .with_concurrency_limit(1)
+            .with_manifest_entry_concurrency_limit(1)
+            .build()?
+            .plan_files()
+            .await?;
+        let mut batches = Vec::new();
+        while let Some(task) = tasks.try_next().await? {
+            self.budget.items(1)?;
+            bounds::corrupt(
+                task.start() == 0
+                    && task.length() == task.file_size_in_bytes()
+                    && task.deletes().is_empty()
+                    && task.data_file_format() == DataFileFormat::Parquet,
+                "Unsupported local metadata scan task",
+            )?;
+            bounds::cap(
+                task.file_size_in_bytes(),
+                self.budget.limits.file_bytes,
+                "Planned file bytes",
+            )?;
+            let rows = task.record_count().ok_or_else(|| {
+                bounds::fault(bounds::FaultCode::CorruptData, "Missing scan row count")
+            })?;
+            bounds::cap(rows, self.budget.limits.rows, "Planned file rows")?;
+            let bytes = table
+                .file_io()
+                .new_input(task.data_file_path())?
+                .read()
+                .await?;
+            let builder = preflight::builder(bytes.clone())?;
+            bounds::corrupt(
+                builder.metadata().file_metadata().num_rows() as u64 == rows
+                    && bytes.len() as u64 == task.file_size_in_bytes(),
+                "Scan inventory mismatch",
+            )?;
+            bounds::corrupt(
+                builder.schema().as_ref()
+                    == &schema_to_arrow_schema(table.metadata().current_schema())?,
+                "Scan schema changed",
+            )?;
+            let decoded = decode_object(bytes, 0, rows as usize, &self.budget)?;
+            bounds::corrupt(
+                decoded.iter().map(RecordBatch::num_rows).sum::<usize>() == rows as usize,
+                "Decoded scan inventory mismatch",
+            )?;
+            batches.extend(decoded);
+        }
+        Ok(batches)
     }
 
     async fn register(
@@ -505,7 +718,7 @@ impl CutStore {
         cut_id: &str,
         object: &(String, String),
         rows: usize,
-    ) -> Result<()> {
+    ) -> Result<bytes::Bytes> {
         let snapshot = table
             .metadata()
             .snapshot_by_id(snapshot_id)
@@ -519,8 +732,7 @@ impl CutStore {
         );
         let bytes = table.file_io().new_input(&object.0)?.read().await?;
         ensure!(crate::hash(&bytes) == object.1, "Immutable object changed");
-        let builder =
-            parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes.clone())?;
+        let builder = preflight::builder(bytes.clone())?;
         ensure!(
             builder.metadata().file_metadata().num_rows() == rows as i64,
             "Parquet row count mismatch"
@@ -528,7 +740,9 @@ impl CutStore {
         ensure!(
             builder.schema().as_ref()
                 == &schema_to_arrow_schema(table.metadata().current_schema())?,
-            "Parquet schema/field IDs mismatch"
+            "Parquet schema/field IDs mismatch: actual {:?}, expected {:?}",
+            builder.schema(),
+            schema_to_arrow_schema(table.metadata().current_schema())?
         );
         let mut added = vec![];
         let manifests = table.manifest_list_reader(snapshot).load().await?;
@@ -556,8 +770,39 @@ impl CutStore {
                 )?],
             "Snapshot contains a different added file set"
         );
-        Ok(())
+        Ok(bytes)
     }
+}
+
+fn decode_object(
+    bytes: bytes::Bytes,
+    offset: usize,
+    count: usize,
+    budget: &bounds::Budget,
+) -> Result<Vec<RecordBatch>> {
+    budget.decoding()?;
+    budget.decoded_rows(count as u64)?;
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        preflight::builder(bytes)?
+            .with_offset(offset)
+            .with_limit(count)
+            .with_batch_size(count.clamp(1, 1000))
+            .build()?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(anyhow::Error::from)
+    }))
+    .map_err(|_| {
+        bounds::fault(
+            bounds::FaultCode::CorruptData,
+            "Parquet value decoder panicked",
+        )
+    })?
+    .map_err(|e| {
+        bounds::fault(
+            bounds::FaultCode::CorruptData,
+            format!("Parquet value decode: {e}"),
+        )
+    })
 }
 
 fn ident(name: &str) -> Result<TableIdent> {
@@ -622,10 +867,26 @@ fn immutable(path: &Path, bytes: &[u8]) -> Result<()> {
     // Publish a fully fsynced temp inode with a no-clobber hard link. A crash
     // cannot leave a truncated file at the durable identity's canonical path.
     if path.exists() {
-        ensure!(
-            fs::read(path)? == bytes,
-            "Immutable object/journal identity reused with different bytes"
-        );
+        let mut existing = File::open(path)?;
+        bounds::corrupt(
+            existing.metadata()?.len() == bytes.len() as u64,
+            "Immutable object length changed",
+        )?;
+        let mut offset = 0;
+        let mut block = [0; 65536];
+        while offset < bytes.len() {
+            let n = block.len().min(bytes.len() - offset);
+            existing.read_exact(&mut block[..n])?;
+            bounds::corrupt(
+                block[..n] == bytes[offset..offset + n],
+                "Immutable object identity reused with different bytes",
+            )?;
+            offset += n;
+        }
+        bounds::corrupt(
+            existing.read(&mut block[..1])? == 0,
+            "Immutable object grew during comparison",
+        )?;
         File::open(path.parent().unwrap())?.sync_all()?;
         return Ok(());
     }

@@ -303,6 +303,33 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(TOKEN, response.text)
                 self.assertNotIn("/private", response.text)
 
+    async def test_factual_code_parity_keeps_private_diagnostics(self):
+        from archetype_ddlog_preview import NativeError
+
+        for code, status in (
+            ("resource_limit", 422),
+            ("unsupported_format", 422),
+            ("corrupt_data", 500),
+            ("invalid_request", 400),
+        ):
+            with (
+                self.subTest(code=code),
+                patch.object(
+                    self.backend,
+                    "status",
+                    side_effect=NativeError(
+                        "operation", "/private/path " + TOKEN, "status", code=code
+                    ),
+                ),
+            ):
+                async with local(self.ingress) as http, session(http) as client:
+                    response = await http.post("/invoke", content=request())
+                    self.assertEqual(response.status_code, status)
+                    self.assertEqual(response.json()["error"], {"code": code, "outcome": "unknown"})
+                    self.assertEqual(await mcp(client, request()), response.json())
+                    self.assertNotIn(TOKEN, response.text)
+                    self.assertNotIn("/private", response.text)
+
     async def test_cancelled_http_waiter_retains_capacity_across_mcp_and_lifespan(self):
         self.backend.release.clear()
         self.ingress = self.make(max_inflight=1)
