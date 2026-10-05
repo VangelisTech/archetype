@@ -616,4 +616,4 @@ ddlog-python-check: ddlog-preview-audit
 
 .PHONY: current-harness-contracts
 current-harness-contracts:
-	@PYTHONPATH=$(PYTHONPATH):. uv run pytest --noconftest -q tests/scripts/test_quality_workflow.py tests/scripts/test_operational_capture.py tests/scripts/test_acceptance_receipts.py tests/scripts/test_validate_contracts.py
+	@PYTHONPATH=$(PYTHONPATH):. uv run pytest --noconftest -q tests/scripts/test_quality_workflow.py tests/scripts/test_operational_capture.py tests/scripts/test_acceptance_receipts.py tests/scripts/test_validate_contracts.py tests/artifacts/test_remote_publication.py

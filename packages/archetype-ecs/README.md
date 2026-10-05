@@ -44,7 +44,7 @@ uv run python ../../examples/native_simulation.py
 
 The driver needs the DDlog toolchain configured by the pinned upstream runtime.
 Use Rust 1.95.0 for the Archetype C ABI. The compiled-program driver follows its
-own toolchain contract. The package loader requires ABI 1 and pure contract 3
+own toolchain contract. The package loader requires ABI 1 and pure contract 4
 before opening storage, registry or worlds. Supported lock platforms are macOS
 and Linux. See [installation and native ownership](../../docs/guide/runtime.md).
 

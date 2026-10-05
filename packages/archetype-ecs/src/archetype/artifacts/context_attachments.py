@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from archetype.artifacts._ingestion import references, validate_discovery
+from archetype.artifacts._ingestion import publish_objects, references, validate_discovery
 from archetype.artifacts.models import ArtifactRef, ArtifactSource
 from archetype.artifacts.pipeline import FileIngestionPipeline, scan_sources
 from archetype.storage.context_artifacts import ArtifactTarget, ContextArtifactStorage
@@ -46,8 +46,9 @@ def prepare_context_attachments(
             path.lower().endswith((".diff", ".patch")) for path in values["logical_path"]
         ),
     )
+    common, values = publish_objects(storage, target, stored, values)
     occurrences = storage.encode(
-        pipeline.intrinsic_common_index(stored),
+        pipeline.intrinsic_common_index(common),
         tuple((name.removeprefix("artifact_"), frame) for name, frame in typed),
     )
     return PreparedContextAttachments(target, references(values), occurrences)

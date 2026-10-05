@@ -41,6 +41,7 @@ PAGES = {
     "runtime-models": (
         "Immutable native values",
         (
+            "RemoteData",
             "Change",
             "CutPage",
             "ComponentProjection",

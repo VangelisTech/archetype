@@ -51,6 +51,7 @@ from archetype.runtime.contracts import (
 from archetype.runtime.contracts import (
     Relation as Relation,
 )
+from archetype.runtime.contracts import RemoteData as RemoteData
 from archetype.runtime.contracts import (
     RowPage as RowPage,
 )
@@ -101,6 +102,7 @@ from archetype.runtime.world import (
 )
 
 __all__ = [
+    "RemoteData",
     "ComponentProjection",
     "Composition",
     "Connection",

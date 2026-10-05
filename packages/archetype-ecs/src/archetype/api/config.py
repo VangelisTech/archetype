@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from archetype_native.config import RemoteData
 from archetype_native.ingress import (
     Component,
     ContextResource,
@@ -26,6 +27,7 @@ class ServerConfig:
     native: tuple[tuple[str, str | None], ...]
     resources: tuple[Any, ...]
     grants: tuple[Grant, ...]
+    remote_data: RemoteData | None = None
 
     def __post_init__(self):
         if type(self.native) is not tuple or any(
@@ -50,6 +52,8 @@ class ServerConfig:
             values[key] is None for key in ("registry", "builds", "driver")
         ):
             raise ValueError("Live native paths must be supplied together")
+        if self.remote_data is not None and type(self.remote_data) is not RemoteData:
+            raise ValueError("Expected immutable RemoteData configuration")
         validate_configuration(self.resources, self.grants)
 
     @classmethod
@@ -102,6 +106,12 @@ class ServerConfig:
             grants.append(
                 Grant(grant["principal"], grant["resource"], frozenset(grant["capabilities"]))
             )
+        remote_path = os.environ.get("ARCHETYPE_REMOTE_DATA_PATH")
+        remote = (
+            None
+            if remote_path is None
+            else RemoteData.from_dict(tomllib.loads(Path(remote_path).read_text()))
+        )
         return cls(
             tuple(
                 (key, os.environ.get(env))
@@ -115,6 +125,7 @@ class ServerConfig:
             ),
             tuple(resources),
             tuple(grants),
+            remote,
         )
 
 

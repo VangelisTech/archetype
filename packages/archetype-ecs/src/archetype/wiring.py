@@ -16,6 +16,7 @@ def build_runtime_resources(config: RuntimeBootstrapConfig):
     values = dict(config.native)
     runtime = ArchetypeRuntime(
         library=values["library"],
+        remote_data=config.remote_data,
         store=values["store"],
         registry=values["registry"],
         builds=values["builds"],

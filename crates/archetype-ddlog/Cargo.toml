@@ -19,15 +19,20 @@ ddlog-runtime = { git = "https://github.com/everettVT/ddlog-runtime", rev = "e7b
 futures = "0.3"
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "4d83bc77dc10cff851a3ef427c451ff977bc3643" }
 iceberg-catalog-sql = { git = "https://github.com/apache/iceberg-rust", rev = "4d83bc77dc10cff851a3ef427c451ff977bc3643" }
+opendal = { version = "=0.58.2", default-features = false, features = ["services-s3", "http-transport-reqwest-rustls", "executors-tokio"] }
+http = "1"
+opendal-http-transport-reqwest = { version = "=0.58.2", default-features = false, features = ["rustls"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "stream"] }
 parquet = { version = "59.2", default-features = false, features = ["arrow"] }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["any", "sqlite", "runtime-tokio"] }
-tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync", "time"] }
 typetag = "0.2"
 url = "2"
 uuid.workspace = true
 
 [dev-dependencies]
+tokio = { version = "1.48", features = ["test-util"] }
 tempfile = "3"

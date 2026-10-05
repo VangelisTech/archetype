@@ -153,7 +153,7 @@ pub extern "C" fn arct_ddlog_abi_version() -> u32 {
 /// locks, storage, registry access or world admission.
 #[unsafe(no_mangle)]
 pub extern "C" fn arct_ddlog_contract_version() -> u32 {
-    3
+    4
 }
 /// # Safety
 /// data points to len readable bytes; out is writable and holds no live buffer.

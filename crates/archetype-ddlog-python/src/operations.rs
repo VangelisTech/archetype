@@ -38,6 +38,7 @@ pub struct Open {
     build_root: Option<PathBuf>,
     driver: Option<PathBuf>,
     store_root: PathBuf,
+    remote_data: Option<archetype_ddlog::store::config::RemoteData>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -164,6 +165,11 @@ pub enum Operation {
         world: String,
         run: String,
     },
+    PublishContextObject {
+        target: ArtifactTarget,
+        sha256: String,
+        size_bytes: u64,
+    },
     ContextArtifactTarget {
         target: ArtifactTarget,
     },
@@ -214,7 +220,10 @@ impl Resources {
             .worker_threads(2)
             .enable_all()
             .build()?;
-        let store = runtime.block_on(CutStore::open(&config.store_root))?;
+        let store = runtime.block_on(CutStore::open_with_remote(
+            &config.store_root,
+            config.remote_data,
+        ))?;
         let manager = match (config.registry_root, config.build_root, config.driver) {
             (Some(registry), Some(build), Some(driver)) => Some(Mutex::new(native(
                 WorldManager::new(registry, build, driver),
@@ -296,6 +305,13 @@ impl Resources {
             Operation::ContextAt { world, run } => Ok(serde_json::to_value(
                 self.runtime.block_on(store.context_at(&world, &run))?,
             )?),
+            Operation::PublishContextObject {
+                target,
+                sha256,
+                size_bytes,
+            } => self
+                .runtime
+                .block_on(store.publish_context_object(&target, &sha256, size_bytes)),
             Operation::ContextArtifactTarget { target } => Ok(
                 json!({"object_root":self.runtime.block_on(store.context_artifact_root(&target))?}),
             ),

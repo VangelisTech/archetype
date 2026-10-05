@@ -42,3 +42,28 @@ def references(values: dict[str, list[Any]]) -> tuple[ArtifactRef, ...]:
             strict=True,
         )
     )
+
+
+def publish_objects(storage, target, stored, values):
+    """Publish bounded staged originals outside the lazy scanner graph.
+
+    Typed scanners retain local staged paths; only common metadata and returned
+    references carry the native store's canonical durable location.
+    """
+    from daft import col, lit
+    from daft.functions import when
+
+    frame = stored
+    locations = {}
+    for digest, size in zip(values["sha256"], values["size_bytes"], strict=True):
+        if digest not in locations:
+            locations[digest] = storage.publish_object(target, sha256=digest, size_bytes=int(size))
+            frame = frame.with_column(
+                "object_uri",
+                when(col("sha256") == lit(digest), lit(locations[digest])).otherwise(
+                    col("object_uri")
+                ),
+            )
+    promoted = dict(values)
+    promoted["object_uri"] = [locations[digest] for digest in values["sha256"]]
+    return frame, promoted

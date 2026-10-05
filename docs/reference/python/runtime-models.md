@@ -2,6 +2,37 @@
 
 # Immutable native values
 
+## RemoteData
+
+`from archetype import RemoteData`
+
+Operator-owned remote data placement; local catalog authority is retained.
+
+```python
+RemoteData(version: 'int', uri: 'str', region: 'str', path_style_access: 'bool', credential_source: 'str' = 'aws_environment', endpoint: 'str | None' = None) -> None
+```
+
+| Field | Type |
+| --- | --- |
+| `version` | `int` |
+| `uri` | `str` |
+| `region` | `str` |
+| `path_style_access` | `bool` |
+| `credential_source` | `str` |
+| `endpoint` | `str \| None` |
+
+### as_dict
+
+```python
+as_dict(self) -> 'dict[str, Any]'
+```
+
+### from_dict
+
+```python
+from_dict(value: 'dict[str, Any]') -> 'RemoteData'
+```
+
 ## Change
 
 `from archetype import Change`
