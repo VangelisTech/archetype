@@ -16,7 +16,7 @@ signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]
 authority = "The immutable migration plan, verified destination table and Artifact evidence, staged SQLite control state, higher writer epoch, later committed tick, and final receipt remain authoritative."
 evidence = [
-  "docs/guide/storage-migration.md",
+  "archive/docs/guide/storage-migration.md",
   "tests/migration/test_handlers.py",
 ]
 rationale = "The verifier returns bounded evidence from fresh destination-only resources. A telemetry signal cannot replace cold discovery, content hashes, fenced resume, or a later durable tick."

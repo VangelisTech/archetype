@@ -25,7 +25,7 @@ signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]
 authority = "Snapshot-pinned evaluation inputs, grader results, and durable evaluation receipts remain authoritative."
 evidence = [
-  "docs/guide/service-protocols.md",
+  "archive/docs/guide/service-protocols.md",
   "tests/evaluation/test_receipt_integration.py",
   "tests/evaluation/test_grading_and_query.py",
   "tests/evaluation/test_handler_receipts.py",

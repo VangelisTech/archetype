@@ -27,16 +27,10 @@ from scripts.release_artifact import DISTRIBUTIONS, SCHEMA, manifest_sha256
 
 
 def _manifest() -> dict[str, object]:
-    prefixes = {
-        "archetype-ecs": "archetype_ecs",
-        "archetype-missions": "archetype_missions",
-        "archetype-physical-ai": "archetype_physical_ai",
-        "archetype-research": "archetype_research",
-        "archetype-smol": "archetype_smol",
-    }
+    prefixes = {name: name.replace("-", "_") for name in DISTRIBUTIONS}
     return {
         "schema": SCHEMA,
-        "version": "0.6.0",
+        "version": "0.7.0",
         "commit": "a" * 40,
         "clean_checkout": True,
         "artifacts": [
@@ -44,9 +38,9 @@ def _manifest() -> dict[str, object]:
                 "distribution": distribution,
                 "kind": kind,
                 "name": (
-                    f"{prefixes[distribution]}-0.6.0-py3-none-any.whl"
+                    f"{prefixes[distribution]}-{'0.6.3' if distribution == 'archetype-smol' else '0.7.0'}-py3-none-any.whl"
                     if kind == "wheel"
-                    else f"{prefixes[distribution]}-0.6.0.tar.gz"
+                    else f"{prefixes[distribution]}-{'0.6.3' if distribution == 'archetype-smol' else '0.7.0'}.tar.gz"
                 ),
                 "sha256": "a" * 64,
                 "size_bytes": 1,
@@ -58,16 +52,19 @@ def _manifest() -> dict[str, object]:
 
 
 def test_registry_matrix_pins_every_selected_distribution() -> None:
-    assert _requirements("base", "0.6.0") == ("archetype-ecs==0.6.0",)
-    assert _requirements("research", "0.6.0") == (
-        "archetype-ecs==0.6.0",
-        "archetype-research==0.6.0",
+    assert _requirements("base", "0.7.0") == ("archetype-ecs==0.7.0", "archetype-native==0.7.0")
+    assert _requirements("analysis", "0.7.0") == (
+        "archetype-ecs[analysis]==0.7.0",
+        "archetype-native==0.7.0",
     )
-    assert _requirements("all", "0.6.0") == (
-        "archetype-ecs==0.6.0",
-        "archetype-research==0.6.0",
+    assert _requirements("transports", "0.7.0") == (
+        "archetype-ecs[transports]==0.7.0",
+        "archetype-native==0.7.0",
+        "archetype-transports==0.7.0",
     )
-    assert _requirements("smol", "0.6.0") == ("archetype-smol==0.6.0",)
+    assert _requirements("smol", "0.7.0") == ("archetype-smol==0.6.3",)
+    with pytest.raises(ValueError):
+        _requirements("research", "0.7.0")
 
 
 @pytest.mark.parametrize("value", ["v0.6.0", "0.6", "0.6.0+local", "0.6.0.dev1"])
@@ -80,7 +77,7 @@ def test_production_index_install_uses_no_cache_or_fallback() -> None:
     (command,) = _install_commands(
         uv="uv",
         python=Path("/venv/bin/python"),
-        requirements=("archetype-ecs==0.6.0",),
+        requirements=("archetype-ecs==0.7.0",),
         index_url="https://pypi.org/simple",
         extra_index_url=None,
     )
@@ -96,7 +93,7 @@ def test_production_index_install_uses_no_cache_or_fallback() -> None:
         "--only-binary=:all:",
         "--index-url",
         "https://pypi.org/simple",
-        "archetype-ecs==0.6.0",
+        "archetype-ecs==0.7.0",
     ]
     assert "--extra-index-url" not in command
     assert "--no-config" in command
@@ -104,7 +101,7 @@ def test_production_index_install_uses_no_cache_or_fallback() -> None:
 
 
 def test_test_index_mode_sources_internal_artifacts_before_dependencies() -> None:
-    requirements = _requirements("all", "0.6.0")
+    requirements = _requirements("transports", "0.7.0")
     target, dependencies = _install_commands(
         uv="uv",
         python=Path("/venv/bin/python"),
@@ -124,34 +121,32 @@ def test_test_index_mode_sources_internal_artifacts_before_dependencies() -> Non
     assert "--only-binary=:all:" in target and "--only-binary=:all:" in dependencies
 
 
-def test_registry_probe_rejects_split_compatibility_facades() -> None:
-    probe = _probe_source("all", "0.6.0")
-
-    assert "assert not any(hasattr(archetype, name)" in probe
-    assert '"__getattr__" not in ArchetypeRuntime.__dict__' in probe
-    assert 'not hasattr(research, "CandidateContext")' in probe
-    assert 'find_spec("archetype.artifacts.contracts") is None' in probe
-    assert '"library" not in SyncRuntimeWorld.__dict__' in probe
-    assert '"library" not in SyncArchetypeRuntime.__dict__' in probe
-    assert 'find_spec("archetype.smol") is None' in probe
+def test_registry_probe_uses_current_runtime_and_rejects_false_success() -> None:
+    probe = _probe_source("transports", "0.7.0")
+    assert "if sys.flags.optimize:" in probe
+    assert "origin(name)" in probe
+    assert 'find_spec("archetype.research") is None' in probe
+    assert "ArchetypeRuntime(storage_only=True)" in probe
+    assert "PrincipalDirectory" in probe
+    assert "world_library_manifests" not in probe
+    assert ".dispatcher" not in probe
 
 
 def test_registry_smol_probe_is_isolated_and_behavioral() -> None:
-    probe = _probe_source("smol", "0.6.0")
-
-    assert 'version("archetype-smol") == release_version' in probe
+    probe = _probe_source("smol", "0.7.0")
+    assert "version(\"archetype-smol\") == '0.6.3'" in probe
     assert 'find_spec("archetype.core") is None' in probe
-    assert 'version("archetype-ecs")' in probe
     assert "world.run(steps=2)" in probe
+    assert "counter__count" in probe
 
 
 def test_registry_smoke_derives_version_from_clean_manifest(tmp_path: Path) -> None:
     path = tmp_path / "release-artifact.json"
     path.write_text(json.dumps(_manifest()), encoding="utf-8")
 
-    assert _manifest_version(path) == "0.6.0"
+    assert _manifest_version(path) == "0.7.0"
     assert _manifest_identity(path) == {
-        "version": "0.6.0",
+        "version": "0.7.0",
         "commit": "a" * 40,
         "sha256": manifest_sha256(_manifest()),
     }
@@ -204,7 +199,7 @@ def test_registry_matrix_receipt_records_requirements_and_resolved_inventory(
             return subprocess.CompletedProcess(
                 command,
                 0,
-                stdout="zeta==2\narchetype-ecs==0.6.0\n",
+                stdout="zeta==2\narchetype-ecs==0.7.0\n",
                 stderr="",
             )
         if command[0].endswith("/bin/python"):
@@ -213,7 +208,7 @@ def test_registry_matrix_receipt_records_requirements_and_resolved_inventory(
                 0,
                 stdout=(
                     '{"matrix":"base","libraries":[],"operations":37,'
-                    '"module":"site-packages/archetype","version":"0.6.0"}\n'
+                    '"module":"site-packages/archetype","version":"0.7.0"}\n'
                 ),
                 stderr="",
             )
@@ -221,7 +216,7 @@ def test_registry_matrix_receipt_records_requirements_and_resolved_inventory(
 
     result = _run_matrix(
         matrix="base",
-        version="0.6.0",
+        version="0.7.0",
         index_url="https://pypi.org/simple",
         extra_index_url=None,
         uv="uv",
@@ -229,6 +224,6 @@ def test_registry_matrix_receipt_records_requirements_and_resolved_inventory(
         run=run,
     )
 
-    assert result["requirements"] == ["archetype-ecs==0.6.0"]
-    assert result["installed_distributions"] == ["archetype-ecs==0.6.0", "zeta==2"]
+    assert result["requirements"] == ["archetype-ecs==0.7.0", "archetype-native==0.7.0"]
+    assert result["installed_distributions"] == ["archetype-ecs==0.7.0", "zeta==2"]
     assert any(command[2:4] == ["pip", "freeze"] for command in calls)

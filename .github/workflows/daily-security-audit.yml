@@ -78,14 +78,15 @@ jobs:
             Produce today's structured Archetype security audit evidence.
 
             Begin with these current sources:
-            - docs/reports/2026-03-28-security-program-review.md
-            - docs/guide/api-layer.md
-            - current ingress and authentication code in packages/archetype-ecs/src/archetype/api/deps.py, packages/archetype-ecs/src/archetype/api/errors.py, and packages/archetype-ecs/src/archetype/api/routes/
-            - authorization and audit boundaries in packages/archetype-ecs/src/archetype/commands/policy.py, packages/archetype-ecs/src/archetype/commands/dispatch.py, and packages/archetype-ecs/src/archetype/commands/audit.py
-            - security-relevant durability, redaction, and audit boundaries under packages/archetype-ecs/src/archetype/storage/, packages/archetype-ecs/src/archetype/artifacts/, packages/archetype-ecs/src/archetype/activities/, and packages/archetype-ecs/src/archetype/redaction/
-            - concrete composition in packages/archetype-ecs/src/archetype/wiring.py and packages/archetype-ecs/src/archetype/runtime_resources.py
-            - trusted extension discovery under packages/archetype-ecs/src/archetype/world_libraries/ and each packages/archetype-*/src/archetype/*/_extension.py manifest adapter
+            - docs/guide/specification.md and docs/guide/transports.md
+            - authentication and operator configuration in packages/archetype-ecs/src/archetype/api/principals.py, config.py, and app.py
+            - complete grant checks, bounded errors, and closed values in packages/archetype-native/src/archetype_native/ingress.py and wire.py
+            - MCP hosting in packages/archetype-transports/src/archetype_transports/ and CLI envelopes in packages/archetype-ecs/src/archetype/cli/main.py
+            - durability and bounded file/provider I/O under crates/archetype-ddlog/src/store/ and crates/archetype-ddlog-python/src/
+            - artifact staging and publication under packages/archetype-ecs/src/archetype/artifacts/ and storage/context_artifacts.py
+            - concrete composition in packages/archetype-ecs/src/archetype/wiring.py and supported runtime lifetime in packages/archetype-ecs/src/archetype/runtime/
             - dependency evidence under .github/security-artifacts/
+            - verify credentials and internal diagnostics never enter public results, logs, or persisted provider profiles
 
             Requirements:
             - Focus on outstanding security findings, noteworthy positive design decisions, dependency CVEs/advisories, dependency-resolution failures, and the highest-priority next actions

@@ -10,5 +10,3 @@ This is the supported 0.7 facade. Native Host, raw C ABI requests and concrete s
 | [Worlds and programs](python/world-handle.md) | `RuntimeWorld`, `SyncRuntimeWorld`, `RuntimeProgram`, `SyncRuntimeProgram`, `RuntimeCut`, `SyncRuntimeCut`, `RuntimeArtifacts`, `SyncRuntimeArtifacts` |
 | [Immutable native values](python/runtime-models.md) | `Change`, `CutPage`, `ComponentProjection`, `Composition`, `Connection`, `Endpoint`, `InputPort`, `LeafProgram`, `OutputPort`, `ProgramNode`, `ProgramReference`, `Relation`, `Boundary`, `WorldStatus`, `Admission`, `RowPage`, `ArtifactContextInfo`, `ArtifactOccurrence`, `ArtifactPage`, `ArtifactUploadReceipt`, `PreparedArtifacts` |
 | [Offline contracts](python/artifacts.md) | `ArtifactSource`, `Component`, `Outcome`, `GraderContract` |
-
-See [migration](../guide/migration-0.7.md) for the versioned 0.6 API and consumer decisions.

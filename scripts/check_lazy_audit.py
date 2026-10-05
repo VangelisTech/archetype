@@ -90,7 +90,6 @@ from pathlib import Path
 
 WORKSPACE_SOURCE_ROOTS: tuple[str, ...] = (
     "packages/archetype-ecs/src",
-    "packages/archetype-research/src",
     "packages/archetype-smol/src",
 )
 LEGACY_SOURCE_ROOT = "src"

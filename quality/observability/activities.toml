@@ -20,7 +20,7 @@ signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
 authority = "The local activity catalog's immutable admission, fenced attempt, provider-operation binding, bounded result reference, and exact observation settlement remain authoritative."
 evidence = [
-  "docs/guide/activities.md",
+  "archive/docs/guide/activities.md",
   "tests/activities/test_activity_catalog_contracts.py",
 ]
 rationale = "The coordinator emits no second authority signal; durable control facts and typed return values expose every admitted, ambiguous, recovered, and settled transition."

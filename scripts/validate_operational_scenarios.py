@@ -51,7 +51,7 @@ def _load_registry(path: Path) -> dict[str, Any]:
         payload = tomllib.load(stream)
     if type(payload.get("version")) is not int or payload["version"] != 1:
         raise ValueError(f"{path}: unsupported operational scenario registry version")
-    unknown = set(payload) - {"version", "scenario", "tracked_receipt", "compatibility_example"}
+    unknown = set(payload) - {"version", "scenario", "tracked_receipt"}
     if unknown:
         raise ValueError(f"{path}: unknown top-level fields {sorted(unknown)}")
     rows = payload.get("scenario")
@@ -754,26 +754,7 @@ def validate_operational_scenarios(
         for path in examples.glob("[0-9][0-9]_*.py")
         if path.is_file()
     }
-    compatibility = registry.get("compatibility_example", [])
-    classified = set()
-    for row in compatibility:
-        if (
-            not isinstance(row, dict)
-            or set(row) != {"path", "version_scope", "contract_registry"}
-            or row["version_scope"] != "0.6"
-            or row["path"] not in numbered_examples
-            or row["path"] in classified
-            or row["path"] in covered_examples
-        ):
-            errors.append("invalid or duplicate compatibility example disposition")
-            continue
-        if (
-            row["contract_registry"] != "compatibility/0.6/quality/operational_scenarios.toml"
-            or not (root / row["contract_registry"]).is_file()
-        ):
-            errors.append("missing matched 0.6 operational registry")
-        classified.add(row["path"])
-    missing_examples = sorted(numbered_examples - covered_examples - classified)
+    missing_examples = sorted(numbered_examples - covered_examples)
     if missing_examples:
         errors.append(f"numbered examples missing manifest scenarios: {missing_examples}")
 

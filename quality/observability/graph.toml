@@ -17,7 +17,7 @@ signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]
 authority = "Persisted world component and relation state, plus the returned lazy frames and typed edge results, remain authoritative."
 evidence = [
-  "docs/design/graph-system.md",
+  "archive/docs/design/graph-system.md",
   "tests/graph/test_edge_contract.py",
 ]
 rationale = "Graph helpers consume structural world-handle operations; they do not create a second telemetry authority for world mutations or reads."

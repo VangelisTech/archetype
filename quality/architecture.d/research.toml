@@ -1,9 +1,0 @@
-# Architecture policy fragment: research.
-# Merged into quality/architecture.toml by scripts/check_architecture.py;
-# fragments may declare only rule/exception arrays, never scalar policy.
-
-[[top_level_family_rule]]
-name = "research-domain-family"
-consumer = "archetype.research"
-# Core is reserved infrastructure and is implicitly permitted by the checker.
-allowed_families = ["archetype.storage", "archetype.world"]

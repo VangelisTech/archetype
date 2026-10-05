@@ -26,7 +26,6 @@ COPYRIGHT_RE = re.compile(r"Copyright \d{4}(?:-\d{4})? Vangelis Technologies Inc
 LICENSE_MARKERS = ("SPDX-License-Identifier: Apache-2.0", "Apache License")
 WORKSPACE_SOURCE_ROOTS = (
     Path("packages/archetype-ecs/src"),
-    Path("packages/archetype-research/src"),
     Path("packages/archetype-smol/src"),
 )
 

@@ -1,35 +1,10 @@
-# Examples
+# DDlog examples
 
-The native DDlog preview is documented in
-[DDlog migration](../docs/guide/ddlog-runtime.md#run-the-evidence).
-The Python examples below still use the retained Daft runtime.
+[`native_simulation.py`](native_simulation.py) runs a DDlog program through the
+supported Python runtime. Configure the matched native library and DDlog
+compiler before running it; see [Quickstart](../docs/guide/quickstart.md).
 
-Runnable examples demonstrating Archetype's core features. Each example is self-contained and numbered to match the recommended onboarding order.
-
-```bash
-uv run python examples/<filename>.py
-```
-
-| # | Example | Description | Requires |
-|---|---------|-------------|----------|
-| 0 | [`00_quickstart.py`](00_quickstart.py) | Smallest complete component + processor + runtime simulation | None |
-| 1 | [`01_world_mutations.py`](01_world_mutations.py) | Trusted actor-free mutations: spawn/despawn, update, component and processor changes, fork, and history | None |
-| 2 | [`02_fork_counterfactual.py`](02_fork_counterfactual.py) | Butterfly effect: fork a branch, nudge it by 1e-9, and diff the two append-only histories with a single join — three dynamical regimes, three fates | None |
-| 3 | [`03_time_travel.py`](03_time_travel.py) | Rewind to any past tick by filtering the `tick` column, then fork a counterfactual branch and diff it against the source | None |
-| 4 | [`04_messaging.py`](04_messaging.py) | Agent-to-agent messaging via an application-local mailbox resource, priority-ordered processors, and lifecycle hooks | None |
-| 5 | [`05_llm_agents.py`](05_llm_agents.py) | LLM-powered agents — each entity gets a parallel LLM call every tick via `daft.functions.prompt` | `OPENAI_API_KEY` |
-| 7 | [`07_hooks.py`](07_hooks.py) | Lifecycle hooks for audit logs, tick metrics, and temporary debug traces | None |
-| 9 | [`09_cloud_storage.py`](09_cloud_storage.py) | Cloud storage configurations through `StorageConfig` and the runtime API | Optional cloud credentials |
-| 10 | [`10_autoresearch.py`](10_autoresearch.py) | Multi-run autoresearch through the runtime workflow | None |
-| 11 | [`11_graph_relationships.py`](11_graph_relationships.py) | Edge entities: build a hierarchy, traverse it, read the graph at an earlier tick, cascade after a despawn | None |
-| 12 | [`12_prefabs.py`](12_prefabs.py) | PreFabs: author a template with a subtree, instantiate copies with overrides and IsA lineage, upgrade by re-instantiation | None |
-| 13 | [`13_biome_rts.py`](13_biome_rts.py) | Biome-inspired prefab asset library composed into an RTS command hierarchy, minimap, fog of war, and possessed-unit view | None |
-| 14 | [`14_biome_agent.py`](14_biome_agent.py) | Agent observes and controls Sander Mertens' actual Biome game, then records native Drill evidence in Archetype | Running Biome/Flecs REST, or `--launch` with git, CMake, and a C toolchain |
-
-## Supplementary
-
-| Example | Description | Requires |
-|---------|-------------|----------|
-| [`problem_definition_autoresearch.py`](problem_definition_autoresearch.py) | [Example-local](problem_definition_mission/README.md), counterexample-guided agent mission with durable evidence, three-perspective ratification, and GEPA prompt search | `problem-definition` dependency group; Codex login or `OPENAI_API_KEY` for live mode; offline needs neither |
-| [`pr_triage.py`](pr_triage.py) | PR triage agent that dogfoods Archetype | Authenticated `gh` CLI |
-| [`simulation_script.py`](simulation_script.py) | Standalone simulation script for quick prototyping | None |
+MCP and CLI use the same operations documented in
+[Transports](../docs/guide/transports.md). The former Python runtime examples
+are removed. Bookmark-grounded dogfoods will each include their DDlog program,
+synthetic inputs and a public-ingress runner with real remote-store evidence.

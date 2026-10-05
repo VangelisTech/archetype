@@ -170,20 +170,13 @@ def _expected_outputs(_locations=None):
         if slug == "artifacts":
             page.extend(
                 [
-                    "These retained contracts serve offline ingestion and analysis. They do not install a second live execution owner. Research and generic Biome retain their explicit 0.6 compatibility role; Smol remains independent.",
+                    "These retained contracts serve offline ingestion and analysis. They do not install a second live execution owner. Smol remains independent.",
                     "",
                 ]
             )
         for name in names:
             page.extend(_symbol(name))
         outputs[DOCS_DIR / "python" / (slug + ".md")] = "\n".join(page)
-    index.extend(
-        [
-            "",
-            "See [migration](../guide/migration-0.7.md) for the versioned 0.6 API and consumer decisions.",
-            "",
-        ]
-    )
     outputs[DOCS_DIR / "python-api.md"] = "\n".join(index)
     return outputs
 

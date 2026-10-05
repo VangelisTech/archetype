@@ -195,8 +195,8 @@ def _markdown(value: str) -> str:
 def _standing_audit_url(run_url: str) -> str:
     repository_url, separator, _ = run_url.partition("/actions/runs/")
     if separator and repository_url.startswith("https://github.com/"):
-        return f"{repository_url}/blob/main/docs/reports/2026-03-28-security-program-review.md"
-    return "https://github.com/VangelisTech/archetype/blob/main/docs/reports/2026-03-28-security-program-review.md"
+        return f"{repository_url}/blob/main/archive/docs/reports/2026-03-28-security-program-review.md"
+    return "https://github.com/VangelisTech/archetype/blob/main/archive/docs/reports/2026-03-28-security-program-review.md"
 
 
 def render_report(

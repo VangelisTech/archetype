@@ -217,7 +217,7 @@ indent-style = "space"
 
 [tool.ty.environment]
 python-version = "3.12"
-extra-paths = ["packages/archetype-ecs/src", "packages/archetype-native/src", "packages/archetype-transports/src", "packages/archetype-smol/src", "packages/archetype-research/src"]
+extra-paths = ["packages/archetype-ecs/src", "packages/archetype-native/src", "packages/archetype-transports/src", "packages/archetype-smol/src"]
 
 [tool.ty.src]
 # ty follows imports from a project root rather than honoring pre-commit's
@@ -225,7 +225,6 @@ extra-paths = ["packages/archetype-ecs/src", "packages/archetype-native/src", "p
 # bench/evals/experiments/examples/scripts and the vendored .venv/stdlib stubs.
 include = [
     "packages/archetype-ecs/src",
-    "packages/archetype-research/src",
     "packages/archetype-smol/src",
     "packages/archetype-native/src",
     "packages/archetype-transports/src",

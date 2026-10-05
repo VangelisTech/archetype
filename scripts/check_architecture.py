@@ -957,8 +957,6 @@ def audit_repository(
             result.policy_errors.append(
                 f"world-library composition adapter is not a composition root: {module}"
             )
-    if policy_version >= 4 and not world_library_families:
-        result.policy_errors.append("architecture policy registers no world-library families")
 
     if policy_version >= 3:
         common_family_overlap = sorted(registered_family_scopes & common_family_imports)

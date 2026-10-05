@@ -1945,3 +1945,11 @@ forbidden = []
 
     with pytest.raises(ValueError, match="duplicate package_rule name"):
         checker.audit_repository(policy, repo_root=tmp_path)
+
+
+def test_repository_can_remove_all_world_library_registrations() -> None:
+    policy = checker._load_policy(checker.DEFAULT_POLICY)
+    assert policy["world_library_policy"]["families"] == []
+    assert policy.get("world_library_adapter", []) == []
+    assert "packages/archetype-research/src" not in policy["source_roots"]
+    assert checker.audit_repository(checker.DEFAULT_POLICY).ok

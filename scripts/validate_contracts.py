@@ -21,7 +21,7 @@ REGISTRY = ROOT / "quality" / "contracts.toml"
 EVAL_PROFILES = ROOT / "quality" / "eval_profiles.toml"
 _ID = re.compile(r"^[a-z][a-z0-9]*(?:[._][a-z0-9]+)+$")
 _RISKS = {"low", "medium", "high"}
-_PROFILES = {"quick", "pr", "main", "nightly", "release", "compatibility"}
+_PROFILES = {"quick", "pr", "main", "nightly", "release"}
 
 
 def load_contracts(path: Path = REGISTRY) -> list[dict[str, Any]]:
@@ -183,16 +183,9 @@ def validate_contracts(
         except Exception as exc:
             errors.append(f"cannot build eval inventory: {exc}")
 
-    historical_path = root / "compatibility/0.6/quality/contracts.toml"
-    historical = load_contracts(historical_path) if historical_path.is_file() else []
-    if any(
-        row.get("version_scope") != "0.6" or row.get("profiles") != ["compatibility"]
-        for row in historical
-    ):
-        errors.append("Historical contracts must declare exact 0.6 compatibility scope")
     seen: set[str] = set()
     mapped_evals: set[str] = set()
-    for index, row in enumerate([*rows, *historical]):
+    for index, row in enumerate(rows):
         label = f"contract[{index}]"
         contract_id = row.get("id")
         if not isinstance(contract_id, str) or not _ID.fullmatch(contract_id):
