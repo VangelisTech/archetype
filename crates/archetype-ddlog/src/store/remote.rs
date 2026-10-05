@@ -57,10 +57,10 @@ impl RemoteBackend {
         if let Some(endpoint) = &profile.endpoint {
             builder = builder.endpoint(endpoint);
         }
-        if let Ok(token) = std::env::var("AWS_SESSION_TOKEN") {
-            if !token.is_empty() {
-                builder = builder.session_token(&token);
-            }
+        if let Ok(token) = std::env::var("AWS_SESSION_TOKEN")
+            && !token.is_empty()
+        {
+            builder = builder.session_token(&token);
         }
         let operator =
             Operator::new(builder).map_err(|_| anyhow!("Provider configuration unavailable"))?;
