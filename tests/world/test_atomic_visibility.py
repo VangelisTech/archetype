@@ -17,10 +17,7 @@ from archetype.core.config import StorageConfig
 from archetype.storage.catalog import WorldRecord
 from archetype.storage.service import PinnedVisibility
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.contract("world.tick.atomic_visibility"),
-]
+pytestmark = [pytest.mark.asyncio]
 
 
 @dataclass(slots=True)

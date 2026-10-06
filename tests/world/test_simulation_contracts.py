@@ -22,7 +22,7 @@ from archetype.world.simulation import (
     step,
 )
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.contract("world.tick.atomic_visibility")]
+pytestmark = [pytest.mark.asyncio]
 
 
 class _World:

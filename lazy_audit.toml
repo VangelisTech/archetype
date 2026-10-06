@@ -120,27 +120,6 @@ reason = "HTTP JSON response boundary: convert the already-collected Daft result
 
 
 [[entries]]
-path = "packages/archetype-research/src/archetype/research/views.py"
-symbol = "next_iteration"
-expr = "materialized.to_pylist"
-method = "to_pylist"
-reason = "Bounded control-plane history extract: StorageService has already admitted and materialized the query; deterministic Run ids and statuses then enter Python control flow to reject ambiguous resume state."
-
-[[entries]]
-path = "packages/archetype-research/src/archetype/research/views.py"
-symbol = "read_experiment"
-expr = "materialized.to_pylist"
-method = "to_pylist"
-reason = "Single-row experiment-contract extract: StorageService has already admitted and materialized the query; the persisted identity and JSON configuration digest then enter Python control flow for exact collision rejection before resume."
-
-[[entries]]
-path = "packages/archetype-research/src/archetype/research/views.py"
-symbol = "read_head"
-expr = "materialized.to_pylist"
-method = "to_pylist"
-reason = "Single-row loop-state extract: StorageService has already admitted and materialized the query; the latest BranchHead then enters Python control flow for incumbent comparison and entity-id routing."
-
-[[entries]]
 path = "packages/archetype-ecs/src/archetype/core/aio/async_world.py"
 symbol = "AsyncWorld._move_entity"
 expr = "df.to_pylist"

@@ -2,7 +2,7 @@
 
 `ArchetypeRuntime` is the supported 0.7 entry point. Construction, handles and
 context entry are inert. The first operation loads the matched C ABI library,
-checks ABI 1 and contract 3, then opens one private owner. The library reuses the
+checks ABI 1 and contract 4, then opens one private owner. The library reuses the
 pinned DDlog WorldManager and CutStore. Public handles expose logical resources.
 
 ```python

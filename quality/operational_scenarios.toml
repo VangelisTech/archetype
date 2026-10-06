@@ -1,6 +1,6 @@
 version = 1
 
-# Supported 0.7 gates emit semantic receipts; matched 0.6 examples stay explicit.
+# Supported gates emit semantic receipts against the current product.
 
 [[scenario]]
 id = "native.public"
@@ -101,68 +101,3 @@ artifact_policy = "receipt"
 artifact_schema = "archetype.consumer-migration/v1"
 required_cadence = ["main", "release"]
 semantic_oracle = { kind = "receipt", ref = "scripts/run_consumer_acceptance.py::main" }
-
-[[compatibility_example]]
-path = "examples/00_quickstart.py"
-version_scope = "0.6"
-contract_registry = "compatibility/0.6/quality/operational_scenarios.toml"
-
-[[compatibility_example]]
-path = "examples/01_world_mutations.py"
-version_scope = "0.6"
-contract_registry = "compatibility/0.6/quality/operational_scenarios.toml"
-
-[[compatibility_example]]
-path = "examples/02_fork_counterfactual.py"
-version_scope = "0.6"
-contract_registry = "compatibility/0.6/quality/operational_scenarios.toml"
-
-[[compatibility_example]]
-path = "examples/03_time_travel.py"
-version_scope = "0.6"
-contract_registry = "compatibility/0.6/quality/operational_scenarios.toml"
-
-[[compatibility_example]]
-path = "examples/04_messaging.py"
-version_scope = "0.6"
-contract_registry = "compatibility/0.6/quality/operational_scenarios.toml"
-
-[[compatibility_example]]
-path = "examples/05_llm_agents.py"
-version_scope = "0.6"
-contract_registry = "compatibility/0.6/quality/operational_scenarios.toml"
-
-[[compatibility_example]]
-path = "examples/07_hooks.py"
-version_scope = "0.6"
-contract_registry = "compatibility/0.6/quality/operational_scenarios.toml"
-
-[[compatibility_example]]
-path = "examples/09_cloud_storage.py"
-version_scope = "0.6"
-contract_registry = "compatibility/0.6/quality/operational_scenarios.toml"
-
-[[compatibility_example]]
-path = "examples/10_autoresearch.py"
-version_scope = "0.6"
-contract_registry = "compatibility/0.6/quality/operational_scenarios.toml"
-
-[[compatibility_example]]
-path = "examples/11_graph_relationships.py"
-version_scope = "0.6"
-contract_registry = "compatibility/0.6/quality/operational_scenarios.toml"
-
-[[compatibility_example]]
-path = "examples/12_prefabs.py"
-version_scope = "0.6"
-contract_registry = "compatibility/0.6/quality/operational_scenarios.toml"
-
-[[compatibility_example]]
-path = "examples/13_biome_rts.py"
-version_scope = "0.6"
-contract_registry = "compatibility/0.6/quality/operational_scenarios.toml"
-
-[[compatibility_example]]
-path = "examples/14_biome_agent.py"
-version_scope = "0.6"
-contract_registry = "compatibility/0.6/quality/operational_scenarios.toml"

@@ -360,7 +360,9 @@ impl CutStore {
             "Injected failure after context preparation"
         );
         let table = store.table(TABLE, schema).await?;
-        let object = store.stage_bytes(TABLE, &context.context_id, &root_bytes)?;
+        let object = store
+            .stage_bytes(TABLE, &context.context_id, &root_bytes)
+            .await?;
         ensure!(
             !matches!(fault, ContextFault::AfterObject),
             "Injected failure after context object"
@@ -412,6 +414,73 @@ impl CutStore {
             )?;
         }
         Ok(context)
+    }
+    /// Verify admission before touching staged content. Only the native store
+    /// chooses a provider destination; callers supply content facts, never paths.
+    pub async fn publish_context_object(
+        &self,
+        target: &ArtifactTarget,
+        digest: &str,
+        size: u64,
+    ) -> Result<serde_json::Value> {
+        let store = self.read_scope().await?;
+        let _guard = store.publication.lock().await;
+        store.verify_target_inner(target).await?;
+        bounds::request(
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "Invalid content digest",
+        )?;
+        bounds::cap(size, store.budget.limits.file_bytes, "Content bytes")?;
+        let key = format!("artifact_objects/objects/sha256/{}/{digest}", &digest[..2]);
+        let path = store.root.join(&key);
+        bounds::request(
+            path.canonicalize()? == path,
+            "Content path must not use symlinks",
+        )?;
+        let mut bytes = Vec::new();
+        let mut overflow = false;
+        let actual = store.budget.content(&path, |chunk| {
+            if chunk.len() as u64 <= size.saturating_sub(bytes.len() as u64) {
+                bytes.extend_from_slice(chunk);
+            } else {
+                overflow = true;
+            }
+        })?;
+        bounds::corrupt(
+            !overflow && actual == size && crate::hash(&bytes) == digest,
+            "Content size/digest mismatch",
+        )?;
+        let uri = if let Some(remote) = &store.remote {
+            let uri = remote.profile.location(&key);
+            remote
+                .immutable(
+                    &uri,
+                    bytes.into(),
+                    &store.budget,
+                    store.budget.limits.file_bytes,
+                )
+                .await?;
+            uri
+        } else {
+            File::open(&path)?.sync_all()?;
+            let mut directory = path.parent().unwrap();
+            loop {
+                File::open(directory)?.sync_all()?;
+                if directory == store.root {
+                    break;
+                }
+                directory = directory
+                    .parent()
+                    .ok_or_else(|| anyhow!("Invalid content root"))?;
+            }
+            url::Url::from_file_path(path)
+                .map_err(|_| anyhow!("Invalid content root"))?
+                .to_string()
+        };
+        Ok(serde_json::json!({"object_uri":uri,"sha256":digest,"size_bytes":size}))
     }
     pub async fn context_artifact_root(&self, target: &ArtifactTarget) -> Result<PathBuf> {
         let store = self.read_scope().await?;

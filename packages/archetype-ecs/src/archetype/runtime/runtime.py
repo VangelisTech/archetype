@@ -25,7 +25,7 @@ from archetype_native.ingress import (
 )
 
 from archetype.runtime._native import open_host
-from archetype.runtime.contracts import ComponentProjection
+from archetype.runtime.contracts import ComponentProjection, RemoteData
 
 
 class RuntimeOperationError(RuntimeError):
@@ -55,6 +55,7 @@ class ArchetypeRuntime:
         driver: str | Path | None = None,
         max_inflight: int = 4,
         storage_only: bool = False,
+        remote_data: RemoteData | None = None,
     ):
         if type(max_inflight) is not int or not 1 <= max_inflight <= 16:
             raise ValueError("max_inflight must be 1..16")
@@ -62,7 +63,10 @@ class ArchetypeRuntime:
             storage_only and any(value is not None for value in (registry, builds, driver))
         ):
             raise ValueError("storage_only requires no explicit live paths")
+        if remote_data is not None and type(remote_data) is not RemoteData:
+            raise ValueError("Expected immutable RemoteData configuration")
         self._config = {
+            "remote_data": remote_data,
             "library": library or os.environ.get("ARCHETYPE_NATIVE_LIBRARY"),
             "store_root": store or os.environ.get("ARCHETYPE_STORE"),
             "registry_root": None
@@ -254,6 +258,20 @@ class ArchetypeRuntime:
             try:
                 workflow = artifact_workflow(host)
                 return await asyncio.to_thread(getattr(workflow, method), *arguments)
+            except NativeError as error:
+                code = (
+                    error.code
+                    if error.code
+                    in {
+                        "resource_limit",
+                        "corrupt_data",
+                        "invalid_request",
+                        "unsupported_format",
+                        "conflict",
+                    }
+                    else "operation_failed"
+                )
+                raise RuntimeOperationError(code, outcome="unknown") from None
             except Exception:
                 raise RuntimeOperationError("operation_failed", outcome="unknown") from None
 

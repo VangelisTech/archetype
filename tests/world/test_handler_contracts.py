@@ -29,10 +29,7 @@ from archetype.world.models import (
 )
 from archetype.world.registry import WorldRegistry
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.contract("world.tick.atomic_visibility"),
-]
+pytestmark = [pytest.mark.asyncio]
 
 
 class _Marker(Component):

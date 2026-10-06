@@ -22,21 +22,11 @@ from urllib.parse import urlparse
 from packaging.version import InvalidVersion, Version
 
 if __package__:
-    from .package_smoke import (
-        _LIBRARY_IMPORTS,
-        _OPERATION_COUNTS,
-        _WORLD_STACK_DISTRIBUTIONS,
-        _smol_probe_source,
-    )
-    from .release_artifact import SCHEMA, artifact_records, manifest_sha256
+    from .release_artifact import INDEPENDENT_VERSIONS, SCHEMA, artifact_records, manifest_sha256
 else:  # pragma: no cover - exercised by the command-line entry point
-    from package_smoke import (  # type: ignore[no-redef]
-        _LIBRARY_IMPORTS,
-        _OPERATION_COUNTS,
-        _WORLD_STACK_DISTRIBUTIONS,
-        _smol_probe_source,
-    )
-    from release_artifact import SCHEMA, artifact_records, manifest_sha256
+    from release_artifact import INDEPENDENT_VERSIONS, SCHEMA, artifact_records, manifest_sha256
+
+MATRICES = ("base", "analysis", "transports", "smol")
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
@@ -111,19 +101,20 @@ def _index_url(value: str) -> str:
 
 
 def _requirements(matrix: str, version: str) -> tuple[str, ...]:
-    exact = {
-        distribution: f"{distribution}=={version}"
-        for distribution in (*_WORLD_STACK_DISTRIBUTIONS, "archetype-smol")
-    }
+    native = f"archetype-native=={version}"
     selected = {
-        "base": (exact["archetype-ecs"],),
-        "research": (exact["archetype-ecs"], exact["archetype-research"]),
-        "all": tuple(exact[distribution] for distribution in _WORLD_STACK_DISTRIBUTIONS),
-        "smol": (exact["archetype-smol"],),
+        "base": (f"archetype-ecs=={version}", native),
+        "analysis": (f"archetype-ecs[analysis]=={version}", native),
+        "transports": (
+            f"archetype-ecs[transports]=={version}",
+            native,
+            f"archetype-transports=={version}",
+        ),
+        "smol": (f"archetype-smol=={INDEPENDENT_VERSIONS['archetype-smol']}",),
     }
     try:
         return selected[matrix]
-    except KeyError as error:  # pragma: no cover - internal caller invariant
+    except KeyError as error:
         raise ValueError(f"unknown registry smoke matrix {matrix!r}") from error
 
 
@@ -209,93 +200,78 @@ def _run_checked(
 
 
 def _probe_source(matrix: str, version: str) -> str:
-    if matrix == "smol":
-        return _smol_probe_source(version, matrix)
-
-    expected_libraries = {
-        "base": [],
-        "research": ["research"],
-        "all": ["research"],
-    }[matrix]
-    return f"""
-import asyncio
-import importlib
-import importlib.util
-import json
-import sys
+    if matrix not in MATRICES:
+        raise ValueError("Unknown installation matrix")
+    common = """
+import asyncio, importlib, importlib.util, json, pathlib, sys
 from importlib.metadata import version
-from pathlib import Path
-
-import archetype
-from archetype.api.app import create_app
-from archetype.runtime.runtime import ArchetypeRuntime, SyncArchetypeRuntime
-from archetype.runtime.world import RuntimeWorld, SyncRuntimeWorld
-from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
-
-expected = {expected_libraries!r}
-imports = {_LIBRARY_IMPORTS!r}
-release_version = {version!r}
-assert archetype.__version__ == release_version
-assert version("archetype-ecs") == release_version
-package_root = Path(archetype.__file__).resolve()
-assert "site-packages" in package_root.parts, package_root
-assert not any("/packages/" in value and "/src" in value for value in sys.path), sys.path
-
-for name, module in imports.items():
-    assert (importlib.util.find_spec(module) is not None) is (name in expected), (name, expected)
-    if name in expected:
-        assert version("archetype-" + name) == release_version
-assert importlib.util.find_spec("archetype.episodes") is None
-assert importlib.util.find_spec("archetype.artifacts.contracts") is None
-assert importlib.util.find_spec("archetype.smol") is None
-
-removed_root_names = (
-    "AutoResearchConfig",
-    "AutoResearchResult",
-    "CandidateContext",
-    "EvaluationResult",
-    "HostedEpisodeObservation",
-    "HostedEpisodeRequest",
-    "ModalHostedEpisodeConfig",
-    "ResearchCandidateContext",
-)
-assert not any(hasattr(archetype, name) for name in removed_root_names)
-assert "__getattr__" not in ArchetypeRuntime.__dict__
-assert "__getattr__" not in RuntimeWorld.__dict__
-assert "__getattr__" not in SyncRuntimeWorld.__dict__
-assert "library" not in SyncRuntimeWorld.__dict__
-assert "library" not in SyncArchetypeRuntime.__dict__
-assert importlib.util.find_spec("archetype.missions") is None
-assert importlib.util.find_spec("archetype.physical_ai") is None
-if "research" in expected:
-    research = importlib.import_module("archetype.research")
-    assert not hasattr(research, "CandidateContext")
-    assert not hasattr(importlib.import_module("archetype.research.models"), "CandidateContext")
-
-resources = build_runtime_resources(RuntimeBootstrapConfig.from_env())
-try:
-    names = [manifest.name for manifest in resources.world_library_manifests]
-    assert names == expected, names
-    operation_count = len(resources.dispatcher._registry.specs)
-    assert operation_count == {_OPERATION_COUNTS[matrix]}, operation_count
-finally:
-    asyncio.run(resources.aclose())
-
-app = create_app()
-mission_paths = sorted(
-    path
-    for path in app.openapi()["paths"]
-    if "/missions" in path or "/tasks/" in path
-)
-assert len(mission_paths) == (3 if "missions" in expected else 0), mission_paths
-print(json.dumps({{
-    "matrix": {matrix!r},
-    "libraries": expected,
-    "operations": operation_count,
-    "module": str(package_root),
-    "version": release_version,
-}}))
+if sys.flags.optimize: raise RuntimeError("Optimized registry proof is unsupported")
+def require(value, label):
+    if not value: raise RuntimeError(label)
+def origin(module):
+    path = pathlib.Path(importlib.import_module(module).__file__).resolve()
+    require(path.is_relative_to(pathlib.Path(sys.prefix).resolve()), "Noninstalled module: " + module)
+    return str(path)
 """
+    if matrix == "smol":
+        return (
+            common
+            + f"""
+require(version("archetype-smol") == {INDEPENDENT_VERSIONS["archetype-smol"]!r}, "Smol version")
+require(importlib.util.find_spec("archetype.core") is None, "Smol loaded framework")
+from archetype.smol import Component, Processor, World
+from daft import col
+class Counter(Component):
+    count: int = 0
+class Increment(Processor):
+    components = (Counter,)
+    def process(self, df, *, tick):
+        return df.with_column("counter__count", col("counter__count") + 1)
+world = World(processors=[Increment()])
+world.spawn(Counter())
+world.run(steps=2)
+require(world.query(Counter).to_pylist()[0]["counter__count"] == 2, "Smol execution")
+print(json.dumps({{"matrix":"smol", "module":origin("archetype.smol"), "version":version("archetype-smol")}}))
+"""
+        )
+    modules = ["archetype", "archetype.runtime", "archetype_native"]
+    if matrix == "transports":
+        modules.append("archetype_transports")
+    source = (
+        common
+        + f"""
+require(version("archetype-ecs") == {version!r}, "ECS version")
+require(version("archetype-native") == {version!r}, "Native version")
+origins = {{name:origin(name) for name in {modules!r}}}
+require(importlib.util.find_spec("archetype.research") is None, "Removed Research installed")
+from archetype import ArchetypeRuntime
+require(not any(name == "daft" or name.startswith(("daft.", "archetype.core.")) for name in sys.modules), "Live facade eagerly imported analysis")
+async def inert():
+    async with ArchetypeRuntime(storage_only=True) as runtime:
+        world = runtime.world("inert")
+        require(not any(hasattr(world, name) for name in ("spawn", "step", "request")), "Removed runtime operation")
+        await world.shutdown()
+asyncio.run(inert())
+"""
+    )
+    if matrix == "analysis":
+        source += """
+from archetype import ArtifactSource
+value = ArtifactSource(source_uri="synthetic.txt")
+require(value is not None, "Artifact declaration")
+require(importlib.util.find_spec("daft") is not None, "Analysis extra missing")
+"""
+    if matrix == "transports":
+        source += f"""
+require(version("archetype-transports") == {version!r}, "Transports version")
+from archetype.api.config import ServerConfig
+from archetype.api.principals import PrincipalDirectory
+require(importlib.util.find_spec("mcp") is not None, "Official MCP SDK missing")
+"""
+    return (
+        source
+        + f'\nprint(json.dumps({{"matrix":{matrix!r}, "origins":origins, "version":version("archetype-ecs")}}))\n'
+    )
 
 
 def _run_matrix(
@@ -393,7 +369,7 @@ def smoke_registry(
                 uv=uv,
                 root=root,
             )
-            for matrix in (*_OPERATION_COUNTS, "smol")
+            for matrix in MATRICES
         ]
 
 
@@ -412,7 +388,7 @@ def main(argv: list[str] | None = None) -> int:
         extra_index_url=args.extra_index_url,
     )
     receipt = {
-        "schema": "archetype.registry-install-evidence/v2",
+        "schema": "archetype.registry-install-evidence/v3",
         "version": version,
         "manifest_commit": identity["commit"],
         "manifest_sha256": identity["sha256"],

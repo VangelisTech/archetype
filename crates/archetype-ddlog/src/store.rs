@@ -33,12 +33,16 @@ mod bounded_io;
 #[cfg(test)]
 mod bounded_reads;
 pub mod bounds;
+pub mod config;
 pub mod context_attachments;
 #[cfg(test)]
 mod context_tests;
 pub mod contexts;
 pub mod origin;
 mod preflight;
+mod remote;
+#[cfg(test)]
+mod remote_tests;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -80,6 +84,7 @@ pub enum PublicationFault {
 #[derive(Clone)]
 pub struct CutStore {
     root: PathBuf,
+    remote: Option<Arc<remote::RemoteBackend>>,
     catalog: Arc<dyn Catalog>,
     _owner: Arc<File>,
     publication: Arc<Mutex<()>>,
@@ -89,6 +94,23 @@ pub struct CutStore {
 
 impl CutStore {
     pub async fn open(root: &Path) -> Result<Self> {
+        Self::open_with_remote(root, None).await
+    }
+
+    pub async fn open_with_remote(
+        root: &Path,
+        profile: Option<config::RemoteData>,
+    ) -> Result<Self> {
+        Self::open_data(root, profile, remote::RemoteBackend::new).await
+    }
+    async fn open_data(
+        root: &Path,
+        profile: Option<config::RemoteData>,
+        create: impl FnOnce(config::RemoteData) -> Result<Arc<remote::RemoteBackend>>,
+    ) -> Result<Self> {
+        if let Some(config) = &profile {
+            config.validate()?;
+        }
         fs::create_dir_all(root)?;
         let root = root.canonicalize()?;
         let owner = OpenOptions::new()
@@ -100,19 +122,42 @@ impl CutStore {
         owner
             .try_lock()
             .map_err(|e| anyhow!("Store already owned: {e}"))?;
+        let profile_path = root.join("data_profile_v1.json");
+        if profile.is_some() && root.join("catalog.sqlite").exists() && !profile_path.exists() {
+            return Err(bounds::fault(
+                bounds::FaultCode::Conflict,
+                "Existing local catalog cannot change data provider",
+            ));
+        }
+        let encoded = serde_json::to_vec(&profile)?;
+        if profile_path.exists() {
+            let existing =
+                bounds::Budget::new(bounds::Limits::default()).read_metadata(&profile_path)?;
+            let retained: Option<config::RemoteData> = serde_json::from_slice(&existing)?;
+            if retained != profile {
+                return Err(bounds::fault(
+                    bounds::FaultCode::Conflict,
+                    "Data provider profile differs from retained catalog",
+                ));
+            }
+        } else {
+            immutable(&profile_path, &encoded)?;
+        }
+        let remote = profile.map(create).transpose()?;
         for dir in ["warehouse", "objects", "cuts", "origins", "contexts"] {
             fs::create_dir_all(root.join(dir))?;
         }
         File::open(&root)?.sync_all()?;
         File::open(root.parent().unwrap())?.sync_all()?;
         let budget = bounds::Budget::new(bounds::Limits::default());
-        let catalog = Self::catalog(&root, budget.clone()).await?;
+        let catalog = Self::catalog(&root, budget.clone(), remote.clone()).await?;
         let namespace = NamespaceIdent::new("archetype".into());
         if !catalog.namespace_exists(&namespace).await? {
             catalog.create_namespace(&namespace, HashMap::new()).await?;
         }
         let store = Self {
             root,
+            remote,
             catalog,
             _owner: Arc::new(owner),
             publication: Arc::new(Mutex::new(())),
@@ -123,18 +168,26 @@ impl CutStore {
         Ok(store)
     }
 
-    async fn catalog(root: &Path, budget: Arc<bounds::Budget>) -> Result<Arc<dyn Catalog>> {
+    async fn catalog(
+        root: &Path,
+        budget: Arc<bounds::Budget>,
+        remote: Option<Arc<remote::RemoteBackend>>,
+    ) -> Result<Arc<dyn Catalog>> {
         let catalog = SqlCatalogBuilder::default()
             .uri(format!(
                 "sqlite://{}?mode=rwc",
                 root.join("catalog.sqlite").display()
             ))
-            .warehouse_location(root.join("warehouse").to_string_lossy().into_owned())
+            .warehouse_location(remote.as_ref().map_or_else(
+                || root.join("warehouse").to_string_lossy().into_owned(),
+                |r| r.profile.location("warehouse"),
+            ))
             .sql_bind_style(SqlBindStyle::QMark)
             .prop("pool.max-connections", "1")
             .with_storage_factory(Arc::new(bounded_io::BoundedIo {
                 root: root.to_path_buf(),
                 budget,
+                remote,
             }))
             .load("archetype", HashMap::new())
             .await?;
@@ -149,7 +202,7 @@ impl CutStore {
         }
         let budget = bounds::Budget::new(self.budget.limits.clone());
         Ok(Self {
-            catalog: Self::catalog(&self.root, budget.clone()).await?,
+            catalog: Self::catalog(&self.root, budget.clone(), self.remote.clone()).await?,
             budget,
             scoped: true,
             ..self.clone()
@@ -166,13 +219,16 @@ impl CutStore {
                     &NamespaceIdent::new("archetype".into()),
                     TableCreation::builder()
                         .name(name.into())
-                        .location(
-                            self.root
-                                .join("warehouse")
-                                .join(name)
-                                .to_string_lossy()
-                                .into_owned(),
-                        )
+                        .location(self.remote.as_ref().map_or_else(
+                            || {
+                                self.root
+                                    .join("warehouse")
+                                    .join(name)
+                                    .to_string_lossy()
+                                    .into_owned()
+                            },
+                            |remote| remote.profile.location(&format!("warehouse/{name}")),
+                        ))
                         .schema(schema.clone())
                         .format_version(FormatVersion::V3)
                         .properties(HashMap::from([(
@@ -296,7 +352,7 @@ impl CutStore {
             };
             if !relation.rows.is_empty() {
                 let batch = relation.schema.batch(&cut_id, &relation.rows)?;
-                let object = self.stage_batch(&table_name, &cut_id, &batch)?;
+                let object = self.stage_batch(&table_name, &cut_id, &batch).await?;
                 result.snapshot = Some(
                     self.register(&table, &table_name, &cut_id, &object, batch.num_rows())
                         .await?,
@@ -336,7 +392,7 @@ impl CutStore {
                 Arc::new(StringArray::from(vec![receipt_json.as_str()])),
             ],
         )?;
-        let object = self.stage_batch("cuts", &cut_id, &batch)?;
+        let object = self.stage_batch("cuts", &cut_id, &batch).await?;
         self.register(&table, "cuts", &cut_id, &object, 1).await?;
         ensure!(
             !matches!(fault, PublicationFault::AfterManifest),
@@ -598,23 +654,43 @@ impl CutStore {
         Ok(batches)
     }
 
-    fn stage_batch(
+    async fn stage_batch(
         &self,
         table: &str,
         cut_id: &str,
         batch: &RecordBatch,
     ) -> Result<(String, String)> {
         let bytes = encode_batch(batch)?;
-        self.stage_bytes(table, cut_id, &bytes)
+        self.stage_bytes(table, cut_id, &bytes).await
     }
-    fn stage_bytes(&self, table: &str, cut_id: &str, bytes: &[u8]) -> Result<(String, String)> {
+    fn object_location(&self, table: &str, id: &str, digest: &str) -> String {
+        let key = format!("objects/{table}.{id}.{digest}.parquet");
+        match &self.remote {
+            Some(remote) => remote.profile.location(&key),
+            None => self.root.join(key).to_string_lossy().into_owned(),
+        }
+    }
+    async fn stage_bytes(
+        &self,
+        table: &str,
+        cut_id: &str,
+        bytes: &[u8],
+    ) -> Result<(String, String)> {
         let digest = crate::hash(bytes);
-        let path = self
-            .root
-            .join("objects")
-            .join(format!("{table}.{cut_id}.{digest}.parquet"));
-        immutable(&path, bytes)?;
-        Ok((path.to_string_lossy().into_owned(), digest))
+        let path = self.object_location(table, cut_id, &digest);
+        if let Some(remote) = &self.remote {
+            remote
+                .immutable(
+                    &path,
+                    bytes.to_vec().into(),
+                    &self.budget,
+                    self.budget.limits.file_bytes,
+                )
+                .await?;
+        } else {
+            immutable(Path::new(&path), bytes)?;
+        }
+        Ok((path, digest))
     }
 
     /// Local append-only metadata tables. File planning remains Iceberg-owned;

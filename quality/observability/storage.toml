@@ -82,10 +82,10 @@ signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
 authority = "Iceberg snapshots are the durable data authority. The local SQLite catalog or the target world's remote control authority owns fencing, manifests, commands, evaluation leases, and control-outbox rows within its own transaction domain; after durable data flush, per-world manifest publication, command settlement, and control-outbox append are atomic together. Remote directory discovery is a separate authority, and no transaction spans directory, per-world control, and Iceberg."
 evidence = [
-  "docs/guide/atomic-visibility.md",
+  "archive/docs/guide/atomic-visibility.md",
   "docs/guide/artifacts.md",
-  "docs/guide/service-protocols.md",
-  "docs/guide/storage-migration.md",
+  "archive/docs/guide/service-protocols.md",
+  "archive/docs/guide/storage-migration.md",
   "tests/activities/test_activity_catalog_contracts.py",
   "tests/activities/test_activity_migration.py",
   "tests/app/test_application_atomic_visibility.py",

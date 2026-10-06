@@ -22,7 +22,6 @@ def _storage(tmp_path: Path) -> StorageConfig:
     )
 
 
-@pytest.mark.contract("ingestion.envelope.append_selection")
 @pytest.mark.asyncio
 async def test_append_registers_table_in_active_daft_catalog(tmp_path):
     harness = make_world_harness()
@@ -59,7 +58,6 @@ async def test_append_registers_table_in_active_daft_catalog(tmp_path):
         await harness.close()
 
 
-@pytest.mark.contract("ingestion.catalog.cold_roundtrip")
 @pytest.mark.asyncio
 async def test_registered_table_is_queryable_from_fresh_application(tmp_path, monkeypatch):
     monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "control"))

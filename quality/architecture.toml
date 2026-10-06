@@ -1,7 +1,6 @@
 version = 4
 source_roots = [
   "packages/archetype-ecs/src",
-  "packages/archetype-research/src",
   "packages/archetype-smol/src",
 ]
 
@@ -17,7 +16,6 @@ types = [
 ]
 composition_roots = [
   "archetype.wiring",
-  "archetype.research._extension",
 ]
 
 [top_level_family_policy]
@@ -45,19 +43,7 @@ reserved_infrastructure = [
 common_family_imports = ["archetype.errors"]
 
 [world_library_policy]
-families = [
-  "archetype.research",
-]
-
-[[world_library_adapter]]
-module = "archetype.research._extension"
-family = "archetype.research"
-role = "composition"
-
-[[world_library_adapter]]
-module = "archetype.research.runtime"
-family = "archetype.research"
-role = "runtime"
+families = []
 
 # Every first-party top-level package or module is classified above or
 # registered as a domain family in quality/architecture.d/<family>.toml.

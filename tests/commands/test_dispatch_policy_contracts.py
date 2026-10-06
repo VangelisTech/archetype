@@ -21,8 +21,6 @@ from uuid_utils import UUID, uuid7
 from archetype.storage.catalog import CommandConflictError
 from archetype.world.models import Spawn
 
-pytestmark = pytest.mark.contract("gateway.authorization.rbac")
-
 
 class _CommandsApi(NamedTuple):
     CommandDispatcher: type[Any]

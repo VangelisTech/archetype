@@ -23,10 +23,7 @@ from typing import Any
 
 import pytest
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.contract("runtime.lifecycle.retryable_teardown"),
-]
+pytestmark = [pytest.mark.asyncio]
 
 
 class _Dispatcher:

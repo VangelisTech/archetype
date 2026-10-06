@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MODULES = (
     "test_native_runtime_contracts",
+    "test_remote_runtime_config",
     "test_native_runtime_binding",
     "test_native_cli_contracts",
     "test_native_server_contracts",
@@ -24,6 +25,7 @@ MODULES = (
     "test_logical_binding",
     "test_logical_ingress",
     "test_live_values",
+    "test_remote_config",
     "test_live_binding",
     "test_transports",
     "test_context_attachments_native",
@@ -52,7 +54,7 @@ def main():
     library = os.environ.get("DDLOG_PYTHON_LIBRARY")
     if not library or not Path(library).is_file():
         raise SystemExit(
-            "Set DDLOG_PYTHON_LIBRARY to the matched contract-3 C ABI; no native suite may silently disappear"
+            "Set DDLOG_PYTHON_LIBRARY to the matched contract-4 C ABI; no native suite may silently disappear"
         )
     for package in ("archetype-ecs", "archetype-native", "archetype-transports"):
         sys.path.insert(0, str(ROOT / "packages" / package / "src"))

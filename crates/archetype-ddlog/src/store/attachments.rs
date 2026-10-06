@@ -158,7 +158,7 @@ impl CutStore {
                 !self.occurrence_exists("context_artifact", &id).await?,
                 "Occurrence already has context index evidence"
             );
-            self.verify_content(&common, true)?;
+            self.verify_content(&common, true).await?;
             let mut typed = BTreeMap::new();
             for (name, encoded) in &attachment.typed {
                 ensure!(TYPED.contains(&name.as_str()), "Unknown typed index");
@@ -233,7 +233,7 @@ impl CutStore {
     ) -> Result<IndexReceipt> {
         let (schema, batch) = physical_batch(batch)?;
         let table = self.table(name, schema).await?;
-        let object = self.stage_batch(name, id, &batch)?;
+        let object = self.stage_batch(name, id, &batch).await?;
         // Existing physical append machinery keys exact adoption by occurrence.
         // The simulation cut is separately stamped into the immutable row.
         let snapshot = self.register(&table, name, id, &object, 1).await?;
@@ -269,10 +269,7 @@ impl CutStore {
             table.metadata().uuid().to_string() == proof.table_uuid
                 && crate::digest(table.metadata().current_schema().as_ref())?
                     == proof.schema_sha256
-                && self.root.join("objects").join(format!(
-                    "{}.{id}.{}.parquet",
-                    proof.table, proof.object_sha256
-                )) == Path::new(&proof.object),
+                && self.object_location(&proof.table, id, &proof.object_sha256) == proof.object,
             "Index table/object identity mismatch"
         );
         let bytes = self
@@ -368,7 +365,7 @@ impl CutStore {
             };
             let common = self.read_index(&proof, &id).await?;
             verify_scope(&common, cut)?;
-            self.verify_content(&common, false)?;
+            self.verify_content(&common, false).await?;
             let proof_json = text(&common, "typed_receipts_json")?;
             preflight::json(proof_json.as_bytes(), &self.budget)?;
             let typed_proofs: BTreeMap<String, IndexReceipt> = serde_json::from_str(proof_json)?;
@@ -440,7 +437,7 @@ impl CutStore {
             .join(format!("cut_artifact_prepared_v1.{id}.json"))
     }
 
-    pub(super) fn verify_content(&self, common: &RecordBatch, sync: bool) -> Result<()> {
+    pub(super) async fn verify_content(&self, common: &RecordBatch, sync: bool) -> Result<()> {
         let digest = text(common, "sha256")?;
         ensure!(
             digest.len() == 64
@@ -449,6 +446,26 @@ impl CutStore {
                     .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
             "Invalid content digest"
         );
+        if let Some(remote) = &self.remote {
+            let uri = remote.profile.location(&format!(
+                "artifact_objects/objects/sha256/{}/{digest}",
+                &digest[..2]
+            ));
+            bounds::request(
+                text(common, "object_uri")? == uri,
+                "Object outside content namespace",
+            )?;
+            let bytes = remote
+                .read(&uri, &self.budget, self.budget.limits.file_bytes)
+                .await?;
+            bounds::corrupt(
+                integer(common, "size_bytes")? >= 0
+                    && integer(common, "size_bytes")? as u64 == bytes.len() as u64
+                    && crate::hash(&bytes) == digest,
+                "Content size/digest mismatch",
+            )?;
+            return Ok(());
+        }
         let path = self
             .root
             .join("artifact_objects/objects/sha256")

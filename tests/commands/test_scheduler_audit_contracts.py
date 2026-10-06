@@ -22,12 +22,6 @@ from archetype.core.config import StorageBackend, StorageConfig
 from archetype.storage.catalog import CommandConflictError
 from archetype.world.models import Spawn, SpawnReserved
 
-pytestmark = [
-    pytest.mark.contract("commands.identity.idempotent"),
-    pytest.mark.contract("commands.settlement.atomic"),
-    pytest.mark.contract("commands.failure.preserves_progress"),
-]
-
 
 class _SchedulerApi(NamedTuple):
     CommandScheduler: type[Any]

@@ -15,6 +15,7 @@ from typing import Any
 __path__ = extend_path(__path__, __name__)
 __version__ = "0.7.0"
 _EXPORTS: dict[str, tuple[str, str]] = {
+    "RemoteData": ("archetype.runtime", "RemoteData"),
     "ArchetypeRuntime": ("archetype.runtime", "ArchetypeRuntime"),
     "SyncArchetypeRuntime": ("archetype.runtime", "SyncArchetypeRuntime"),
     "RuntimeOperationError": ("archetype.runtime", "RuntimeOperationError"),

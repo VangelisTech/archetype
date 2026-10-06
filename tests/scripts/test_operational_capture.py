@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from scripts.run_operational_scenarios import (
+from scripts.process_capture import (
     _run_process,
     _secret_environment_values,
     _write_captured_log,
@@ -124,3 +124,42 @@ def test_timed_out_redacted_run_still_explains_itself(tmp_path: Path) -> None:
     stderr_text = (tmp_path / "capture.stderr.log").read_text(encoding="utf-8")
     assert "run FAILED, so the output tail is retained" in stderr_text
     assert "process-group snapshot at SIGTERM" in stderr_text
+
+
+def test_capture_masks_secrets_across_chunks_before_trimming(tmp_path):
+    from scripts.process_capture import _Capture
+
+    secret = "synthetic-private-value-very-long"
+    capture = _Capture([("AWS_SECRET_ACCESS_KEY", secret)])
+    capture.feed(b"before " + secret[:12].encode())
+    capture.feed(secret[12:].encode() + b" after")
+    capture.feed(b"", final=True)
+    path = tmp_path / "capture.log"
+    entry = capture.write(path, False, True)
+    assert secret.encode() not in path.read_bytes()
+    assert b"***AWS_SECRET_ACCESS_KEY***" in path.read_bytes()
+    assert entry["bytes"] == len(b"before " + secret.encode() + b" after")
+
+
+def test_current_execute_is_masked_and_failed_receipt_is_retained(tmp_path):
+    import pytest
+
+    from scripts.process_capture import execute
+
+    secret = "synthetic-long-secret-value"
+    log = tmp_path / "current.log"
+    with pytest.raises(RuntimeError, match="Owned child failed"):
+        execute(
+            [
+                sys.executable,
+                "-c",
+                "import os; print(os.environ['AWS_SECRET_ACCESS_KEY']); raise SystemExit(1)",
+            ],
+            environment={"AWS_SECRET_ACCESS_KEY": secret},
+            cwd=tmp_path,
+            log=log,
+            timeout_seconds=2,
+        )
+    assert secret not in log.read_text()
+    assert "AWS_SECRET_ACCESS_KEY" in log.read_text()
+    assert (tmp_path / "current.log.capture.json").is_file()

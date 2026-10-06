@@ -49,7 +49,7 @@ class LiveValueTests(unittest.TestCase):
             def arct_ddlog_open(self, *_):
                 raise AssertionError("Incompatible library reached open")
 
-        for version in [None, 0, 1, 2, 4, 2**32 - 1]:
+        for version in [None, 0, 1, 2, 3, 5, 2**32 - 1]:
             with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 library = Library()

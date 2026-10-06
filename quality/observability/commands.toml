@@ -27,7 +27,7 @@ outcomes = [
 ]
 authority = "The durable control-catalog outbox remains authoritative for command events. Bounded access evidence is advisory; returned Iceberg rows and the projection watermark describe only the analytical projection."
 evidence = [
-  "docs/guide/audit-log.md",
+  "archive/docs/guide/audit-log.md",
   "tests/commands/test_audit_projection_contracts.py",
 ]
 rationale = "Access evidence is bounded and failure-isolated from the typed operation outcome; command-event recovery uses the durable outbox until analytical append is acknowledged."
@@ -52,7 +52,7 @@ signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
 authority = "The durable command ledger, lease/settlement state, transactional outbox, and typed scheduler result or exception remain authoritative."
 evidence = [
-  "docs/guide/durable-commands.md",
+  "archive/docs/guide/durable-commands.md",
   "tests/commands/test_durable_runtime_contracts.py",
 ]
 rationale = "The scheduler has no approved direct signal; durable admission and settlement are the recovery authority."

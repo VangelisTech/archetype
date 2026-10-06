@@ -27,8 +27,6 @@ from archetype.redaction import (
 )
 from quality.secret_corpus import SAFE_REDACTION_CORPUS, SECRET_LEAK_CORPUS
 
-pytestmark = pytest.mark.contract("security.redaction.pre_durability")
-
 
 @pytest.mark.parametrize("case", SECRET_LEAK_CORPUS, ids=lambda case: case.name)
 def test_synthetic_provider_corpus_is_redacted_without_echoing_secrets(case) -> None:

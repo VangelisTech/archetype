@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .config import RemoteData
 from .programs import Composition, LeafProgram, ProgramReference
 from .values import identifier, string_cell
 
@@ -108,7 +109,10 @@ class Host:
         build_root: os.PathLike[str] | str | None,
         driver: os.PathLike[str] | str | None,
         store_root: os.PathLike[str] | str,
+        remote_data: RemoteData | None = None,
     ):
+        if remote_data is not None and type(remote_data) is not RemoteData:
+            raise ValueError("Expected immutable RemoteData configuration")
         self._pid = os.getpid()
         self._handle = 0
         config = {
@@ -116,6 +120,7 @@ class Host:
             "build_root": None if build_root is None else _absolute(build_root),
             "driver": None if driver is None else _absolute(driver),
             "store_root": _absolute(store_root),
+            "remote_data": None if remote_data is None else remote_data.as_dict(),
         }
         self._lib = ctypes.CDLL(_absolute(library))
         self._lib.arct_ddlog_abi_version.argtypes = []
@@ -128,8 +133,8 @@ class Host:
             raise ProtocolError("Missing DDlog operation/schema/cell contract version") from error
         contract.argtypes = []
         contract.restype = ctypes.c_uint32
-        if contract() != 3:
-            raise ProtocolError("Expected DDlog operation/schema/cell contract 3")
+        if contract() != 4:
+            raise ProtocolError("Expected DDlog operation/schema/cell contract 4")
         out = ctypes.POINTER(_Buffer)
         self._lib.arct_ddlog_open.argtypes = [ctypes.c_void_p, ctypes.c_size_t, out]
         self._lib.arct_ddlog_open.restype = ctypes.c_int
@@ -543,7 +548,18 @@ class Store(Host):
     operations require a Host; context and immutable read operations work here.
     """
 
-    def __init__(self, *, library: os.PathLike[str] | str, store_root: os.PathLike[str] | str):
+    def __init__(
+        self,
+        *,
+        library: os.PathLike[str] | str,
+        store_root: os.PathLike[str] | str,
+        remote_data: RemoteData | None = None,
+    ):
         super().__init__(
-            library=library, store_root=store_root, registry_root=None, build_root=None, driver=None
+            library=library,
+            store_root=store_root,
+            registry_root=None,
+            build_root=None,
+            driver=None,
+            remote_data=remote_data,
         )

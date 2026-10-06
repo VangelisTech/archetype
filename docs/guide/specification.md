@@ -67,16 +67,15 @@ error text never proves rollback or safe replay. Public limits are 64 KiB reques
 with a bounded unknown outcome; clients reduce page sizes rather than replaying
 mutations. Native read budgets remain independent of transport envelopes.
 
-## Compatibility and release
+## Public surface and release
 
-0.7 is a deliberate breaking runtime contract. The old Daft `spawn/run/step`,
-mutable processors, old FastAPI operation hosts and application composition are
-not fallback execution paths. Retained 0.6 specifications, contracts and teaching
-material are explicitly versioned under compatibility. Research requires matched
-0.6 source/wheels. Smol is independent. Gateway and Holocron need tested consumer
-migrations before acceptance. Candidate publication and hosted exact-head evidence
-remain separate from local test success. Routine simulated compiler evidence
-cannot replace installed actual DDlog/Iceberg acceptance.
+The supported product uses DDlog programs through MCP, CLI, HTTP and Python.
+Research and the former runtime compatibility surface are removed. Historical
+planning and documentation are retained outside the published documentation
+source. Candidate publication and hosted exact-head evidence remain separate
+from local test success. Routine simulated compiler evidence cannot replace
+installed actual DDlog/Iceberg acceptance. Remote-store support requires actual
+provider evidence; local filesystem results cannot establish it.
 
 ## Executable validation
 
@@ -91,8 +90,7 @@ registry/build/driver/source-independent cold reads and HTTP/MCP parity.
 
 Request identity never makes changed input safe to replay. The native owner and
 verified storage receipts retain authority. This current matrix is checked
-against `quality/native_idempotency.json`; the former workflow-family matrix
-remains in the matched 0.6 specification archive.
+against `quality/native_idempotency.json`.
 
 | Scope | Contract | Executable oracle |
 | --- | --- | --- |

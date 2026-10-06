@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from archetype_native.config import RemoteData as RemoteData
 from archetype_native.ingress import Component as ComponentProjection
 from archetype_native.programs import (
     Composition,
@@ -82,6 +83,7 @@ class ArtifactContextInfo:
 
 
 __all__ = [
+    "RemoteData",
     "ComponentProjection",
     "Composition",
     "Connection",

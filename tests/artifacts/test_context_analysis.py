@@ -14,8 +14,6 @@ from archetype.artifacts import (
     synthesize_artifact_context,
 )
 
-pytestmark = pytest.mark.contract("artifacts.context.task_anchored")
-
 
 def test_context_analysis_preserves_artifact_identity_and_task(tmp_path, monkeypatch) -> None:
     artifact_id = str(uuid7())

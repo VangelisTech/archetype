@@ -16,7 +16,7 @@ from archetype.world import mutation
 from archetype.world.handlers import materialize_locked
 from archetype.world.models import AddProcessor, Spawn
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.contract("world.mutation.locking")]
+pytestmark = [pytest.mark.asyncio]
 
 
 class Marker(Component):

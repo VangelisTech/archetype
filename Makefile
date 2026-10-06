@@ -168,6 +168,7 @@ api-boundary-audit:
 
 .PHONY: python-api-audit
 python-api-audit:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/check_docs_publication.py
 	@PYTHONPATH=$(PYTHONPATH) uv run python scripts/generate_python_api_docs.py --check
 
 .PHONY: architecture-audit
@@ -205,15 +206,13 @@ complexity:
 	@echo "=== Raw line counts ==="
 	@uvx radon raw $(SOURCE_ROOTS) -s
 
-# Source marker lanes below retain historical 0.6 registrations. Use the matched
-# compatibility checkout for test-unit/contract/integration/process/test-cov.
-# Current 0.7 full/release profiles use current-reliability/current-coverage.
+# Current full/release profiles use current-reliability/current-coverage.
 # ------------------------------------------------------------------------------
 # Tests
 # ------------------------------------------------------------------------------
 
 .PHONY: test
-test: retained-value-contracts docs-workflow-contracts
+test: retained-value-contracts docs-workflow-contracts current-harness-contracts
 	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) PYTHONDONTWRITEBYTECODE=1 DO_NOT_TRACK=1 uv run python scripts/run_current_contracts.py
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q packages/archetype-smol/tests
 
@@ -391,14 +390,9 @@ RELEASE_ARTIFACT_MANIFEST ?= release-artifact.json
 
 .PHONY: operational-runtime operational-commands operational-wheel operational-wheel-existing
 # The installed actual gate owns the current public runtime/API/MCP/CLI-independent
-# operator scenario. Historical command/workflow scenarios live on matched 0.6.
+# operator scenario.
 operational-runtime operational-commands: installed-native-acceptance
 operational-wheel operational-wheel-existing: package-smoke installed-native-acceptance
-
-.PHONY: operational-external
-operational-external:
-	@test -n "$(ARCHETYPE_COMPAT_SOURCE)" || (echo "External 0.6 scenarios require matched ARCHETYPE_COMPAT_SOURCE; no 0.7 external deployment claim"; exit 1)
-	@cd "$(ARCHETYPE_COMPAT_SOURCE)" && $(MAKE) operational-external
 
 # The release workflow builds once after the source profile, package-smokes
 # those exact eight artifacts, records every digest, and never rebuilds before
@@ -415,34 +409,8 @@ verify-release-artifact:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/release_artifact.py verify \
 		--dist "$(OPERATIONAL_DIST_DIR)" --manifest "$(RELEASE_ARTIFACT_MANIFEST)"
 
-define RUN_RELEASE_SCENARIOS
-	@wheel=$$(find "$(OPERATIONAL_DIST_DIR)" -maxdepth 1 -name 'archetype_ecs-*.whl' -print -quit 2>/dev/null); \
-		if [ -z "$$wheel" ]; then \
-			echo "release evidence requires the archetype-ecs wheel anchor in $(OPERATIONAL_DIST_DIR)"; \
-			exit 1; \
-		fi; \
-		$(2) PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
-			--mode wheel --cadence $(if $(3),$(3),release) --require-run --require-clean \
-			--wheel "$$wheel" --wheel-dir "$(OPERATIONAL_DIST_DIR)" $(1)
-endef
-
 .PHONY: operational-release
 operational-release: verify-release
-
-.PHONY: operational-release-openai
-operational-release-openai:
-	@test -n "$(ARCHETYPE_COMPAT_SOURCE)" || (echo "This retained scenario requires matched 0.6 ARCHETYPE_COMPAT_SOURCE"; exit 1)
-	@cd "$(ARCHETYPE_COMPAT_SOURCE)" && $(MAKE) operational-release-openai
-
-.PHONY: operational-release-r2
-operational-release-r2:
-	@test -n "$(ARCHETYPE_COMPAT_SOURCE)" || (echo "This retained scenario requires matched 0.6 ARCHETYPE_COMPAT_SOURCE"; exit 1)
-	@cd "$(ARCHETYPE_COMPAT_SOURCE)" && $(MAKE) operational-release-r2
-
-.PHONY: operational-demand-biome
-operational-demand-biome:
-	@test -n "$(ARCHETYPE_COMPAT_SOURCE)" || (echo "This retained scenario requires matched 0.6 ARCHETYPE_COMPAT_SOURCE"; exit 1)
-	@cd "$(ARCHETYPE_COMPAT_SOURCE)" && $(MAKE) operational-demand-biome
 
 .PHONY: verify-pr
 verify-pr: static test package-smoke ddlog-check ddlog-python-check
@@ -487,17 +455,11 @@ verify-release: verify-full-source
 
 .PHONY: docs-workflow-contracts
 docs-workflow-contracts:
-	@PYTHONPATH=$(PYTHONPATH):. uv run pytest --noconftest -q tests/scripts/test_docs_workflow.py
+	@PYTHONPATH=$(PYTHONPATH):. uv run pytest --noconftest -q tests/scripts/test_docs_workflow.py tests/scripts/test_docs_publication.py
 
 .PHONY: retained-value-contracts
 retained-value-contracts:
-	@PYTHONPATH=$(PYTHONPATH):. uv run pytest --noconftest -q tests/core/test_component_core.py tests/evaluation/test_evaluation_family_ownership.py::test_outcome_vocabulary_is_unchanged tests/evaluation/test_evaluation_family_ownership.py::test_digest_vectors_are_byte_for_byte_unchanged tests/scripts/test_release_candidate.py
-
-.PHONY: test-compatibility
-# Run retained 0.6 contracts only against matching 0.6 source, never this facade.
-test-compatibility:
-	@test -n "$(ARCHETYPE_COMPAT_SOURCE)" || (echo "Provide a matched 0.6 ARCHETYPE_COMPAT_SOURCE checkout"; exit 1)
-	@cd "$(ARCHETYPE_COMPAT_SOURCE)" && uv run pytest $(MOD)
+	@PYTHONPATH=$(PYTHONPATH):. uv run pytest --noconftest -q tests/core/test_component_core.py tests/evaluation/test_evaluation_family_ownership.py::test_outcome_vocabulary_is_unchanged tests/evaluation/test_evaluation_family_ownership.py::test_digest_vectors_are_byte_for_byte_unchanged tests/scripts/test_release_candidate.py tests/scripts/test_registry_smoke.py
 
 .PHONY: release-check
 release-check: sync-dev verify-release
@@ -557,8 +519,10 @@ docs-gen:
 .PHONY: docs
 docs: docs-gen
 	@rm -rf site
-	@uv run --group docs mkdocs build
+	@uv run --group docs mkdocs build --strict
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/check_docs_publication.py --site site/docs
 	@uv run python scripts/assemble_docs_site.py
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/check_docs_publication.py --site site/docs --assembled site
 
 .PHONY: docs-serve
 docs-serve: docs
@@ -649,3 +613,7 @@ ddlog-python-check: ddlog-preview-audit
 	@cargo +1.95.0 test -p archetype-ddlog-python --locked
 	@cargo +1.95.0 build -p archetype-ddlog-python --locked
 	@DDLOG_PYTHON_LIBRARY=$(DDLOG_PYTHON_LIBRARY) PYTHONPATH=packages/archetype-native/src $(DDLOG_PYTHON) -m unittest discover -s packages/archetype-native/tests -v
+
+.PHONY: current-harness-contracts
+current-harness-contracts:
+	@PYTHONPATH=$(PYTHONPATH):. uv run pytest --noconftest -q tests/scripts/test_quality_workflow.py tests/scripts/test_operational_capture.py tests/scripts/test_acceptance_receipts.py tests/scripts/test_validate_contracts.py tests/artifacts/test_remote_publication.py

@@ -11,7 +11,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tarfile
 from pathlib import Path
 
@@ -23,10 +22,12 @@ def digest(path):
 
 
 def execute(command, environment, cwd, log):
-    with log.open("wb") as output:
-        subprocess.run(
-            command, env=environment, cwd=cwd, stdout=output, stderr=subprocess.STDOUT, check=True
-        )
+    if __package__:
+        from .process_capture import execute as captured_execute
+    else:
+        from process_capture import execute as captured_execute
+
+    captured_execute(command, environment=environment, cwd=cwd, log=log)
 
 
 CHILD = r"""import hashlib, importlib, importlib.metadata, json, os, pathlib, sys, zipfile
@@ -129,6 +130,14 @@ def main():
         help="Explicit partial local proof only; never current release acceptance",
     )
     args = parser.parse_args()
+    if __package__:
+        from .acceptance_receipts import run_with_receipt
+    else:
+        from acceptance_receipts import run_with_receipt
+    return run_with_receipt(args.stage, lambda: _run(args), mode="installed consumer acceptance")
+
+
+def _run(args):
     stage = args.stage.resolve()
     if stage.exists():
         raise SystemExit("Use a fresh stage to preserve previous evidence")
@@ -252,6 +261,11 @@ def main():
         stage,
         stage / "consumer-contracts.log",
     )
+    if __package__:
+        from .acceptance_receipts import require_child
+    else:
+        from acceptance_receipts import require_child
+    require_child(stage / "result.json", schema="archetype.consumer-migration/v1", mode=mode)
     result = json.loads((stage / "result.json").read_text())
     if (
         result.get("mode") != mode

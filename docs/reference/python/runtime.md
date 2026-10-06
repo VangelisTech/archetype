@@ -14,7 +14,7 @@ configure that private owner; they are never exposed by resource handles.
 Omit all three live paths for a storage-only reader.
 
 ```python
-ArchetypeRuntime(*, library: 'str | Path | None' = None, store: 'str | Path | None' = None, registry: 'str | Path | None' = None, builds: 'str | Path | None' = None, driver: 'str | Path | None' = None, max_inflight: 'int' = 4, storage_only: 'bool' = False)
+ArchetypeRuntime(*, library: 'str | Path | None' = None, store: 'str | Path | None' = None, registry: 'str | Path | None' = None, builds: 'str | Path | None' = None, driver: 'str | Path | None' = None, max_inflight: 'int' = 4, storage_only: 'bool' = False, remote_data: 'RemoteData | None' = None)
 ```
 
 ### artifacts

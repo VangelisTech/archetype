@@ -2,7 +2,7 @@
 
 # Offline contracts
 
-These retained contracts serve offline ingestion and analysis. They do not install a second live execution owner. Research and generic Biome retain their explicit 0.6 compatibility role; Smol remains independent.
+These retained contracts serve offline ingestion and analysis. They do not install a second live execution owner. Smol remains independent.
 
 ## ArtifactSource
 

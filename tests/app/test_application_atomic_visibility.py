@@ -33,12 +33,7 @@ from archetype.world.models import (
 )
 from tests._runtime import build_test_runtime
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.contract("world.tick.atomic_visibility"),
-    pytest.mark.contract("world.writer.fenced"),
-    pytest.mark.integration,
-]
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 class Counter(Component):

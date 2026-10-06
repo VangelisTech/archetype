@@ -18,11 +18,7 @@ from archetype.artifacts.views import read_artifact_index
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.runtime_resources import RuntimeCloseState
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.contract("artifacts.ingestion.common_visibility"),
-    pytest.mark.integration,
-]
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 async def test_local_artifacts_round_trip_across_a_cold_explicit_handle(

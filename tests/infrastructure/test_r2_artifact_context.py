@@ -59,14 +59,12 @@ class R2RuntimeProbe(Component):
 
 
 pytestmark = [
-    pytest.mark.contract("ingestion.catalog.cold_roundtrip"),
     pytest.mark.asyncio,
     pytest.mark.integration,
     pytest.mark.external,
     pytest.mark.slow,
     pytest.mark.skipif(
-        not all(_REQUIRED),
-        reason="GitHub Actions supplies Cloudflare R2 credentials",
+        not all(_REQUIRED), reason="GitHub Actions supplies Cloudflare R2 credentials"
     ),
 ]
 

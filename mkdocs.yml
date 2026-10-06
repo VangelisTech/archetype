@@ -7,21 +7,12 @@ repo_name: VangelisTech/archetype
 docs_dir: docs
 site_dir: site/docs
 
-# Design notes and planning records are retained in the published source tree
-# but are not part of the reader-facing documentation. Selected historical
-# reports are explicitly classified under the History section below.
+# Historical source lives under archive/, outside docs_dir and publication.
 not_in_nav: |
-  design/**
-  planning/**
-  compatibility/**
   guide/**
   reference/**
   framework/**
-  research/**
   smol/**
-  incidents/**
-  reports/**
-  maintainers/**
 
 theme:
   name: material
@@ -78,11 +69,6 @@ nav:
       - CLI: reference/cli.md
       - Operations: reference/native-operations.md
       - Contract Evidence: reference/contract-traceability.md
-  - Compatibility:
-      - Migration to 0.7: guide/migration-0.7.md
-      - Example Roles: guide/examples.md
-      - Version 0.6 Runtime: compatibility/0.6/guide/runtime.md
-      - Version 0.6 Research: compatibility/0.6/guide/autoresearch.md
 
 plugins:
   - search
@@ -93,8 +79,6 @@ plugins:
           paths:
             - packages/archetype-ecs/src
           options:
-            extensions:
-              - scripts/griffe_world_libraries.py:WorldLibraryPackages
             show_source: false
             show_root_heading: true
             show_root_full_path: false

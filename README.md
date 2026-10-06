@@ -1,12 +1,11 @@
 # Archetype
 
-ECS simulations with DDlog execution and typed Iceberg history. Python, HTTP and
-MCP share one operation contract. Daft analyzes durable results outside live
+ECS simulations with DDlog execution and typed Iceberg history. MCP and CLI are canonical; Python and HTTP
+share their operation contract. Daft analyzes durable results outside live
 execution. Archetype remains active with limited investment.
 
 This tree implements the **0.7 release candidate**. Publication and release
-acceptance must be recorded before calling it a released version. The 0.6 Daft
-runtime is an explicit compatibility line; 0.7 changes its execution contract.
+acceptance must be recorded before calling it a released version.
 
 ```mermaid
 flowchart LR
@@ -26,8 +25,7 @@ are not claimed to exist on a public package index yet.
 
 From this checkout, `uv sync --all-packages --all-extras --group dev` installs
 the development environment. `uv build --all-packages` builds ECS, private
-native infrastructure, optional transports and independent Smol. Research stays
-on matched 0.6 source/wheels; it is not silently installed into 0.7.
+native infrastructure, optional transports and independent Smol.
 
 The private native library is a separate, matched build prerequisite:
 
@@ -71,12 +69,5 @@ resource grants. `archetype serve` owns the same native runtime; other CLI
 commands are HTTP clients. Removed `spawn`, `run` and `step` commands do not
 fall back to a second tick engine.
 
-[Migration](docs/guide/migration-0.7.md) records breaking changes and consumer
-version decisions. Research, Smol and generic Biome/inference teaching material
-retain their stated roles. Missions and Physical AI evaluation products are
-outside the active package and documentation surface.
-
-`make ci` validates the current source and package contract. `make verify-full`
-and `make verify-release` require installed real-native evidence in addition to
-routine tests; simulated compiler fixtures are labelled separately. Production
-docs deployment is a separate explicit manual action.
+Research and the former runtime compatibility surface are removed. Historical
+planning and documentation live outside the published docs source in `archive/`.

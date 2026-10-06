@@ -97,6 +97,28 @@ class ContextArtifactStorage:
             ]
         )
 
+    def publish_object(self, target: ArtifactTarget, *, sha256: str, size_bytes: int) -> str:
+        if type(sha256) is not str or re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
+            raise ValueError("Invalid content digest")
+        if type(size_bytes) is not int or not 0 <= size_bytes <= 64 << 20:
+            raise ValueError("Invalid bounded content size")
+        result = self._host.request(
+            "publish_context_object",
+            target=self._target(target),
+            sha256=sha256,
+            size_bytes=size_bytes,
+        )
+        if (
+            type(result) is not dict
+            or set(result) != {"object_uri", "sha256", "size_bytes"}
+            or result["sha256"] != sha256
+            or type(result["size_bytes"]) is not int
+            or result["size_bytes"] != size_bytes
+            or type(result["object_uri"]) is not str
+        ):
+            raise ValueError("Published content facts differ from request")
+        return result["object_uri"]
+
     def publish(
         self, target: ArtifactTarget, occurrences: tuple[OccurrenceMetadata, ...]
     ) -> tuple[dict[str, Any], ...]:

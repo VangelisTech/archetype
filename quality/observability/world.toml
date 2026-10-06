@@ -39,8 +39,8 @@ emission_workflows = ["world.compute_archetype", "world.commit_archetype"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
 authority = "The tick manifest, append receipts, world record, and typed simulation result remain authoritative."
 evidence = [
-  "docs/guide/atomic-visibility.md",
-  "docs/guide/worlds.md",
+  "archive/docs/guide/atomic-visibility.md",
+  "archive/docs/guide/worlds.md",
   "tests/world/test_atomic_visibility.py",
 ]
 span_names = [
@@ -188,8 +188,8 @@ signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
 authority = "World registry/catalog state, staged mutations, tick manifests, and typed lifecycle results remain authoritative."
 evidence = [
-  "docs/guide/world-lifecycle.md",
-  "docs/guide/atomic-visibility.md",
+  "archive/docs/guide/world-lifecycle.md",
+  "archive/docs/guide/atomic-visibility.md",
   "tests/world/test_mutation_contracts.py",
   "tests/world/test_resume_contracts.py",
 ]
@@ -212,8 +212,8 @@ signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "advisory_suppression"]
 authority = "Pinned manifest visibility, persisted store/catalog state, and the returned lazy frame or signature result remain authoritative."
 evidence = [
-  "docs/guide/atomic-visibility.md",
-  "docs/guide/worlds.md",
+  "archive/docs/guide/atomic-visibility.md",
+  "archive/docs/guide/worlds.md",
   "tests/world/test_query_contracts.py",
 ]
 rationale = "Durable world reads emit no independent signal; bounded signature-discovery degradation remains explicit while physical reads fail closed."
@@ -225,8 +225,8 @@ signals = ["child"]
 outcomes = ["propagated_failure", "retryable_attempt"]
 authority = "The eventual tick manifest and append receipts, not planning spans, prove successful computation."
 evidence = [
-  "docs/guide/observability.md",
-  "docs/guide/atomic-visibility.md",
+  "archive/docs/guide/observability.md",
+  "archive/docs/guide/atomic-visibility.md",
   "tests/app/test_application_atomic_visibility.py",
 ]
 span_names = ["world.query", "world.materialize", "world.execute"]
@@ -242,8 +242,8 @@ signals = ["child"]
 outcomes = ["propagated_failure", "retryable_attempt"]
 authority = "The append receipt and published tick manifest prove durable visibility."
 evidence = [
-  "docs/guide/observability.md",
-  "docs/guide/atomic-visibility.md",
+  "archive/docs/guide/observability.md",
+  "archive/docs/guide/atomic-visibility.md",
   "tests/app/test_application_atomic_visibility.py",
 ]
 span_names = ["world.update"]

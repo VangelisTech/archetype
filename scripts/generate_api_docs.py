@@ -90,7 +90,7 @@ def main():
     reference = Path(__file__).resolve().parents[1] / "docs/reference"
     (reference / "native-operations.md").write_text("\n".join(lines))
     (reference / "rest-api.md").write_text(
-        "# HTTP API\n\nThe current API uses the shared [native operation contract](native-operations.md). The previous REST surface is retained in the [0.6 compatibility reference](../compatibility/0.6/reference/rest-api.md).\n"
+        "# HTTP API\n\nThe current API uses the shared [native operation contract](native-operations.md).\n"
     )
 
 

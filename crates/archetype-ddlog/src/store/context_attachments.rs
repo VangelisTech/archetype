@@ -114,7 +114,7 @@ impl CutStore {
                 !store.occurrence_exists("cut_artifact", &id).await?,
                 "Occurrence already has legacy index evidence"
             );
-            store.verify_content(&common, true)?;
+            store.verify_content(&common, true).await?;
             let mut typed = BTreeMap::new();
             for (name, encoded) in &attachment.typed {
                 ensure!(TYPED.contains(&name.as_str()), "Unknown typed index");
@@ -267,7 +267,7 @@ impl CutStore {
                 "Context attribution changed"
             );
             store.verify_target_inner(&target).await?;
-            store.verify_content(&common, false)?;
+            store.verify_content(&common, false).await?;
             let proof_json = text(&common, "typed_receipts_json")?;
             preflight::json(proof_json.as_bytes(), &store.budget)?;
             let typed_proofs: BTreeMap<String, IndexReceipt> = serde_json::from_str(proof_json)?;
