@@ -2,9 +2,9 @@
 
 import pytest
 
-pytest.importorskip("daft")
-
 from examples.episode_queries.query import git_pairs
+
+pytest.importorskip("daft")
 
 
 def test_git_query_requires_same_present_and_different_history_and_target():
@@ -22,12 +22,17 @@ def test_git_query_requires_same_present_and_different_history_and_target():
         "current_sha": "identical-current-image",
     }
     a = base | {
-        "episode_id": "a", "history_event": "left-first", "history_sha": "past-a",
+        "episode_id": "a",
+        "history_event": "left-first",
+        "history_sha": "past-a",
         "required_target": "left",
     }
     b = base | {
-        "episode_id": "b", "history_event": "right-first", "history_sha": "past-b",
-        "required_target": "right", "world": "world-b",
+        "episode_id": "b",
+        "history_event": "right-first",
+        "history_sha": "past-b",
+        "required_target": "right",
+        "world": "world-b",
     }
     result = git_pairs([a, b]).to_pydict()
     assert result["a_episode_id"] == ["a"]
