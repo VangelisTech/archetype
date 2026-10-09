@@ -121,6 +121,7 @@ lint-fix:
 
 .PHONY: format-check
 format-check:
+	@uv run ruff format --diff examples/episode_queries/query.py
 	@uv run ruff format --check $(RUFF_PATHS)
 
 .PHONY: check
