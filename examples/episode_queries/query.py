@@ -210,9 +210,7 @@ async def _run(args):
         rows = await verified_rows(runtime, episodes)
     # Explicit terminal bound: the source records and full pair query are lazy.
     result = git_pairs(rows).limit(args.limit).to_pydict()
-    print(
-        json.dumps([dict(zip(result, values)) for values in zip(*result.values())], indent=2)
-    )
+    print(json.dumps([dict(zip(result, values)) for values in zip(*result.values())], indent=2))
 
 
 def main() -> None:
