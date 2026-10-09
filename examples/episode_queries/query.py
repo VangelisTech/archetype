@@ -118,6 +118,7 @@ async def verified_rows(runtime: ArchetypeRuntime, episodes: tuple[Episode, ...]
                 "history_event": episode.history_event,
                 "world": episode.world,
                 "run": episode.run,
+                "context": episode.context,
                 "tick": episode.tick,
                 "cut_id": episode.cut_id,
                 "history_artifact_id": episode.history_artifact_id,
@@ -150,6 +151,7 @@ def git_pairs(rows: list[dict]):
         "history_event",
         "world",
         "run",
+        "context",
         "tick",
         "cut_id",
         "history_artifact_id",
@@ -186,10 +188,16 @@ def git_pairs(rows: list[dict]):
             "b_history_sha",
             "a_world",
             "a_run",
+            "a_context",
             "a_cut_id",
+            "a_history_artifact_id",
+            "a_current_artifact_id",
             "b_world",
             "b_run",
+            "b_context",
             "b_cut_id",
+            "b_history_artifact_id",
+            "b_current_artifact_id",
         )
     )
 
