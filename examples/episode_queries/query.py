@@ -47,7 +47,9 @@ class Episode:
 
 
 def read_manifest(path: Path) -> tuple[Episode, ...]:
-    episodes = tuple(Episode.parse(json.loads(line)) for line in path.read_text().splitlines() if line.strip())
+    episodes = tuple(
+        Episode.parse(json.loads(line)) for line in path.read_text().splitlines() if line.strip()
+    )
     if len({e.episode_id for e in episodes}) != len(episodes):
         raise ValueError("Duplicate episode ID")
     return episodes
@@ -59,7 +61,10 @@ async def _exact_cut(world, episode: Episode):
         page = await world.history(offset=offset, limit=32)
         for cut in page.cuts:
             if (cut.world, cut.run, cut.tick, cut.cut_id) == (
-                episode.world, episode.run, episode.tick, episode.cut_id
+                episode.world,
+                episode.run,
+                episode.tick,
+                episode.cut_id,
             ):
                 return cut
         if page.next_offset is None:
@@ -102,23 +107,25 @@ async def verified_rows(runtime: ArchetypeRuntime, episodes: tuple[Episode, ...]
         await _exact_cut(world, episode)
         artifacts = world.artifacts(episode.context)
         history_sha, current_sha = await _evidence(artifacts, episode)
-        rows.append({
-            "episode_id": episode.episode_id,
-            "pair_id": episode.pair_id,
-            "split": episode.split,
-            "task": episode.task,
-            "instruction": episode.instruction,
-            "required_target": episode.required_target,
-            "history_event": episode.history_event,
-            "world": episode.world,
-            "run": episode.run,
-            "tick": episode.tick,
-            "cut_id": episode.cut_id,
-            "history_artifact_id": episode.history_artifact_id,
-            "current_artifact_id": episode.current_artifact_id,
-            "history_sha": history_sha,
-            "current_sha": current_sha,
-        })
+        rows.append(
+            {
+                "episode_id": episode.episode_id,
+                "pair_id": episode.pair_id,
+                "split": episode.split,
+                "task": episode.task,
+                "instruction": episode.instruction,
+                "required_target": episode.required_target,
+                "history_event": episode.history_event,
+                "world": episode.world,
+                "run": episode.run,
+                "tick": episode.tick,
+                "cut_id": episode.cut_id,
+                "history_artifact_id": episode.history_artifact_id,
+                "current_artifact_id": episode.current_artifact_id,
+                "history_sha": history_sha,
+                "current_sha": current_sha,
+            }
+        )
     return rows
 
 
@@ -135,9 +142,20 @@ def git_pairs(rows: list[dict]):
         raise ValueError("No verified episodes")
     frame = daft.from_pylist(rows)
     names = (
-        "episode_id", "split", "task", "instruction", "required_target",
-        "history_event", "world", "run", "tick", "cut_id",
-        "history_artifact_id", "current_artifact_id", "history_sha", "current_sha",
+        "episode_id",
+        "split",
+        "task",
+        "instruction",
+        "required_target",
+        "history_event",
+        "world",
+        "run",
+        "tick",
+        "cut_id",
+        "history_artifact_id",
+        "current_artifact_id",
+        "history_sha",
+        "current_sha",
     )
     left = frame.select("pair_id", *(col(n).alias(f"a_{n}") for n in names))
     right = frame.select("pair_id", *(col(n).alias(f"b_{n}") for n in names))
@@ -154,10 +172,24 @@ def git_pairs(rows: list[dict]):
             & (col("a_required_target") != col("b_required_target"))
         )
         .select(
-            "pair_id", "a_episode_id", "b_episode_id", "a_task", "a_instruction",
-            "a_required_target", "b_required_target", "a_history_event",
-            "b_history_event", "a_current_sha", "a_history_sha", "b_history_sha",
-            "a_world", "a_run", "a_cut_id", "b_world", "b_run", "b_cut_id",
+            "pair_id",
+            "a_episode_id",
+            "b_episode_id",
+            "a_task",
+            "a_instruction",
+            "a_required_target",
+            "b_required_target",
+            "a_history_event",
+            "b_history_event",
+            "a_current_sha",
+            "a_history_sha",
+            "b_history_sha",
+            "a_world",
+            "a_run",
+            "a_cut_id",
+            "b_world",
+            "b_run",
+            "b_cut_id",
         )
     )
 
@@ -170,7 +202,9 @@ async def _run(args):
         rows = await verified_rows(runtime, episodes)
     # Explicit terminal bound: the source records and full pair query are lazy.
     result = git_pairs(rows).limit(args.limit).to_pydict()
-    print(json.dumps([dict(zip(result, values)) for values in zip(*result.values())], indent=2))
+    print(
+        json.dumps([dict(zip(result, values)) for values in zip(*result.values())], indent=2)
+    )
 
 
 def main() -> None:
