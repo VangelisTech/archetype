@@ -15,6 +15,7 @@ def test_git_query_requires_same_present_and_different_history_and_target():
         "instruction": "Return the bowl used first",
         "world": "world-a",
         "run": "main",
+        "context": "media-a",
         "tick": 2,
         "cut_id": "cut-2",
         "history_artifact_id": "history-a",
