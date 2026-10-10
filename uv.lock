@@ -15,17 +15,18 @@ exclude-newer = "2026-06-12T00:00:00Z"
 
 [options.exclude-newer-package]
 mcp-types = "2026-10-05T00:00:00Z"
+fsspec = "2026-06-17T00:00:00Z"
 setuptools = "2026-07-05T00:00:00Z"
-pillow = "2026-07-02T00:00:00Z"
 modal = "2026-07-11T00:00:00Z"
 hpack = "2026-06-24T00:00:00Z"
+pillow = "2026-07-02T00:00:00Z"
 urllib3 = "2026-09-16T00:00:00Z"
-h2 = "2026-08-04T00:00:00Z"
 pyjwt = "2026-09-29T00:00:00Z"
 starlette = "2026-06-13T00:00:00Z"
+h2 = "2026-08-04T00:00:00Z"
 cryptography = "2026-08-26T00:00:00Z"
-aiohttp = "2026-07-24T00:00:00Z"
 synchronicity = "2026-07-11T00:00:00Z"
+aiohttp = "2026-07-24T00:00:00Z"
 pypdf = "2026-09-17T00:00:00Z"
 httpx2 = "2026-10-05T00:00:00Z"
 idna = "2026-10-05T00:00:00Z"
@@ -35,7 +36,7 @@ mkdocs-material = "2026-07-18T00:00:00Z"
 virtualenv = "2026-09-19T00:00:00Z"
 msgpack = "2026-06-19T00:00:00Z"
 python-discovery = "2026-08-29T00:00:00Z"
-daft = "2026-07-11T00:00:00Z"
+daft = "2026-09-13T00:00:00Z"
 mcp = "2026-10-05T00:00:00Z"
 soupsieve = "2026-07-20T00:00:00Z"
 httpcore2 = "2026-10-05T00:00:00Z"
@@ -103,6 +104,7 @@ all = [
     { name = "click", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "daft", extra = ["audio", "iceberg", "lance"], marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "fastapi", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "fsspec", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "httpx", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "lancedb", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "msgpack", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -126,6 +128,7 @@ analysis = [
     { name = "click", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "daft", extra = ["audio", "iceberg", "lance"], marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "fastapi", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "fsspec", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "httpx", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "lancedb", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "msgpack", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -163,8 +166,9 @@ requires-dist = [
     { name = "av", marker = "extra == 'analysis'", specifier = ">=15.0.0,<17.1.0" },
     { name = "click", specifier = ">=8.3.3" },
     { name = "click", marker = "extra == 'analysis'", specifier = ">=8.3.3" },
-    { name = "daft", extras = ["lance", "iceberg", "audio"], marker = "extra == 'analysis'", specifier = ">=0.7.19" },
+    { name = "daft", extras = ["lance", "iceberg", "audio"], marker = "extra == 'analysis'", specifier = ">=0.7.25" },
     { name = "fastapi", marker = "extra == 'analysis'", specifier = ">=0.110" },
+    { name = "fsspec", marker = "extra == 'analysis'", specifier = ">=2026.6.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'analysis'", specifier = ">=0.27" },
     { name = "lancedb", marker = "extra == 'analysis'", specifier = ">=0.22.0" },
@@ -817,19 +821,18 @@ wheels = [
 
 [[package]]
 name = "daft"
-version = "0.7.19"
+version = "0.7.25"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "fsspec", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "packaging", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "pyarrow", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "tqdm", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d4/cb/4165cee0dcb8110c37064abfe67d14bf503eb3378ad3b98e059a4e920fa6/daft-0.7.19-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:7862b017a33c7d7259ece90daf4b2f16e46677774c974bf3c491477476783aab", size = 55673370, upload-time = "2026-07-10T02:35:42.985Z" },
-    { url = "https://files.pythonhosted.org/packages/0d/64/6699fceee675e292ba7a3e3be18ec7dd6e813623660011082e486e586b6a/daft-0.7.19-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:3b928b7af90b02fd460d96e3b524fe8bee3aaafa53c8ad0c54706f20808819c0", size = 51508723, upload-time = "2026-07-10T02:35:46.999Z" },
-    { url = "https://files.pythonhosted.org/packages/d0/7e/d2723e52fee17d7ad73af3ebda9867aa5fd89e5f2ebf422d53523752ada1/daft-0.7.19-cp310-abi3-manylinux_2_24_aarch64.whl", hash = "sha256:0e5af435aca282c6a54a2ff9f3ac452be219a9abd2572888f595aa5eb4dcccaa", size = 53833418, upload-time = "2026-07-10T02:35:50.659Z" },
-    { url = "https://files.pythonhosted.org/packages/7a/0e/ce9d740e25fe592a7ac87f4704499229e7356e1bdaa4597ac28d5caab75a/daft-0.7.19-cp310-abi3-manylinux_2_24_x86_64.whl", hash = "sha256:6f1d343b231814158061ab108546513c3314fcdb2a3d4530289ea1b781822d0a", size = 56020515, upload-time = "2026-07-10T02:35:54.353Z" },
+    { url = "https://files.pythonhosted.org/packages/44/46/05a0f1b147dd8e903749011022e549dbf47468d8c4dcd8ee1e5173af9c88/daft-0.7.25-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:6ac677793d75124a37399d90c95706dc7c3414a1a1775365207a01030df40c8d", size = 55748162, upload-time = "2026-09-12T02:03:40.615Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/55/b617fe0b7ed4d0851306297a017c59934f4f299043c951681861f2bf549d/daft-0.7.25-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:d800a28b6e288dc96a83cd4983da967baa64a4d333fcf1e6ca2fae302a6fa1ac", size = 51602155, upload-time = "2026-09-12T02:03:44.25Z" },
+    { url = "https://files.pythonhosted.org/packages/08/ab/7568f5cdf537c123c0d6ed3490be8734f9094186ef0ae9057f4ba2a1345c/daft-0.7.25-cp310-abi3-manylinux_2_24_aarch64.whl", hash = "sha256:70c37659298e011d179e4d48584c215f5de9980da44a1d6f8ecc43b04e912e95", size = 54120099, upload-time = "2026-09-12T02:03:47.22Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/59/5cf88cf69649a15dbc34e1576f3748fce95ab29eccd404c57d1c7add798e/daft-0.7.25-cp310-abi3-manylinux_2_24_x86_64.whl", hash = "sha256:6aaeb7b7537e5125f1e78d026ad6e5326ea0a535736867ce52150559dd1d5094", size = 56350055, upload-time = "2026-09-12T02:03:50.779Z" },
 ]
 
 [package.optional-dependencies]
@@ -1002,11 +1005,11 @@ wheels = [
 
 [[package]]
 name = "fsspec"
-version = "2026.4.0"
+version = "2026.6.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d5/8d/1c51c094345df128ca4a990d633fe1a0ff28726c9e6b3c41ba65087bba1d/fsspec-2026.4.0.tar.gz", hash = "sha256:301d8ac70ae90ef3ad05dcf94d6c3754a097f9b5fe4667d2787aa359ec7df7e4", size = 312760, upload-time = "2026-04-29T20:42:38.635Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/10/a1/ae4e3e5003468d6391d2c77b6fa1cd73bd5d13511d81c642d7b28ac90ed4/fsspec-2026.6.0.tar.gz", hash = "sha256:f5bac145310fe30e16e1471bd6840b2d990d609e872251d7e674241822abf01a", size = 313646, upload-time = "2026-06-16T01:57:28.105Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d5/0c/043d5e551459da400957a1395e0febbf771446ff34291afcbe3d8be2a279/fsspec-2026.4.0-py3-none-any.whl", hash = "sha256:11ef7bb35dab8a394fde6e608221d5cf3e8499401c249bebaeaad760a1a8dec2", size = 203402, upload-time = "2026-04-29T20:42:36.842Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/22/4222d7ddf3da30f363edaa98e329c2bce6c65497c9cb2810931c8b2c0fbc/fsspec-2026.6.0-py3-none-any.whl", hash = "sha256:02e0b71817df9b2169dc30a16832045764def1191b43dcff5bb85bdee212d2a1", size = 203949, upload-time = "2026-06-16T01:57:26.358Z" },
 ]
 
 [[package]]
