@@ -29,7 +29,8 @@ archetype = "archetype.cli.main:app"
 
 [project.optional-dependencies]
 analysis = [
-    "daft[lance,iceberg,audio]>=0.7.19",
+    "daft[lance,iceberg,audio]>=0.7.25",
+    "fsspec>=2026.6.0",
     "openai<2.39.0",
     "numpy<2.4.0",
     "av>=15.0.0,<17.1.0",

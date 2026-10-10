@@ -19,7 +19,7 @@ class PreviewAuditTests(unittest.TestCase):
             "quality/ddlog-preview.toml",
             "packages/archetype-native/pyproject.toml",
             "crates/archetype-ddlog-python/Cargo.toml",
-            "docs/guide/ddlog-python-preview.md",
+            "docs/guide/runtime.md",
         ]:
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)

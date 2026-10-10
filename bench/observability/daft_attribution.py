@@ -32,7 +32,7 @@ from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 from archetype.core.aio.async_processor import AsyncProcessor
 from bench.core.report import build_report, capture_environment, write_report
 
-PINNED_DAFT_VERSION = "0.7.19"
+PINNED_DAFT_VERSION = "0.7.25"
 WORKLOAD_ID = "daft-execution-attribution-v1"
 
 _SYNTHETIC_TRACE_ID = 0x1234567890ABCDEF1234567890ABCDEF

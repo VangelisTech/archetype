@@ -131,10 +131,12 @@ environments = ["sys_platform == 'darwin' or sys_platform == 'linux'"]
 # Bump this manually as needed; uv 0.8.x doesn't support relative durations.
 exclude-newer = "2026-06-12T00:00:00Z"
 # Surgical exceptions to the freeze — one package, one dated ceiling, so the
-# quarantine holds for everything else. daft 0.7.19 released 2026-07-10;
-# admitted explicitly (Everett, 2026-07-14) for the 0.2.0 release.
+# quarantine holds for everything else. Daft 0.7.25 (2026-09-12) removes
+# the vulnerable fsspec cap; fsspec 2026.6.0 (2026-06-16) fixes
+# CVE-2026-104851. Both have completed the seven-day quarantine.
 [tool.uv.exclude-newer-package]
-daft = "2026-07-11T00:00:00Z"
+daft = "2026-09-13T00:00:00Z"
+fsspec = "2026-06-17T00:00:00Z"
 # Modal 1.5.2 adds port-scoped Sandbox Connect Tokens required for separately
 # authenticated spectate and takeover viewports.
 modal = "2026-07-11T00:00:00Z"
